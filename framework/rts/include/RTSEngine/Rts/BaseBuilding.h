@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Ecs/EntityCommandBuffer.h>
 #include <RTSEngine/Ecs/World.h>
+#include <RTSEngine/Rts/Combat.h>
 #include <RTSEngine/Rts/Navigation.h>
 
 #include <algorithm>
@@ -47,6 +48,7 @@ struct BuildingDefinition {
     std::int32_t width{1};
     std::int32_t height{1};
     bool producer{};
+    CombatStats combat{};
 };
 
 struct BuildingFootprint {
@@ -62,6 +64,7 @@ struct ConstructionSite {
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
     bool producer{};
+    std::uint32_t ownerTeam{};
 };
 
 struct Building {
@@ -111,21 +114,32 @@ public:
                       const BuildingDefinition& definition,
                       GridPoint origin,
                       GridPoint requiredPathStart,
-                      GridPoint requiredPathGoal) {
+                      GridPoint requiredPathGoal,
+                      std::uint32_t ownerTeam = 0) {
         if (!valid(definition)) return {false, BuildFailure::InvalidDefinition, 0};
 
         const BuildingFootprint footprint{origin, definition.width, definition.height};
-        const auto placementFailure = validatePlacement(footprint, requiredPathStart, requiredPathGoal);
-        if (placementFailure != BuildFailure::None) return {false, placementFailure, 0};
-        if (!ledger_.reserve(definition.cost)) return {false, BuildFailure::InsufficientResources, 0};
+        const auto placementFailure =
+            validatePlacement(footprint, requiredPathStart, requiredPathGoal);
+        if (placementFailure != BuildFailure::None) {
+            return {false, placementFailure, 0};
+        }
+        if (!ledger_.reserve(definition.cost)) {
+            return {false, BuildFailure::InsufficientResources, 0};
+        }
 
         const ConstructionId id = ++nextConstructionId_;
         setBlocked(footprint, true);
         const auto deferred = commands.create(context);
         commands.add(context, deferred, footprint);
         commands.add(context, deferred, ConstructionSite{
-            id, definition.id, definition.cost, 0,
-            std::max<std::uint32_t>(1, definition.buildTicks), definition.producer
+            id,
+            definition.id,
+            definition.cost,
+            0,
+            std::max<std::uint32_t>(1, definition.buildTicks),
+            definition.producer,
+            ownerTeam
         });
         return {true, BuildFailure::None, id};
     }
@@ -138,7 +152,7 @@ public:
             const auto* site = world.try_get<ConstructionSite>(entity);
             const auto* footprint = world.try_get<BuildingFootprint>(entity);
             if (!site || !footprint || site->id != id) continue;
-            setBlocked(*footprint, false);
+            releaseFootprint(*footprint);
             ledger_.release(site->reservedCost);
             commands.destroy(context, entity);
             return BuildFailure::None;
@@ -182,12 +196,17 @@ public:
         for (const auto cell : cells) preview.setBlocked(cell, true);
         if (requiredPathStart == requiredPathGoal) {
             return preview.blocked(requiredPathStart)
-                ? BuildFailure::BlocksRequiredPath : BuildFailure::None;
+                ? BuildFailure::BlocksRequiredPath
+                : BuildFailure::None;
         }
         if (!GridPathfinder::find(preview, requiredPathStart, requiredPathGoal).found) {
             return BuildFailure::BlocksRequiredPath;
         }
         return BuildFailure::None;
+    }
+
+    void releaseFootprint(const BuildingFootprint& footprint) {
+        setBlocked(footprint, false);
     }
 
     const ResourceLedger& ledger() const noexcept { return ledger_; }
@@ -210,7 +229,9 @@ private:
     }
 
     void setBlocked(const BuildingFootprint& footprint, bool blocked) {
-        for (const auto cell : footprintCells(footprint)) navigation_.setBlocked(cell, blocked);
+        for (const auto cell : footprintCells(footprint)) {
+            navigation_.setBlocked(cell, blocked);
+        }
     }
 
     ResourceLedger& ledger_;
