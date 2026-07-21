@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace rts::gameplay {
@@ -100,8 +101,8 @@ public:
                 for (const auto entity : bucket) {
                     const auto* position = world.try_get<Position>(entity);
                     if (!position) continue;
-                    const auto distance = abs(position->x - x) + abs(position->y - y);
-                    if (distance <= range) result.push_back(entity);
+                    const auto entityDistance = abs(position->x - x) + abs(position->y - y);
+                    if (entityDistance <= range) result.push_back(entity);
                 }
             }
         }
