@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Ecs/Scheduler.h>
 #include <RTSEngine/Ecs/World.h>
+#include <RTSEngine/Rts/Navigation.h>
 #include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
@@ -16,17 +17,29 @@ struct Position {
 };
 
 struct MoveSpeed {
-    std::int32_t unitsPerTick{1};
+    std::int32_t cellsPerTick{1};
 };
 
-struct MoveOrder {
-    std::int32_t targetX{};
-    std::int32_t targetY{};
-    bool active{};
+enum class OrderType : std::uint8_t { Move };
+
+struct Order {
+    OrderType type{OrderType::Move};
+    GridPoint target{};
+};
+
+struct OrderQueue {
+    std::vector<Order> pending;
+};
+
+struct MovementAgent {
+    std::vector<GridPoint> path;
+    std::size_t nextPoint{};
+    std::uint64_t pathRevision{};
 };
 
 enum class CommandType : std::uint8_t {
-    Move
+    Move,
+    Stop
 };
 
 struct TickCommand {
@@ -37,6 +50,7 @@ struct TickCommand {
     ecs::Entity subject{};
     std::int32_t targetX{};
     std::int32_t targetY{};
+    bool append{};
 };
 
 class TickCommandStream {
@@ -61,12 +75,8 @@ public:
                 ++iterator;
             }
         }
-
         std::sort(result.begin(), result.end(), [](const TickCommand& a, const TickCommand& b) {
-            if (a.issuer != b.issuer) {
-                return a.issuer < b.issuer;
-            }
-            return a.sequence < b.sequence;
+            return a.issuer != b.issuer ? a.issuer < b.issuer : a.sequence < b.sequence;
         });
         result.erase(std::unique(result.begin(), result.end(), [](const TickCommand& a, const TickCommand& b) {
             return a.issuer == b.issuer && a.sequence == b.sequence;
@@ -81,7 +91,10 @@ private:
 
 enum class DomainEventType : std::uint8_t {
     MoveAccepted,
-    MoveCompleted
+    MoveCompleted,
+    OrderStopped,
+    PathReady,
+    PathFailed
 };
 
 struct DomainEvent {
@@ -95,6 +108,7 @@ struct SnapshotEntity {
     std::int32_t x{};
     std::int32_t y{};
     bool moving{};
+    std::uint32_t queuedOrders{};
 };
 
 struct WorldSnapshot {
@@ -105,55 +119,119 @@ struct WorldSnapshot {
 
 class RtsSimulation {
 public:
-    RtsSimulation() {
+    RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
+        : navigation_(width, height) {
         scheduler_.add(ecs::Stage::Command, 0, 100, [this](ecs::World& world, const ecs::SystemContext& context) {
             for (const auto& command : activeCommands_) {
-                if (command.type != CommandType::Move || !world.alive(command.subject)) {
+                if (!world.alive(command.subject)) {
                     continue;
                 }
-                auto* order = world.try_get<MoveOrder>(command.subject);
-                if (!order) {
+                auto* queue = world.try_get<OrderQueue>(command.subject);
+                auto* agent = world.try_get<MovementAgent>(command.subject);
+                if (!queue || !agent) {
                     continue;
                 }
-                order->targetX = command.targetX;
-                order->targetY = command.targetY;
-                order->active = true;
+
+                if (command.type == CommandType::Stop) {
+                    queue->pending.clear();
+                    agent->path.clear();
+                    agent->nextPoint = 0;
+                    events_.push_back({context.tick, DomainEventType::OrderStopped, command.subject});
+                    continue;
+                }
+
+                if (!command.append) {
+                    queue->pending.clear();
+                    agent->path.clear();
+                    agent->nextPoint = 0;
+                }
+                queue->pending.push_back({OrderType::Move, {command.targetX, command.targetY}});
                 events_.push_back({context.tick, DomainEventType::MoveAccepted, command.subject});
             }
         });
 
-        scheduler_.add(ecs::Stage::Simulation, 0, 200, [this](ecs::World& world, const ecs::SystemContext& context) {
-            for (const ecs::Entity entity : world.view<Position, MoveSpeed, MoveOrder>()) {
+        scheduler_.add(ecs::Stage::Navigation, 0, 200, [this](ecs::World& world, const ecs::SystemContext& context) {
+            for (const auto entity : world.view<Position, OrderQueue, MovementAgent>()) {
                 auto* position = world.try_get<Position>(entity);
-                const auto* speed = world.try_get<MoveSpeed>(entity);
-                auto* order = world.try_get<MoveOrder>(entity);
-                if (!position || !speed || !order || !order->active) {
+                auto* queue = world.try_get<OrderQueue>(entity);
+                auto* agent = world.try_get<MovementAgent>(entity);
+                if (!position || !queue || !agent || queue->pending.empty()) {
                     continue;
                 }
 
-                position->x = approach(position->x, order->targetX, speed->unitsPerTick);
-                position->y = approach(position->y, order->targetY, speed->unitsPerTick);
-                if (position->x == order->targetX && position->y == order->targetY) {
-                    order->active = false;
+                if (agent->pathRevision != navigation_.revision()) {
+                    agent->path.clear();
+                    agent->nextPoint = 0;
+                }
+                if (!agent->path.empty()) {
+                    continue;
+                }
+
+                const auto target = queue->pending.front().target;
+                if (position->x == target.x && position->y == target.y) {
+                    queue->pending.erase(queue->pending.begin());
+                    events_.push_back({context.tick, DomainEventType::MoveCompleted, entity});
+                    continue;
+                }
+
+                const auto path = GridPathfinder::find(navigation_, {position->x, position->y}, target);
+                agent->pathRevision = navigation_.revision();
+                if (!path.found) {
+                    queue->pending.erase(queue->pending.begin());
+                    events_.push_back({context.tick, DomainEventType::PathFailed, entity});
+                    continue;
+                }
+                agent->path = path.points;
+                agent->nextPoint = 0;
+                events_.push_back({context.tick, DomainEventType::PathReady, entity});
+            }
+        });
+
+        scheduler_.add(ecs::Stage::Simulation, 0, 300, [this](ecs::World& world, const ecs::SystemContext& context) {
+            for (const auto entity : world.view<Position, MoveSpeed, OrderQueue, MovementAgent>()) {
+                auto* position = world.try_get<Position>(entity);
+                const auto* speed = world.try_get<MoveSpeed>(entity);
+                auto* queue = world.try_get<OrderQueue>(entity);
+                auto* agent = world.try_get<MovementAgent>(entity);
+                if (!position || !speed || !queue || !agent || agent->path.empty()) {
+                    continue;
+                }
+
+                const auto amount = std::max<std::int32_t>(1, speed->cellsPerTick);
+                for (std::int32_t step = 0; step < amount && agent->nextPoint < agent->path.size(); ++step) {
+                    const auto point = agent->path[agent->nextPoint++];
+                    position->x = point.x;
+                    position->y = point.y;
+                }
+
+                if (agent->nextPoint == agent->path.size()) {
+                    agent->path.clear();
+                    agent->nextPoint = 0;
+                    if (!queue->pending.empty()) {
+                        queue->pending.erase(queue->pending.begin());
+                    }
                     events_.push_back({context.tick, DomainEventType::MoveCompleted, entity});
                 }
             }
         });
 
-        scheduler_.add(ecs::Stage::Snapshot, 0, 300, [this](ecs::World& world, const ecs::SystemContext& context) {
+        scheduler_.add(ecs::Stage::Snapshot, 0, 400, [this](ecs::World& world, const ecs::SystemContext& context) {
             buildSnapshot(world, context.tick);
         });
     }
 
     ecs::Entity createUnit(Position position, MoveSpeed speed) {
-        const ecs::Entity entity = world_.create();
+        const auto entity = world_.create();
         world_.emplace<Position>(entity, position);
         world_.emplace<MoveSpeed>(entity, speed);
-        world_.emplace<MoveOrder>(entity, MoveOrder{});
+        world_.emplace<OrderQueue>(entity, OrderQueue{});
+        world_.emplace<MovementAgent>(entity, MovementAgent{});
         return entity;
     }
 
     bool submit(TickCommand command) { return commands_.submit(command); }
+    bool setBlocked(GridPoint point, bool blocked) { return navigation_.setBlocked(point, blocked); }
+    const NavigationGrid& navigation() const noexcept { return navigation_; }
 
     void step(std::uint64_t tick) {
         events_.clear();
@@ -166,34 +244,42 @@ public:
     const ecs::World& world() const noexcept { return world_; }
 
 private:
-    static std::int32_t approach(std::int32_t value, std::int32_t target, std::int32_t amount) {
-        const std::int32_t step = amount < 0 ? -amount : amount;
-        if (value < target) {
-            return value + std::min(step, target - value);
-        }
-        if (value > target) {
-            return value - std::min(step, value - target);
-        }
-        return value;
-    }
-
     void buildSnapshot(ecs::World& world, std::uint64_t tick) {
         snapshot_.tick = tick;
         snapshot_.entities.clear();
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
-        for (const ecs::Entity entity : world.view<Position, MoveOrder>()) {
+        hash.WriteU64(navigation_.revision());
+        for (const auto blocked : navigation_.blockers()) {
+            hash.WriteU8(blocked);
+        }
+
+        for (const auto entity : world.view<Position, OrderQueue, MovementAgent>()) {
             const auto* position = world.try_get<Position>(entity);
-            const auto* order = world.try_get<MoveOrder>(entity);
-            snapshot_.entities.push_back({entity, position->x, position->y, order->active});
+            const auto* queue = world.try_get<OrderQueue>(entity);
+            const auto* agent = world.try_get<MovementAgent>(entity);
+            const bool moving = !agent->path.empty() || !queue->pending.empty();
+            snapshot_.entities.push_back({entity, position->x, position->y, moving,
+                                          static_cast<std::uint32_t>(queue->pending.size())});
             hash.WriteU32(entity.index);
             hash.WriteU32(entity.generation);
             hash.WriteI32(position->x);
             hash.WriteI32(position->y);
-            hash.WriteBool(order->active);
-            hash.WriteI32(order->targetX);
-            hash.WriteI32(order->targetY);
+            hash.WriteBool(moving);
+            hash.WriteU32(static_cast<std::uint32_t>(queue->pending.size()));
+            for (const auto& order : queue->pending) {
+                hash.WriteU8(static_cast<std::uint8_t>(order.type));
+                hash.WriteI32(order.target.x);
+                hash.WriteI32(order.target.y);
+            }
+            hash.WriteU64(agent->pathRevision);
+            hash.WriteU64(static_cast<std::uint64_t>(agent->nextPoint));
+            hash.WriteU64(static_cast<std::uint64_t>(agent->path.size()));
+            for (const auto point : agent->path) {
+                hash.WriteI32(point.x);
+                hash.WriteI32(point.y);
+            }
         }
         snapshot_.worldHash = hash.Value();
     }
@@ -201,6 +287,7 @@ private:
     ecs::World world_;
     ecs::Scheduler scheduler_;
     TickCommandStream commands_;
+    NavigationGrid navigation_;
     std::vector<TickCommand> activeCommands_;
     std::vector<DomainEvent> events_;
     WorldSnapshot snapshot_;
