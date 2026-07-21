@@ -41,7 +41,7 @@ int main() {
     runtime.advance(simulationContext, commands, world);
     commands.commit_through(world, ecs::Stage::Simulation);
     assert(world.view<ConstructionSite>().empty());
-    assert(world.view<Building, BuildingFootprint>().size() == 1);
+    assert((world.view<Building, BuildingFootprint>().size() == 1));
     assert(ledger.reserved == 0);
     assert(ledger.spent == 60);
 
