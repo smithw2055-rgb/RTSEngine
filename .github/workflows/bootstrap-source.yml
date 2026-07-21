@@ -1,22 +1,21 @@
 name: Bootstrap source tree
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/bootstrap-source.yml
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
 
 permissions:
   contents: write
+  pull-requests: read
 
 jobs:
   unpack:
     if: >-
-      github.event_name == 'push' ||
-      github.event.pull_request.head.ref == 'agent/redesign-deterministic-rts-core'
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.issue.pull_request &&
+       github.event.issue.number == 1 &&
+       github.event.comment.body == '/expand-source')
     runs-on: ubuntu-latest
     steps:
       - name: Checkout transfer branch
@@ -29,16 +28,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if [[ ! -d .bootstrap ]]; then
-            echo "Source tree is already materialized."
-            exit 0
-          fi
-
+          test -d .bootstrap
           cat .bootstrap/source.part* | base64 --decode > /tmp/rtsengine-source.tar.xz
           echo "f8ff007b597411dee9d5ca32818737c03ffc8960e0ac0cefdacbadec2f1979f3  /tmp/rtsengine-source.tar.xz" | sha256sum -c -
           tar -xJf /tmp/rtsengine-source.tar.xz -C .
           rm -rf .bootstrap
           rm -f .github/workflows/bootstrap-source.yml
+          rm -f .github/bootstrap-trigger.txt
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
