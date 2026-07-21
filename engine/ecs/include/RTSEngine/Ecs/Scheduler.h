@@ -12,6 +12,7 @@ namespace rts::ecs {
 
 enum class Stage : std::uint8_t {
     Command,
+    Navigation,
     Simulation,
     Cleanup,
     Snapshot
