@@ -21,3 +21,7 @@ add_test(NAME rts_economy_production_tests COMMAND rts_economy_production_tests)
 add_executable(rts_combat_tests combat_tests.cpp)
 target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
+
+add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
