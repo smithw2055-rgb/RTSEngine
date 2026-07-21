@@ -10,6 +10,7 @@ option(RTSENGINE_BUILD_EXAMPLES "Build RTSEngine examples" ON)
 
 add_subdirectory(engine/foundation)
 add_subdirectory(engine/sim)
+add_subdirectory(engine/ecs)
 
 if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/headless_demo)
