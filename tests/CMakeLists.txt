@@ -1,0 +1,3 @@
+add_executable(rts_foundation_tests foundation_tests.cpp)
+target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
+add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
