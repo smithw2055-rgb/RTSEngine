@@ -125,9 +125,9 @@ int main() {
     const auto second = runDuel();
     assert(first == second);
     assert(first.size() == 5);
-    assert(first[0] == 4); // two hits, each 4 - 1 armor
-    assert(first[1] == 4); // cooldown tick
-    assert(first[2] == 0); // deterministic second volley
+    assert(first[0] == 4); // two stable hits: (4 damage - 1 armor) x 2
+    assert(first[1] == 4); // cooldown tick produces no damage
+    assert(first[2] == 0); // the second stable volley kills the defender
 
     testStableTargetTieBreak();
     testDeathCallbackReleasesBlocker();
