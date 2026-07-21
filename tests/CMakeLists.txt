@@ -9,3 +9,7 @@ add_test(NAME rts_ecs_tests COMMAND rts_ecs_tests)
 add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
+
+add_executable(rts_base_building_tests base_building_tests.cpp)
+target_link_libraries(rts_base_building_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_base_building_tests COMMAND rts_base_building_tests)
