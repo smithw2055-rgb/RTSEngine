@@ -6,12 +6,17 @@ on:
       - main
     paths:
       - .github/workflows/bootstrap-source.yml
+  pull_request_target:
+    types: [opened, synchronize, reopened]
 
 permissions:
   contents: write
 
 jobs:
   unpack:
+    if: >-
+      github.event_name == 'push' ||
+      github.event.pull_request.head.ref == 'agent/redesign-deterministic-rts-core'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout transfer branch
@@ -24,6 +29,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ ! -d .bootstrap ]]; then
+            echo "Source tree is already materialized."
+            exit 0
+          fi
+
           cat .bootstrap/source.part* | base64 --decode > /tmp/rtsengine-source.tar.xz
           echo "f8ff007b597411dee9d5ca32818737c03ffc8960e0ac0cefdacbadec2f1979f3  /tmp/rtsengine-source.tar.xz" | sha256sum -c -
           tar -xJf /tmp/rtsengine-source.tar.xz -C .
