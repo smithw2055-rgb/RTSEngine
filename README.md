@@ -1,31 +1,28 @@
 # RTSEngine
 
-RTSEngine is a C++17 engine specialized for deterministic RTS, tower-defense, base-building and lightweight roguelite games.
+RTSEngine is a lightweight C++17 engine specialized for deterministic RTS, tower-defense, base-building, and roguelite games.
 
-## Current slice
+The repository is being built as small, testable vertical slices rather than importing a legacy general-purpose engine wholesale.
 
-The repository now contains the first executable architecture slice:
+## Current capabilities
 
-- C++17 CMake target graph
-- generational handles
-- canonical field-by-field hashing
-- deterministic named random streams
-- fixed 30 Hz simulation clock
-- centralized `SimulationHost`
-- headless example and regression tests
-- Linux and Windows CI matrix
+- fixed 30 Hz authoritative simulation with bounded catch-up
+- canonical state hashing and named deterministic random streams
+- generational entities, sparse-set components, stable queries, and staged structural changes
+- tick command stream, domain events, immutable snapshots, and replay-ready ordering
+- queued move, stop, attack, attack-move, and hold-position commands
+- deterministic grid A* with dynamic blockers and stable tie-breaking
+- transactional resources, construction, cancellation, production queues, and rally points
+- teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
+- kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
+- Linux and Windows Debug/Release CI coverage
 
 ## Build
 
 ```bash
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake -S . -B build -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
-./build/apps/headless_demo/rts_headless_demo
 ```
 
-On multi-config generators, pass `--config Debug` to the build and test commands.
-
-## Architecture
-
-See [docs/architecture.md](docs/architecture.md) and [docs/roadmap.md](docs/roadmap.md).
+The authoritative simulation layer does not depend on rendering, audio, UI, scripting, networking, or platform services. See `docs/architecture.md`, `docs/roadmap.md`, and `docs/adr/` for the design constraints and phased plan.
