@@ -43,14 +43,14 @@ std::vector<std::int32_t> runDuel() {
 
     std::vector<std::int32_t> healthHistory;
     for (std::uint64_t tick = 0; tick < 5; ++tick) {
-        const ecs::SystemContext context{tick, 0, ecs::Stage::Simulation};
+        const ecs::SystemContext context{tick, 0, ecs::Stage::Combat};
         combat.advance<Position>(context, commands, world);
         if (const auto* health = world.try_get<gameplay::Health>(defender)) {
             healthHistory.push_back(health->current);
         } else {
             healthHistory.push_back(-1);
         }
-        commands.commit_through(world, ecs::Stage::Simulation);
+        commands.commit_through(world, ecs::Stage::Combat);
     }
 
     assert(!world.alive(defender));
@@ -79,7 +79,7 @@ void testStableTargetTieBreak() {
     world.emplace<gameplay::Team>(second, gameplay::Team{2});
     world.emplace<gameplay::Health>(second, gameplay::Health{10, 10});
 
-    combat.advance<Position>({0, 0, ecs::Stage::Simulation}, commands, world);
+    combat.advance<Position>({0, 0, ecs::Stage::Combat}, commands, world);
     const auto* target = world.try_get<gameplay::CombatTarget>(attacker);
     assert(target && target->entity == first);
 }
@@ -104,14 +104,18 @@ void testDeathCallbackReleasesBlocker() {
     world.emplace<gameplay::CombatTarget>(attacker, gameplay::CombatTarget{});
 
     std::uint32_t deaths = 0;
-    combat.advance<Position>({0, 0, ecs::Stage::Simulation}, commands, world,
-        [&](ecs::Entity entity) {
-            if (entity == tower) {
+    combat.advance<Position>(
+        {0, 0, ecs::Stage::Combat},
+        commands,
+        world,
+        [&](ecs::Entity victim, ecs::Entity killer) {
+            assert(killer == attacker);
+            if (victim == tower) {
                 navigation.setBlocked({3, 3}, false);
                 ++deaths;
             }
         });
-    commands.commit_through(world, ecs::Stage::Simulation);
+    commands.commit_through(world, ecs::Stage::Combat);
 
     assert(deaths == 1);
     assert(!world.alive(tower));
