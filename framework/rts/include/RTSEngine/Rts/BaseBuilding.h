@@ -11,6 +11,7 @@
 namespace rts::gameplay {
 
 using ConstructionId = std::uint32_t;
+using ProductionId = std::uint32_t;
 
 struct ResourceLedger {
     std::int32_t available{};
@@ -18,27 +19,21 @@ struct ResourceLedger {
     std::int32_t spent{};
 
     bool reserve(std::int32_t amount) noexcept {
-        if (amount < 0 || available < amount) {
-            return false;
-        }
+        if (amount < 0 || available < amount) return false;
         available -= amount;
         reserved += amount;
         return true;
     }
 
     bool commit(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) {
-            return false;
-        }
+        if (amount < 0 || reserved < amount) return false;
         reserved -= amount;
         spent += amount;
         return true;
     }
 
     bool release(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) {
-            return false;
-        }
+        if (amount < 0 || reserved < amount) return false;
         reserved -= amount;
         available += amount;
         return true;
@@ -51,6 +46,7 @@ struct BuildingDefinition {
     std::uint32_t buildTicks{1};
     std::int32_t width{1};
     std::int32_t height{1};
+    bool producer{};
 };
 
 struct BuildingFootprint {
@@ -65,10 +61,28 @@ struct ConstructionSite {
     std::int32_t reservedCost{};
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
+    bool producer{};
 };
 
 struct Building {
     std::uint32_t definitionId{};
+    bool producer{};
+};
+
+struct ProductionItem {
+    ProductionId id{};
+    std::uint32_t unitDefinitionId{};
+    std::int32_t reservedCost{};
+    std::uint32_t progressTicks{};
+    std::uint32_t requiredTicks{1};
+};
+
+struct ProductionQueue {
+    std::vector<ProductionItem> items;
+};
+
+struct RallyPoint {
+    GridPoint point{};
 };
 
 enum class BuildFailure : std::uint8_t {
@@ -98,30 +112,20 @@ public:
                       GridPoint origin,
                       GridPoint requiredPathStart,
                       GridPoint requiredPathGoal) {
-        if (!valid(definition)) {
-            return {false, BuildFailure::InvalidDefinition, 0};
-        }
+        if (!valid(definition)) return {false, BuildFailure::InvalidDefinition, 0};
 
         const BuildingFootprint footprint{origin, definition.width, definition.height};
         const auto placementFailure = validatePlacement(footprint, requiredPathStart, requiredPathGoal);
-        if (placementFailure != BuildFailure::None) {
-            return {false, placementFailure, 0};
-        }
-        if (!ledger_.reserve(definition.cost)) {
-            return {false, BuildFailure::InsufficientResources, 0};
-        }
+        if (placementFailure != BuildFailure::None) return {false, placementFailure, 0};
+        if (!ledger_.reserve(definition.cost)) return {false, BuildFailure::InsufficientResources, 0};
 
         const ConstructionId id = ++nextConstructionId_;
         setBlocked(footprint, true);
-
         const auto deferred = commands.create(context);
         commands.add(context, deferred, footprint);
         commands.add(context, deferred, ConstructionSite{
-            id,
-            definition.id,
-            definition.cost,
-            0,
-            std::max<std::uint32_t>(1, definition.buildTicks)
+            id, definition.id, definition.cost, 0,
+            std::max<std::uint32_t>(1, definition.buildTicks), definition.producer
         });
         return {true, BuildFailure::None, id};
     }
@@ -133,9 +137,7 @@ public:
         for (const auto entity : world.view<ConstructionSite, BuildingFootprint>()) {
             const auto* site = world.try_get<ConstructionSite>(entity);
             const auto* footprint = world.try_get<BuildingFootprint>(entity);
-            if (!site || !footprint || site->id != id) {
-                continue;
-            }
+            if (!site || !footprint || site->id != id) continue;
             setBlocked(*footprint, false);
             ledger_.release(site->reservedCost);
             commands.destroy(context, entity);
@@ -149,16 +151,20 @@ public:
                  ecs::World& world) {
         for (const auto entity : world.view<ConstructionSite, BuildingFootprint>()) {
             auto* site = world.try_get<ConstructionSite>(entity);
-            if (!site) {
-                continue;
-            }
+            const auto* footprint = world.try_get<BuildingFootprint>(entity);
+            if (!site || !footprint) continue;
             ++site->progressTicks;
-            if (site->progressTicks < site->requiredTicks) {
-                continue;
-            }
+            if (site->progressTicks < site->requiredTicks) continue;
 
             ledger_.commit(site->reservedCost);
-            commands.add(context, entity, Building{site->definitionId});
+            commands.add(context, entity, Building{site->definitionId, site->producer});
+            if (site->producer) {
+                commands.add(context, entity, ProductionQueue{});
+                commands.add(context, entity, RallyPoint{
+                    {footprint->origin.x + footprint->width,
+                     footprint->origin.y + footprint->height / 2}
+                });
+            }
             commands.remove<ConstructionSite>(context, entity);
         }
     }
@@ -168,22 +174,15 @@ public:
                                    GridPoint requiredPathGoal) const {
         const auto cells = footprintCells(footprint);
         for (const auto cell : cells) {
-            if (!navigation_.contains(cell)) {
-                return BuildFailure::OutOfBounds;
-            }
-            if (navigation_.blocked(cell)) {
-                return BuildFailure::Occupied;
-            }
+            if (!navigation_.contains(cell)) return BuildFailure::OutOfBounds;
+            if (navigation_.blocked(cell)) return BuildFailure::Occupied;
         }
 
         NavigationGrid preview = navigation_;
-        for (const auto cell : cells) {
-            preview.setBlocked(cell, true);
-        }
+        for (const auto cell : cells) preview.setBlocked(cell, true);
         if (requiredPathStart == requiredPathGoal) {
             return preview.blocked(requiredPathStart)
-                ? BuildFailure::BlocksRequiredPath
-                : BuildFailure::None;
+                ? BuildFailure::BlocksRequiredPath : BuildFailure::None;
         }
         if (!GridPathfinder::find(preview, requiredPathStart, requiredPathGoal).found) {
             return BuildFailure::BlocksRequiredPath;
@@ -211,9 +210,7 @@ private:
     }
 
     void setBlocked(const BuildingFootprint& footprint, bool blocked) {
-        for (const auto cell : footprintCells(footprint)) {
-            navigation_.setBlocked(cell, blocked);
-        }
+        for (const auto cell : footprintCells(footprint)) navigation_.setBlocked(cell, blocked);
     }
 
     ResourceLedger& ledger_;
