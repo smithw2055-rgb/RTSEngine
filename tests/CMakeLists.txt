@@ -29,3 +29,7 @@ add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 add_executable(rts_tower_defense_tests tower_defense_tests.cpp)
 target_link_libraries(rts_tower_defense_tests PRIVATE RTSEngine::TowerDefense)
 add_test(NAME rts_tower_defense_tests COMMAND rts_tower_defense_tests)
+
+add_executable(rts_roguelite_tests roguelite_tests.cpp)
+target_link_libraries(rts_roguelite_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_tests COMMAND rts_roguelite_tests)
