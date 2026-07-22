@@ -5,11 +5,13 @@
 RTSEngine now has a nested authoritative persistence chain:
 
 ```text
-RunSaveSchema v2
-  -> RunSimulationArchive
-      -> TowerDefenseSimulationArchive
-          -> RtsSimulationArchive
-              -> ECS WorldArchive
+RunSaveSlotStore
+  -> RunSaveEnvelopeCodec
+      -> RunSaveSchema v2
+          -> RunSimulationArchive
+              -> TowerDefenseSimulationArchive
+                  -> RtsSimulationArchive
+                      -> ECS WorldArchive
 ```
 
 The contracts serve different purposes:
@@ -20,8 +22,10 @@ The contracts serve different purposes:
 4. **TowerDefense archives** add `WaveDirector`, wave-plan continuity, tracked enemies, base-core state, pending TowerDefense commands, and the nested RTS archive.
 5. **Run simulation archives** add run progression, modifier stacks, pending Run commands, inter-wave timing, internal sequences, and the nested TowerDefense archive.
 6. **RunSaveSchema v2** wraps the complete authoritative run image together with optional RNG records and diagnostic checkpoints.
+7. **Run-save envelopes** add product/content/build identity, sequence ordering, flags, payload length, and corruption checksum.
+8. **Primary/recovery slots** validate temporary writes, rotate the last good primary, and fall back to recovery when the primary is damaged.
 
-A run can now be saved during an active wave, restored into a fresh simulation configured with compatible content, and continued with the same subsequent hashes.
+A run can be saved during an active wave, restored into a fresh simulation configured with compatible content, and continued with the same subsequent hashes.
 
 ## Canonical binary rules
 
@@ -123,7 +127,7 @@ Modifier stacks are reconstructed against the registered modifier catalog in dep
 
 Run phase, wave index, current wave, `nextWaveTick`, TowerDefense phase, and active WaveDirector state are cross-validated before the destination is committed.
 
-## RunSaveSchema v2
+## RunSaveSchema v2 and migration
 
 Version 2 keeps the diagnostic and compatibility fields from version 1 and adds a length-delimited `authoritativeState` containing `RunSimulationArchive` bytes:
 
@@ -138,11 +142,59 @@ pending Run/TowerDefense/RTS command summaries
 authoritative RunSimulation archive
 ```
 
-`CaptureRunSave` collects these fields from a live `RunSimulation`. `RestoreRunSave` restores from the authoritative image. Version-1 files remain structurally decodable as progression-only records, but they do not contain enough information for direct mid-wave restoration.
+`CaptureRunSave` collects these fields from a live `RunSimulation`. `RestoreRunSave` restores from the authoritative image.
 
-The summary fields remain useful for save-slot UI, diagnostics, migration tooling, and corruption inspection without decoding the full nested image.
+`MigrateRunSaveToCurrent` implements the explicit historical policy:
 
-## Determinism acceptance tests
+- current authoritative v2 records remain resumable
+- current summary-only v2 records remain non-resumable
+- v1 records are decoded and re-encoded as v2 summaries
+- migration never invents missing world, navigation, wave, entity, modifier, or command state
+- unsupported future schemas and corrupt records are rejected
+
+Because version 1 never contained a complete authoritative world, a migrated v1 record can populate save-slot UI or diagnostics but cannot resume an active run.
+
+## Run-save envelope and manifest
+
+`RunSaveEnvelopeCodec` adds:
+
+```text
+envelope magic, version, and kind
+product ID
+content-manifest ID
+build ID
+monotonic slot sequence
+save Tick
+payload schema version
+flags
+payload size
+checksum
+RunSave payload
+```
+
+Product and content-manifest IDs must match exactly. Build ID is informational by default and can optionally be required to match. The manifest save Tick and authoritative/legacy flags must agree with the decoded payload.
+
+The envelope uses deterministic FNV-1a as an accidental-corruption checksum over protected manifest fields and payload. It is not a cryptographic signature, authentication code, encryption layer, or anti-cheat mechanism.
+
+## Primary and recovery slots
+
+`RunSaveSlotStore` uses three files per bounded, path-safe slot name:
+
+```text
+<slot>.sav
+<slot>.recovery.sav
+<slot>.tmp
+```
+
+Writes validate and read back the temporary envelope before rotating the current valid primary to recovery and renaming the temporary file to primary. A corrupt primary is removed without deleting a valid recovery. Non-increasing sequence numbers are rejected so stale asynchronous work cannot overwrite a newer local save.
+
+Loads validate the primary first and then fall back to recovery. The result reports which source was used and exposes separate primary/recovery decode errors. Recovery may optionally be promoted back to primary through another validated temporary write.
+
+Portable C++17 provides `flush`, close, read-back, and filesystem rename, but not portable `fsync`, directory synchronization, or Windows `FlushFileBuffers`. This layer therefore provides corruption detection and recovery-slot semantics without claiming guaranteed power-loss durability. A platform adapter must add durable file/directory synchronization for shipping products.
+
+See `docs/save-slot-storage.md` for the complete slot state machine and security/durability boundaries.
+
+## Determinism and corruption tests
 
 The regression suites cover:
 
@@ -154,25 +206,23 @@ The regression suites cover:
 - reward selection, modifier application, inter-wave advance, and final run completion
 - identical Run, TowerDefense, and RTS hashes on every Tick after restore
 - identical final canonical authoritative archives
-- transactional rejection of wrong seeds, changed modifier content, incompatible dimensions, and truncated data
+- transactional rejection of wrong seeds, changed content, incompatible dimensions, and truncation
+- every truncation point of a valid run-save envelope
+- a nonzero mutation at every individual envelope byte
+- trailing bytes, unsupported future versions, and legacy-summary migration
+- real temporary-directory primary/recovery rotation, fallback, repair, sequence, and manifest behavior
 
 ## Transactional restoration
 
-Every layer decodes and validates candidates before committing them. Higher layers keep canonical backups of the nested authoritative simulation and roll back if a later cross-layer invariant fails. A rejected save therefore leaves the destination simulation unchanged.
+Every simulation layer decodes and validates candidates before committing them. Higher layers keep canonical backups of the nested authoritative simulation and roll back if a later cross-layer invariant fails. A rejected save therefore leaves the destination simulation unchanged.
 
-## Versioning and next hardening slice
+The file layer similarly commits only a fully written and read-back-validated temporary envelope. If the primary is damaged, a previously validated recovery remains available.
 
-- Archive versions are monotonically increasing positive integers.
-- Component versions are independent of outer container versions.
-- Historical migration must produce the current canonical representation before simulation resumes.
-- Content changes require an explicit migration or a compatibility rejection.
+## Next hardening slice
 
-The next persistence hardening slice should add:
-
-```text
-explicit v1 -> v2 RunSave migration policy
-atomic save replacement with primary and recovery slots
-archive checksums and content-manifest identifiers
-corruption/fuzz test corpus and bounded decoder fuzzing
-user-facing save validation diagnostics
-```
+- Add a platform durability interface for POSIX/macOS/Windows file and directory synchronization.
+- Add structured validation diagnostics suitable for save-slot UI and telemetry.
+- Add sanitizer-backed coverage-guided fuzz targets and a persistent corruption corpus.
+- Define cloud-save conflict metadata and resolution policy.
+- Add optional authenticated encryption/signatures when required by the product threat model.
+- Establish save-size budgets, retention, cleanup, and observability policies.
