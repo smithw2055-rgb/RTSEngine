@@ -214,6 +214,8 @@ private:
         hashEntity(hash, agent.chaseTarget);
         hash.WriteI32(agent.chaseTargetPosition.x);
         hash.WriteI32(agent.chaseTargetPosition.y);
+        hash.WriteU32(agent.blockedTicks);
+        hash.WriteU32(agent.yieldOrdinal);
         hashCombat(hash, world, entity);
     }
 
@@ -239,6 +241,8 @@ private:
             value.queuedOrders = static_cast<std::uint32_t>(
                 queue->pending.size());
             value.kind = SnapshotKind::Unit;
+            value.movementBlockedTicks = agent->blockedTicks;
+            value.movementYieldOrdinal = agent->yieldOrdinal;
             populateCombatSnapshot(world, entity, value);
             snapshot.entities.push_back(value);
 
