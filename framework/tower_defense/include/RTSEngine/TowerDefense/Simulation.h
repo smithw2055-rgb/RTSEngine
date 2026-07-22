@@ -13,6 +13,8 @@
 
 namespace rts::tower_defense {
 
+class TowerDefenseSimulationArchive;
+
 enum class CommandType : std::uint8_t {
     StartWave,
     ChooseReward
@@ -26,8 +28,7 @@ struct TickCommand {
     std::uint32_t objectId{};
 };
 
-using TickCommandStream =
-    sim::DeterministicCommandStream<TickCommand>;
+using TickCommandStream = sim::DeterministicCommandStream<TickCommand>;
 
 enum class EventType : std::uint8_t {
     WaveStarted,
@@ -79,32 +80,38 @@ public:
     TowerDefenseSimulation(std::int32_t width = 32,
                            std::int32_t height = 32,
                            std::uint64_t rootSeed = 1)
-        : rts_(width, height), director_(rootSeed) {}
+        : rts_(width, height), director_(rootSeed), rootSeed_(rootSeed) {}
 
     void registerUnit(gameplay::UnitDefinition definition) {
         replaceById(unitDefinitions_, definition);
         rts_.registerUnit(definition);
     }
 
-    void registerBuilding(
-        gameplay::BuildingDefinition definition) {
-        rts_.registerBuilding(definition);
+    void registerBuilding(gameplay::BuildingDefinition definition) {
+        rts_.registerBuilding(std::move(definition));
     }
 
     bool registerLane(SpawnLane lane) {
         if (!rts_.navigation().contains(lane.spawn) ||
-            !rts_.navigation().contains(lane.goal)) {
+            !rts_.navigation().contains(lane.goal) ||
+            !director_.registerLane(lane)) {
             return false;
         }
-        return director_.registerLane(lane);
+        replaceById(laneDefinitions_, lane);
+        return true;
     }
 
     bool registerWave(WaveDefinition wave) {
-        return director_.registerWave(std::move(wave));
+        const auto copy = wave;
+        if (!director_.registerWave(std::move(wave))) return false;
+        replaceById(waveDefinitions_, copy);
+        return true;
     }
 
     bool registerReward(RewardDefinition reward) {
-        return director_.registerReward(reward);
+        if (!director_.registerReward(reward)) return false;
+        replaceById(rewardDefinitions_, reward);
+        return true;
     }
 
     void setResources(std::int32_t available) noexcept {
@@ -134,13 +141,9 @@ public:
     ecs::Entity createBaseCore(gameplay::Position position,
                                std::uint32_t teamId,
                                gameplay::CombatStats combat) {
-        combat.maximumHealth =
-            std::max<std::int32_t>(1, combat.maximumHealth);
+        combat.maximumHealth = std::max<std::int32_t>(1, combat.maximumHealth);
         combat.bounty = 0;
-        core_ = rts_.createUnit(position,
-                                gameplay::MoveSpeed{0},
-                                teamId,
-                                combat);
+        core_ = rts_.createUnit(position, gameplay::MoveSpeed{0}, teamId, combat);
         playerTeamId_ = teamId;
         rts_.setPlayerTeam(teamId);
         coreFailureReported_ = false;
@@ -155,11 +158,11 @@ public:
     }
 
     bool submit(TickCommand command) {
-        return commands_.submit(command);
+        return commands_.submit(std::move(command));
     }
 
     bool submitRts(gameplay::TickCommand command) {
-        return rts_.submit(command);
+        return rts_.submit(std::move(command));
     }
 
     bool step(std::uint64_t tick) {
@@ -178,27 +181,22 @@ public:
         return true;
     }
 
-    const TowerDefenseSnapshot& snapshot() const noexcept {
-        return snapshot_;
-    }
-
-    const std::vector<Event>& events() const noexcept {
-        return events_;
-    }
-
-    const WaveDirector& director() const noexcept {
-        return director_;
-    }
-
-    const gameplay::RtsSimulation& rts() const noexcept {
-        return rts_;
-    }
-
+    const TowerDefenseSnapshot& snapshot() const noexcept { return snapshot_; }
+    const std::vector<Event>& events() const noexcept { return events_; }
+    const WaveDirector& director() const noexcept { return director_; }
+    const gameplay::RtsSimulation& rts() const noexcept { return rts_; }
     const gameplay::ResourceLedger& resources() const noexcept {
         return rts_.resources();
     }
+    TickCommandStream::State commandStreamState() const {
+        return commands_.snapshot();
+    }
+    std::uint64_t lastTick() const noexcept { return lastTick_; }
+    std::uint64_t rootSeed() const noexcept { return rootSeed_; }
 
 private:
+    friend class TowerDefenseSimulationArchive;
+
     struct TrackedEnemy {
         ecs::Entity entity{};
         WaveId waveId{};
@@ -214,8 +212,7 @@ private:
             [](const T& current, std::uint32_t id) {
                 return current.id < id;
             });
-        if (iterator != values.end() &&
-            iterator->id == value.id) {
+        if (iterator != values.end() && iterator->id == value.id) {
             *iterator = std::move(value);
         } else {
             values.insert(iterator, std::move(value));
@@ -225,21 +222,16 @@ private:
     const gameplay::UnitDefinition* unitDefinition(
         std::uint32_t id) const noexcept {
         const auto iterator = std::lower_bound(
-            unitDefinitions_.begin(),
-            unitDefinitions_.end(),
-            id,
-            [](const gameplay::UnitDefinition& value,
-               std::uint32_t key) {
+            unitDefinitions_.begin(), unitDefinitions_.end(), id,
+            [](const gameplay::UnitDefinition& value, std::uint32_t key) {
                 return value.id < key;
             });
-        return iterator != unitDefinitions_.end() &&
-                       iterator->id == id
+        return iterator != unitDefinitions_.end() && iterator->id == id
             ? &*iterator
             : nullptr;
     }
 
-    void processCommand(std::uint64_t tick,
-                        const TickCommand& command) {
+    void processCommand(std::uint64_t tick, const TickCommand& command) {
         if (command.type == CommandType::StartWave) {
             startWave(tick, command.objectId);
         } else {
@@ -251,73 +243,48 @@ private:
         WaveStartResult result;
         if (!core_.valid() || !rts_.world().alive(core_)) {
             result = {false, WaveStartFailure::NoBaseCore, id};
-        } else if (director_.state().phase ==
-                       WavePhase::Spawning ||
-                   director_.state().phase ==
-                       WavePhase::Active ||
-                   director_.state().phase ==
-                       WavePhase::RewardPending) {
+        } else if (director_.state().phase == WavePhase::Spawning ||
+                   director_.state().phase == WavePhase::Active ||
+                   director_.state().phase == WavePhase::RewardPending) {
             result = director_.begin(id, tick);
         } else {
             result = validateWaveContent(id);
-            if (result.accepted) {
-                result = director_.begin(id, tick);
-            }
+            if (result.accepted) result = director_.begin(id, tick);
         }
 
         if (!result.accepted) {
             events_.push_back(
-                {tick,
-                 EventType::WaveRejected,
-                 id,
-                 0,
-                 {},
-                 0,
+                {tick, EventType::WaveRejected, id, 0, {}, 0,
                  static_cast<std::uint32_t>(result.failure)});
             return;
         }
 
         trackedEnemies_.clear();
         coreFailureReported_ = false;
-        events_.push_back(
-            {tick, EventType::WaveStarted, id, 0, {}, 0, 0});
+        events_.push_back({tick, EventType::WaveStarted, id, 0, {}, 0, 0});
     }
 
     WaveStartResult validateWaveContent(WaveId id) const {
         const auto* wave = director_.definition(id);
-        if (!wave) {
-            return {false, WaveStartFailure::UnknownWave, id};
-        }
+        if (!wave) return {false, WaveStartFailure::UnknownWave, id};
         for (const auto& enemy : wave->enemies) {
-            const auto* definition =
-                unitDefinition(enemy.unitDefinitionId);
-            if (!definition ||
-                !definition->combat.attackCapable()) {
-                return {false,
-                        WaveStartFailure::UnknownUnitDefinition,
-                        id};
+            const auto* definition = unitDefinition(enemy.unitDefinitionId);
+            if (!definition || !definition->combat.attackCapable()) {
+                return {false, WaveStartFailure::UnknownUnitDefinition, id};
             }
         }
 
         std::vector<const SpawnLane*> lanes;
         if (wave->laneIds.empty()) {
-            for (const auto& lane : director_.lanes()) {
-                lanes.push_back(&lane);
-            }
+            for (const auto& lane : director_.lanes()) lanes.push_back(&lane);
         } else {
             for (const auto laneId : wave->laneIds) {
                 const auto* lane = director_.lane(laneId);
-                if (!lane) {
-                    return {false,
-                            WaveStartFailure::MissingLane,
-                            id};
-                }
+                if (!lane) return {false, WaveStartFailure::MissingLane, id};
                 lanes.push_back(lane);
             }
         }
-        if (lanes.empty()) {
-            return {false, WaveStartFailure::MissingLane, id};
-        }
+        if (lanes.empty()) return {false, WaveStartFailure::MissingLane, id};
 
         for (const auto* lane : lanes) {
             if (!rts_.navigation().contains(lane->spawn) ||
@@ -325,13 +292,8 @@ private:
                 rts_.navigation().blocked(lane->spawn) ||
                 rts_.navigation().blocked(lane->goal) ||
                 !gameplay::GridPathfinder::find(
-                     rts_.navigation(),
-                     lane->spawn,
-                     lane->goal)
-                     .found) {
-                return {false,
-                        WaveStartFailure::InvalidLane,
-                        id};
+                    rts_.navigation(), lane->spawn, lane->goal).found) {
+                return {false, WaveStartFailure::InvalidLane, id};
             }
         }
         return {true, WaveStartFailure::None, id};
@@ -341,47 +303,30 @@ private:
         const auto* selected = director_.chooseReward(id);
         if (!selected) {
             events_.push_back(
-                {tick,
-                 EventType::RewardRejected,
-                 director_.state().waveId,
-                 id,
-                 {},
-                 0,
-                 0});
+                {tick, EventType::RewardRejected, director_.state().waveId,
+                 id, {}, 0, 0});
             return;
         }
 
         const auto next = std::clamp<std::int64_t>(
-            static_cast<std::int64_t>(
-                rts_.resources().available) +
+            static_cast<std::int64_t>(rts_.resources().available) +
                 selected->resourceGrant,
-            0,
-            std::numeric_limits<std::int32_t>::max());
+            0, std::numeric_limits<std::int32_t>::max());
         rts_.setResources(static_cast<std::int32_t>(next));
         events_.push_back(
-            {tick,
-             EventType::RewardChosen,
-             director_.state().waveId,
-             id,
-             {},
-             selected->resourceGrant,
-             0});
+            {tick, EventType::RewardChosen, director_.state().waveId,
+             id, {}, selected->resourceGrant, 0});
     }
 
     void spawnDueEnemies(std::uint64_t tick) {
         const auto due = director_.dueSpawns(tick);
         for (const auto& spawn : due) {
-            const auto* definition =
-                unitDefinition(spawn.unitDefinitionId);
+            const auto* definition = unitDefinition(spawn.unitDefinitionId);
             if (!definition) {
                 director_.fail();
                 events_.push_back(
-                    {tick,
-                     EventType::WaveRejected,
-                     director_.state().waveId,
-                     spawn.unitDefinitionId,
-                     {},
-                     0,
+                    {tick, EventType::WaveRejected, director_.state().waveId,
+                     spawn.unitDefinitionId, {}, 0,
                      static_cast<std::uint32_t>(
                          WaveStartFailure::UnknownUnitDefinition)});
                 return;
@@ -395,8 +340,7 @@ private:
 
             gameplay::TickCommand attackMove;
             attackMove.targetTick = tick;
-            attackMove.issuer =
-                internalIssuer(director_.state().waveId);
+            attackMove.issuer = internalIssuer(director_.state().waveId);
             attackMove.sequence = spawn.sequence + 1;
             attackMove.type = gameplay::CommandType::AttackMove;
             attackMove.subject = entity;
@@ -405,31 +349,20 @@ private:
             if (!rts_.submit(attackMove)) {
                 director_.fail();
                 events_.push_back(
-                    {tick,
-                     EventType::WaveRejected,
-                     director_.state().waveId,
-                     spawn.unitDefinitionId,
-                     entity,
-                     0,
+                    {tick, EventType::WaveRejected, director_.state().waveId,
+                     spawn.unitDefinitionId, entity, 0,
                      static_cast<std::uint32_t>(
                          WaveStartFailure::InvalidDefinition)});
                 return;
             }
 
             trackedEnemies_.push_back(
-                {entity,
-                 director_.state().waveId,
-                 spawn.laneId,
-                 spawn.unitDefinitionId,
-                 false});
+                {entity, director_.state().waveId, spawn.laneId,
+                 spawn.unitDefinitionId, false});
             events_.push_back(
-                {tick,
-                 EventType::EnemySpawned,
-                 director_.state().waveId,
-                 spawn.unitDefinitionId,
-                 entity,
-                 static_cast<std::int32_t>(spawn.laneId),
-                 0});
+                {tick, EventType::EnemySpawned, director_.state().waveId,
+                 spawn.unitDefinitionId, entity,
+                 static_cast<std::int32_t>(spawn.laneId), 0});
         }
     }
 
@@ -439,63 +372,46 @@ private:
                 coreFailureReported_ = true;
                 director_.fail();
                 events_.push_back(
-                    {tick,
-                     EventType::BaseCoreDestroyed,
-                     director_.state().waveId,
-                     0,
-                     core_,
-                     0,
-                     0});
+                    {tick, EventType::BaseCoreDestroyed,
+                     director_.state().waveId, 0, core_, 0, 0});
             }
         }
 
         for (auto& enemy : trackedEnemies_) {
-            if (enemy.resolved ||
-                rts_.world().alive(enemy.entity)) {
-                continue;
-            }
+            if (enemy.resolved || rts_.world().alive(enemy.entity)) continue;
             enemy.resolved = true;
             events_.push_back(
-                {tick,
-                 EventType::EnemyDefeated,
-                 enemy.waveId,
-                 enemy.unitDefinitionId,
-                 enemy.entity,
-                 0,
-                 0});
-            if (director_.markEnemyResolved()) {
-                publishWaveCompletion(tick);
-            }
+                {tick, EventType::EnemyDefeated, enemy.waveId,
+                 enemy.unitDefinitionId, enemy.entity, 0, 0});
+            if (director_.markEnemyResolved()) publishWaveCompletion(tick);
         }
     }
 
     void publishWaveCompletion(std::uint64_t tick) {
         events_.push_back(
-            {tick,
-             EventType::WaveCompleted,
-             director_.state().waveId,
-             0,
-             {},
-             0,
-             0});
-        for (const auto rewardId :
-             director_.offer().choices) {
+            {tick, EventType::WaveCompleted, director_.state().waveId,
+             0, {}, 0, 0});
+        for (const auto rewardId : director_.offer().choices) {
             const auto* reward = director_.reward(rewardId);
             events_.push_back(
-                {tick,
-                 EventType::RewardOffered,
-                 director_.state().waveId,
-                 rewardId,
-                 {},
-                 reward ? reward->resourceGrant : 0,
-                 0});
+                {tick, EventType::RewardOffered, director_.state().waveId,
+                 rewardId, {}, reward ? reward->resourceGrant : 0, 0});
         }
+    }
+
+    static void hashCommand(
+        foundation::CanonicalHash& hash,
+        const TickCommand& command) {
+        hash.WriteU64(command.targetTick);
+        hash.WriteU32(command.issuer);
+        hash.WriteU32(command.sequence);
+        hash.WriteU8(static_cast<std::uint8_t>(command.type));
+        hash.WriteU32(command.objectId);
     }
 
     void buildSnapshot(std::uint64_t tick) {
         snapshot_.tick = tick;
-        snapshot_.rtsWorldHash =
-            rts_.snapshot().worldHash;
+        snapshot_.rtsWorldHash = rts_.snapshot().worldHash;
         snapshot_.baseCore = core_;
         snapshot_.coreHealthCurrent = 0;
         snapshot_.coreHealthMaximum = 0;
@@ -505,25 +421,20 @@ private:
             snapshot_.coreHealthMaximum = health->maximum;
         }
         snapshot_.wave = director_.state();
-        snapshot_.plannedSpawns =
-            static_cast<std::uint32_t>(
-                director_.plan().spawns.size());
+        snapshot_.plannedSpawns = static_cast<std::uint32_t>(
+            director_.plan().spawns.size());
         snapshot_.activeEnemies = director_.activeEnemies();
         snapshot_.rewardChoices = director_.offer().choices;
         snapshot_.selectedReward = director_.offer().selected;
         snapshot_.enemies.clear();
         for (const auto& enemy : trackedEnemies_) {
             snapshot_.enemies.push_back(
-                {enemy.entity,
-                 enemy.waveId,
-                 enemy.laneId,
+                {enemy.entity, enemy.waveId, enemy.laneId,
                  enemy.unitDefinitionId,
                  rts_.world().alive(enemy.entity)});
         }
-        std::sort(snapshot_.enemies.begin(),
-                  snapshot_.enemies.end(),
-                  [](const EnemySnapshot& a,
-                     const EnemySnapshot& b) {
+        std::sort(snapshot_.enemies.begin(), snapshot_.enemies.end(),
+                  [](const EnemySnapshot& a, const EnemySnapshot& b) {
                       return a.entity < b.entity;
                   });
 
@@ -536,9 +447,13 @@ private:
         hash.WriteI32(snapshot_.coreHealthMaximum);
         hash.WriteU32(playerTeamId_);
         director_.appendHash(hash);
-        hash.WriteU32(
-            static_cast<std::uint32_t>(
-                trackedEnemies_.size()));
+        const auto commandState = commands_.snapshot();
+        hash.WriteU64(commandState.committedThrough);
+        hash.WriteU32(static_cast<std::uint32_t>(commandState.pending.size()));
+        for (const auto& command : commandState.pending) {
+            hashCommand(hash, command);
+        }
+        hash.WriteU32(static_cast<std::uint32_t>(trackedEnemies_.size()));
         for (const auto& enemy : trackedEnemies_) {
             hash.WriteU32(enemy.entity.index);
             hash.WriteU32(enemy.entity.generation);
@@ -550,21 +465,23 @@ private:
         snapshot_.worldHash = hash.Value();
     }
 
-    static std::uint32_t internalIssuer(
-        WaveId waveId) noexcept {
-        return 0x80000000u |
-               (waveId & 0x7fffffffu);
+    static std::uint32_t internalIssuer(WaveId waveId) noexcept {
+        return 0x80000000u | (waveId & 0x7fffffffu);
     }
 
     gameplay::RtsSimulation rts_;
     WaveDirector director_;
     TickCommandStream commands_;
     std::vector<gameplay::UnitDefinition> unitDefinitions_;
+    std::vector<SpawnLane> laneDefinitions_;
+    std::vector<WaveDefinition> waveDefinitions_;
+    std::vector<RewardDefinition> rewardDefinitions_;
     std::vector<TrackedEnemy> trackedEnemies_;
     std::vector<Event> events_;
     TowerDefenseSnapshot snapshot_;
     ecs::Entity core_{};
     std::uint32_t playerTeamId_{1};
+    std::uint64_t rootSeed_{1};
     std::uint64_t lastTick_{};
     bool hasStepped_{};
     bool coreFailureReported_{};

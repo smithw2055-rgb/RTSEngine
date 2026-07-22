@@ -15,6 +15,10 @@ inline StatId PlayerUnitDamageStat() noexcept {
     return value;
 }
 
+inline StatId UnitDamageStat() noexcept {
+    return PlayerUnitDamageStat();
+}
+
 inline StatId PlayerUnitArmorStat() noexcept {
     static const StatId value = MakeStatId("player.unit.armor-add");
     return value;

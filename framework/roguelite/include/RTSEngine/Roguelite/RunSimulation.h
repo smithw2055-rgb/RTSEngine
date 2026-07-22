@@ -14,6 +14,8 @@
 
 namespace rts::roguelite {
 
+class RunSimulationArchive;
+
 using RunId = std::uint32_t;
 
 struct RunDefinition {
@@ -51,8 +53,7 @@ struct TickCommand {
     std::uint32_t objectId{};
 };
 
-using TickCommandStream =
-    sim::DeterministicCommandStream<TickCommand>;
+using TickCommandStream = sim::DeterministicCommandStream<TickCommand>;
 
 enum class RunFailure : std::uint8_t {
     None,
@@ -126,18 +127,14 @@ public:
     bool registerModifier(ModifierDefinition modifier) {
         const auto id = modifier.id;
         const auto weight = modifier.weight;
-        if (!modifiers_.registerDefinition(std::move(modifier))) {
-            return false;
-        }
+        if (!modifiers_.registerDefinition(std::move(modifier))) return false;
         return tower_.registerReward({id, weight, 0});
     }
 
     bool registerRun(RunDefinition run) {
         if (run.id == 0 || run.waves.empty() ||
             std::any_of(run.waves.begin(), run.waves.end(),
-                        [](tower_defense::WaveId id) {
-                            return id == 0;
-                        })) {
+                        [](tower_defense::WaveId id) { return id == 0; })) {
             return false;
         }
         replaceById(runs_, std::move(run));
@@ -177,11 +174,11 @@ public:
     }
 
     bool submit(TickCommand command) {
-        return commands_.submit(command);
+        return commands_.submit(std::move(command));
     }
 
     bool submitRts(gameplay::TickCommand command) {
-        return tower_.submitRts(command);
+        return tower_.submitRts(std::move(command));
     }
 
     bool step(std::uint64_t tick) {
@@ -193,12 +190,9 @@ public:
         for (const auto& command : commands_.consume(tick)) {
             processCommand(tick, command);
         }
-
-        if (state_.phase == RunPhase::BetweenWaves &&
-            tick >= nextWaveTick_) {
+        if (state_.phase == RunPhase::BetweenWaves && tick >= nextWaveTick_) {
             beginCurrentWave(tick);
         }
-
         if (!tower_.step(tick)) return false;
         reconcileTowerEvents(tick);
         buildSnapshot(tick);
@@ -212,8 +206,15 @@ public:
     const tower_defense::TowerDefenseSimulation& tower() const noexcept {
         return tower_;
     }
+    TickCommandStream::State commandStreamState() const {
+        return commands_.snapshot();
+    }
+    std::uint64_t rootSeed() const noexcept { return rootSeed_; }
+    std::uint64_t lastTick() const noexcept { return lastTick_; }
 
 private:
+    friend class RunSimulationArchive;
+
     template<class T>
     static void replaceById(std::vector<T>& values, T value) {
         const auto iterator = std::lower_bound(
@@ -241,8 +242,7 @@ private:
             : nullptr;
     }
 
-    void processCommand(std::uint64_t tick,
-                        const TickCommand& command) {
+    void processCommand(std::uint64_t tick, const TickCommand& command) {
         if (command.type == CommandType::StartRun) {
             startRun(tick, command.objectId);
         } else {
@@ -266,13 +266,10 @@ private:
                 return;
             }
         }
-
-        state_ = {id, RunPhase::BetweenWaves, 0, 0,
-                  run->waves.front()};
+        state_ = {id, RunPhase::BetweenWaves, 0, 0, run->waves.front()};
         nextWaveTick_ = tick;
         events_.push_back(
-            {tick, EventType::RunStarted, id,
-             state_.currentWave, 0, 0, 0});
+            {tick, EventType::RunStarted, id, state_.currentWave, 0, 0, 0});
     }
 
     void chooseModifier(std::uint64_t tick, ModifierId id) {
@@ -283,8 +280,7 @@ private:
             events_.push_back(
                 {tick, EventType::ModifierRejected, state_.runId,
                  state_.currentWave, id, 0,
-                 static_cast<std::uint32_t>(
-                     RunFailure::ModifierNotOffered)});
+                 static_cast<std::uint32_t>(RunFailure::ModifierNotOffered)});
             return;
         }
         const auto failure = modifiers_.canApply(id);
@@ -306,8 +302,7 @@ private:
             events_.push_back(
                 {tick, EventType::ModifierRejected, state_.runId,
                  state_.currentWave, id, 0,
-                 static_cast<std::uint32_t>(
-                     RunFailure::TowerDefenseRejected)});
+                 static_cast<std::uint32_t>(RunFailure::TowerDefenseRejected)});
         }
     }
 
@@ -330,8 +325,7 @@ private:
             : wave.rewardPool;
         wave.rewardPool = modifiers_.eligible(std::move(rewardPool));
         wave.rewardChoices = static_cast<std::uint32_t>(
-            std::min<std::size_t>(wave.rewardChoices,
-                                  wave.rewardPool.size()));
+            std::min<std::size_t>(wave.rewardChoices, wave.rewardPool.size()));
         if (!tower_.registerWave(wave)) {
             failRun(tick, RunFailure::InvalidDefinition);
             return;
@@ -362,8 +356,6 @@ private:
                      event.waveId, 0, 0, 0});
                 break;
             case tower_defense::EventType::WaveRejected:
-                failRun(tick, RunFailure::TowerDefenseRejected);
-                break;
             case tower_defense::EventType::BaseCoreDestroyed:
                 failRun(tick, RunFailure::TowerDefenseRejected);
                 break;
@@ -376,8 +368,7 @@ private:
             case tower_defense::EventType::RewardRejected:
                 events_.push_back(
                     {tick, EventType::ModifierRejected, state_.runId,
-                     state_.currentWave, event.objectId, 0,
-                     event.reason});
+                     state_.currentWave, event.objectId, 0, event.reason});
                 break;
             default:
                 break;
@@ -387,20 +378,16 @@ private:
 
     void onWaveCompleted(std::uint64_t tick,
                          tower_defense::WaveId waveId) {
-        const auto bonus = modifiers_.resolve(
-            WaveCompletionResourceStat(), 0);
+        const auto bonus = modifiers_.resolve(WaveCompletionResourceStat(), 0);
         if (bonus != 0) {
             const auto next = std::clamp<std::int64_t>(
-                static_cast<std::int64_t>(
-                    tower_.resources().available) + bonus,
-                0,
-                std::numeric_limits<std::int32_t>::max());
+                static_cast<std::int64_t>(tower_.resources().available) + bonus,
+                0, std::numeric_limits<std::int32_t>::max());
             tower_.setResources(static_cast<std::int32_t>(next));
             events_.push_back(
-                {tick, EventType::ResourceBonusGranted,
-                 state_.runId, waveId, 0, bonus, 0});
+                {tick, EventType::ResourceBonusGranted, state_.runId,
+                 waveId, 0, bonus, 0});
         }
-
         events_.push_back(
             {tick, EventType::WaveCompleted, state_.runId,
              waveId, 0, 0, 0});
@@ -435,18 +422,15 @@ private:
             failRun(tick, RunFailure::UnknownRun);
             return;
         }
-
         ++state_.completedWaves;
         ++state_.waveIndex;
         if (state_.waveIndex >= run->waves.size()) {
             state_.phase = RunPhase::Complete;
             state_.currentWave = 0;
             events_.push_back(
-                {tick, EventType::RunCompleted, state_.runId,
-                 0, 0, 0, 0});
+                {tick, EventType::RunCompleted, state_.runId, 0, 0, 0, 0});
             return;
         }
-
         state_.phase = RunPhase::BetweenWaves;
         state_.currentWave = run->waves[state_.waveIndex];
         nextWaveTick_ = tick + 1;
@@ -455,8 +439,7 @@ private:
              state_.currentWave, 0, 0, 0});
     }
 
-    void reject(std::uint64_t tick, RunId id,
-                RunFailure failure) {
+    void reject(std::uint64_t tick, RunId id, RunFailure failure) {
         events_.push_back(
             {tick, EventType::RunRejected, id, 0, 0, 0,
              static_cast<std::uint32_t>(failure)});
@@ -464,9 +447,7 @@ private:
 
     void failRun(std::uint64_t tick, RunFailure failure) {
         if (state_.phase == RunPhase::Failed ||
-            state_.phase == RunPhase::Complete) {
-            return;
-        }
+            state_.phase == RunPhase::Complete) return;
         state_.phase = RunPhase::Failed;
         events_.push_back(
             {tick, EventType::RunFailed, state_.runId,
@@ -479,17 +460,24 @@ private:
             playerTeamId_, ResolveGameplayProfile(modifiers_));
     }
 
+    static void hashCommand(
+        foundation::CanonicalHash& hash,
+        const TickCommand& command) {
+        hash.WriteU64(command.targetTick);
+        hash.WriteU32(command.issuer);
+        hash.WriteU32(command.sequence);
+        hash.WriteU8(static_cast<std::uint8_t>(command.type));
+        hash.WriteU32(command.objectId);
+    }
+
     void buildSnapshot(std::uint64_t tick) {
         snapshot_.tick = tick;
-        snapshot_.towerDefenseWorldHash =
-            tower_.snapshot().worldHash;
+        snapshot_.towerDefenseWorldHash = tower_.snapshot().worldHash;
         snapshot_.state = state_;
-        snapshot_.availableResources =
-            tower_.resources().available;
+        snapshot_.availableResources = tower_.resources().available;
         snapshot_.waveCompletionResourceBonus =
             modifiers_.resolve(WaveCompletionResourceStat(), 0);
-        snapshot_.gameplayProfile =
-            ResolveGameplayProfile(modifiers_);
+        snapshot_.gameplayProfile = ResolveGameplayProfile(modifiers_);
         snapshot_.modifiers = modifiers_.stacks();
 
         foundation::CanonicalHash hash;
@@ -516,14 +504,18 @@ private:
         hash.WriteI32(snapshot_.gameplayProfile.productionSpeed);
         hash.WriteI32(snapshot_.gameplayProfile.bountyMultiplier);
 
+        const auto commandState = commands_.snapshot();
+        hash.WriteU64(commandState.committedThrough);
+        hash.WriteU32(static_cast<std::uint32_t>(commandState.pending.size()));
+        for (const auto& command : commandState.pending) {
+            hashCommand(hash, command);
+        }
+
         const auto* run = findById(runs_, state_.runId);
         hash.WriteBool(run != nullptr);
         if (run) {
-            hash.WriteU32(
-                static_cast<std::uint32_t>(run->waves.size()));
-            for (const auto waveId : run->waves) {
-                hash.WriteU32(waveId);
-            }
+            hash.WriteU32(static_cast<std::uint32_t>(run->waves.size()));
+            for (const auto waveId : run->waves) hash.WriteU32(waveId);
         }
         modifiers_.appendHash(hash);
         snapshot_.worldHash = hash.Value();

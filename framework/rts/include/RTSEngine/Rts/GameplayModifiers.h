@@ -35,6 +35,11 @@ struct TeamModifierProfile {
                a.productionSpeed == b.productionSpeed &&
                a.bountyMultiplier == b.bountyMultiplier;
     }
+
+    friend bool operator!=(const TeamModifierProfile& a,
+                           const TeamModifierProfile& b) noexcept {
+        return !(a == b);
+    }
 };
 
 struct TeamModifierEntry {

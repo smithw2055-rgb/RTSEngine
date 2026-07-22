@@ -1,6 +1,6 @@
 #pragma once
 
-#include <RTSEngine/Roguelite/RunSimulation.h>
+#include <RTSEngine/Roguelite/RunSimulationArchive.h>
 #include <RTSEngine/Rts/Replay.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
 #include <rts/foundation/Random.h>
@@ -8,12 +8,15 @@
 #include <rts/sim/SessionSchema.h>
 
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 namespace rts::roguelite {
 
 struct RunSaveSchema {
-    static constexpr std::uint16_t kSchemaVersion = 1;
+    static constexpr std::uint16_t kSchemaVersion = 2;
+    static constexpr std::uint32_t kMaximumAuthoritativeStateBytes =
+        512u * 1024u * 1024u;
 
     std::uint64_t tick{};
     std::uint64_t rootSeed{};
@@ -26,6 +29,7 @@ struct RunSaveSchema {
     TickCommandStream::State runCommands;
     tower_defense::TickCommandStream::State towerCommands;
     gameplay::TickCommandStream::State rtsCommands;
+    std::vector<std::uint8_t> authoritativeState;
 };
 
 inline void WriteRunCommand(
@@ -74,7 +78,7 @@ inline bool ReadTowerDefenseCommand(
         !reader.readU8(type) ||
         !reader.readU32(command.objectId) ||
         type > static_cast<std::uint8_t>(
-                   tower_defense::CommandType::ChooseReward)) {
+            tower_defense::CommandType::ChooseReward)) {
         return false;
     }
     command.type = static_cast<tower_defense::CommandType>(type);
@@ -98,15 +102,18 @@ inline void WriteTeamModifierProfile(
 inline bool ReadTeamModifierProfile(
     sim::BinaryReader& reader,
     gameplay::TeamModifierProfile& profile) {
-    return reader.readI32(profile.unitHealth) &&
-           reader.readI32(profile.unitDamage) &&
-           reader.readI32(profile.unitArmorAdd) &&
-           reader.readI32(profile.unitMoveSpeed) &&
-           reader.readI32(profile.buildingHealth) &&
-           reader.readI32(profile.buildingDamage) &&
-           reader.readI32(profile.constructionSpeed) &&
-           reader.readI32(profile.productionSpeed) &&
-           reader.readI32(profile.bountyMultiplier);
+    if (!reader.readI32(profile.unitHealth) ||
+        !reader.readI32(profile.unitDamage) ||
+        !reader.readI32(profile.unitArmorAdd) ||
+        !reader.readI32(profile.unitMoveSpeed) ||
+        !reader.readI32(profile.buildingHealth) ||
+        !reader.readI32(profile.buildingDamage) ||
+        !reader.readI32(profile.constructionSpeed) ||
+        !reader.readI32(profile.productionSpeed) ||
+        !reader.readI32(profile.bountyMultiplier)) {
+        return false;
+    }
+    return gameplay::SanitizeTeamModifierProfile(profile) == profile;
 }
 
 template<class State, class WriteCommand>
@@ -116,9 +123,7 @@ inline void WriteCommandStreamState(
     WriteCommand writeCommand) {
     writer.writeU64(state.committedThrough);
     writer.writeU32(static_cast<std::uint32_t>(state.pending.size()));
-    for (const auto& command : state.pending) {
-        writeCommand(writer, command);
-    }
+    for (const auto& command : state.pending) writeCommand(writer, command);
 }
 
 template<class State, class ReadCommand>
@@ -128,11 +133,9 @@ inline bool ReadCommandStreamState(
     ReadCommand readCommand) {
     std::uint32_t count = 0;
     if (!reader.readU64(state.committedThrough) ||
-        !reader.readU32(count) ||
-        count > sim::kMaximumArchiveEntries) {
+        !reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
         return false;
     }
-    state.pending.clear();
     state.pending.resize(count);
     for (auto& command : state.pending) {
         if (!readCommand(reader, command) ||
@@ -145,6 +148,17 @@ inline bool ReadCommandStreamState(
 
 inline std::vector<std::uint8_t> EncodeRunSave(
     const RunSaveSchema& save) {
+    if (save.modifierStacks.size() > sim::kMaximumArchiveEntries ||
+        save.randomStreams.size() > sim::kMaximumArchiveEntries ||
+        save.checkpoints.size() > sim::kMaximumArchiveEntries ||
+        save.runCommands.pending.size() > sim::kMaximumArchiveEntries ||
+        save.towerCommands.pending.size() > sim::kMaximumArchiveEntries ||
+        save.rtsCommands.pending.size() > sim::kMaximumArchiveEntries ||
+        save.authoritativeState.size() >
+            RunSaveSchema::kMaximumAuthoritativeStateBytes) {
+        return {};
+    }
+
     sim::BinaryWriter writer;
     sim::WriteSessionHeader(
         writer,
@@ -163,31 +177,30 @@ inline std::vector<std::uint8_t> EncodeRunSave(
     writer.writeI32(save.resources.spent);
     WriteTeamModifierProfile(writer, save.gameplayProfile);
 
-    writer.writeU32(static_cast<std::uint32_t>(
-        save.modifierStacks.size()));
+    writer.writeU32(static_cast<std::uint32_t>(save.modifierStacks.size()));
     for (const auto& stack : save.modifierStacks) {
         writer.writeU32(stack.id);
         writer.writeU32(stack.stacks);
     }
 
-    writer.writeU32(static_cast<std::uint32_t>(
-        save.randomStreams.size()));
+    writer.writeU32(static_cast<std::uint32_t>(save.randomStreams.size()));
     for (const auto& state : save.randomStreams) {
         sim::WriteRandomStreamState(writer, state);
     }
 
-    writer.writeU32(static_cast<std::uint32_t>(
-        save.checkpoints.size()));
+    writer.writeU32(static_cast<std::uint32_t>(save.checkpoints.size()));
     for (const auto& checkpoint : save.checkpoints) {
         sim::WriteWorldHashCheckpoint(writer, checkpoint);
     }
 
-    WriteCommandStreamState(
-        writer, save.runCommands, WriteRunCommand);
+    WriteCommandStreamState(writer, save.runCommands, WriteRunCommand);
     WriteCommandStreamState(
         writer, save.towerCommands, WriteTowerDefenseCommand);
     WriteCommandStreamState(
         writer, save.rtsCommands, gameplay::WriteTickCommand);
+
+    writer.writeU32(static_cast<std::uint32_t>(save.authoritativeState.size()));
+    writer.writeBytes(save.authoritativeState);
     return writer.take();
 }
 
@@ -213,6 +226,8 @@ inline bool DecodeRunSave(
         !reader.readI32(save.resources.available) ||
         !reader.readI32(save.resources.reserved) ||
         !reader.readI32(save.resources.spent) ||
+        save.resources.available < 0 || save.resources.reserved < 0 ||
+        save.resources.spent < 0 ||
         !ReadTeamModifierProfile(reader, save.gameplayProfile)) {
         return false;
     }
@@ -222,20 +237,20 @@ inline bool DecodeRunSave(
     if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
         return false;
     }
-    save.modifierStacks.clear();
     save.modifierStacks.resize(count);
+    ModifierId previousModifier = 0;
     for (auto& stack : save.modifierStacks) {
-        if (!reader.readU32(stack.id) ||
-            !reader.readU32(stack.stacks) ||
-            stack.id == 0 || stack.stacks == 0) {
+        if (!reader.readU32(stack.id) || !reader.readU32(stack.stacks) ||
+            stack.id == 0 || stack.stacks == 0 ||
+            stack.id <= previousModifier) {
             return false;
         }
+        previousModifier = stack.id;
     }
 
     if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
         return false;
     }
-    save.randomStreams.clear();
     save.randomStreams.resize(count);
     for (auto& state : save.randomStreams) {
         if (!sim::ReadRandomStreamState(reader, state)) return false;
@@ -244,27 +259,58 @@ inline bool DecodeRunSave(
     if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
         return false;
     }
-    save.checkpoints.clear();
     save.checkpoints.resize(count);
     for (auto& checkpoint : save.checkpoints) {
-        if (!sim::ReadWorldHashCheckpoint(reader, checkpoint)) {
+        if (!sim::ReadWorldHashCheckpoint(reader, checkpoint)) return false;
+    }
+
+    if (!ReadCommandStreamState(reader, save.runCommands, ReadRunCommand) ||
+        !ReadCommandStreamState(
+            reader, save.towerCommands, ReadTowerDefenseCommand) ||
+        !ReadCommandStreamState(
+            reader, save.rtsCommands, gameplay::ReadTickCommand)) {
+        return false;
+    }
+
+    save.authoritativeState.clear();
+    if (header.schemaVersion >= 2) {
+        if (!reader.readU32(count) ||
+            count > RunSaveSchema::kMaximumAuthoritativeStateBytes ||
+            !reader.readBytes(
+                count,
+                save.authoritativeState,
+                RunSaveSchema::kMaximumAuthoritativeStateBytes)) {
             return false;
         }
     }
-
-    if (!ReadCommandStreamState(
-            reader, save.runCommands, ReadRunCommand) ||
-        !ReadCommandStreamState(
-            reader,
-            save.towerCommands,
-            ReadTowerDefenseCommand) ||
-        !ReadCommandStreamState(
-            reader,
-            save.rtsCommands,
-            gameplay::ReadTickCommand)) {
-        return false;
-    }
     return reader.atEnd();
+}
+
+inline RunSaveSchema CaptureRunSave(
+    const RunSimulation& simulation,
+    std::vector<foundation::RandomStreamState> randomStreams = {},
+    std::vector<sim::WorldHashCheckpoint> checkpoints = {}) {
+    RunSaveSchema save;
+    save.tick = simulation.lastTick();
+    save.rootSeed = simulation.rootSeed();
+    save.run = simulation.state();
+    save.resources = simulation.tower().resources();
+    save.gameplayProfile = ResolveGameplayProfile(simulation.modifiers());
+    save.modifierStacks = simulation.modifiers().stacks();
+    save.randomStreams = std::move(randomStreams);
+    save.checkpoints = std::move(checkpoints);
+    save.runCommands = simulation.commandStreamState();
+    save.towerCommands = simulation.tower().commandStreamState();
+    save.rtsCommands = simulation.tower().rts().commandStreamState();
+    save.authoritativeState = EncodeRunSimulation(simulation);
+    return save;
+}
+
+inline bool RestoreRunSave(
+    const RunSaveSchema& save,
+    RunSimulation& simulation) {
+    return !save.authoritativeState.empty() &&
+           DecodeRunSimulation(save.authoritativeState, simulation);
 }
 
 } // namespace rts::roguelite
