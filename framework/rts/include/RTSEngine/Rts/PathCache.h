@@ -96,6 +96,7 @@ public:
         activeWidth_ = 0;
         activeHeight_ = 0;
         activeRevision_ = 0;
+        activeCacheEpoch_ = 0;
         bound_ = false;
         transientResult_ = {};
     }
@@ -151,7 +152,8 @@ private:
         const bool changed = bound_ &&
             (activeGrid_ != &grid || activeWidth_ != grid.width() ||
              activeHeight_ != grid.height() ||
-             activeRevision_ != grid.revision());
+             activeRevision_ != grid.revision() ||
+             activeCacheEpoch_ != grid.cacheEpoch());
         if (changed) {
             entries_.clear();
             pointCount_ = 0;
@@ -162,6 +164,7 @@ private:
             activeWidth_ = grid.width();
             activeHeight_ = grid.height();
             activeRevision_ = grid.revision();
+            activeCacheEpoch_ = grid.cacheEpoch();
             bound_ = true;
         }
     }
@@ -208,6 +211,7 @@ private:
     std::int32_t activeWidth_{};
     std::int32_t activeHeight_{};
     std::uint64_t activeRevision_{};
+    std::uint64_t activeCacheEpoch_{};
     std::uint64_t accessSerial_{};
     std::uint64_t insertionSerial_{};
     std::size_t pointCount_{};
