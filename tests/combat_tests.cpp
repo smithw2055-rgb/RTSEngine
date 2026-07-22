@@ -1,6 +1,7 @@
 #include <RTSEngine/Ecs/EntityCommandBuffer.h>
 #include <RTSEngine/Rts/Combat.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/SpatialIndex.h>
 
 #include <cassert>
 #include <cstdint>
@@ -84,6 +85,95 @@ void testStableTargetTieBreak() {
     assert(target && target->entity == first);
 }
 
+void testFixedGridSpatialIndex() {
+    gameplay::FixedGridSpatialIndex index(64, 64, 4);
+    std::vector<ecs::Entity> result;
+
+    assert(!index.insert({}, 1, 1));
+    assert(!index.insert({1, 1}, -1, 1));
+    assert(index.insert({5, 1}, 8, 8));
+    assert(index.insert({3, 1}, 6, 4));
+    assert(index.insert({1, 1}, 1, 1));
+    assert(index.insert({4, 1}, 4, 7));
+    assert(index.insert({2, 1}, 4, 4));
+    index.finalize();
+
+    index.queryManhattan(4, 4, 2, result);
+    assert(result.size() == 2);
+    assert((result[0] == ecs::Entity{2, 1}));
+    assert((result[1] == ecs::Entity{3, 1}));
+
+    auto populate = [&index]() {
+        index.clear();
+        for (std::uint32_t value = 1; value <= 1024; ++value) {
+            const auto x = static_cast<std::int32_t>((value * 17u) % 64u);
+            const auto y = static_cast<std::int32_t>((value * 29u) % 64u);
+            assert(index.insert({value, 1}, x, y));
+        }
+        index.finalize();
+    };
+
+    populate();
+    index.queryManhattan(32, 32, 128, result);
+    assert(index.entryCount() == 1024);
+    assert(result.size() == 1024);
+    const auto bucketCapacity = index.totalBucketCapacity();
+    const auto resultCapacity = result.capacity();
+
+    for (std::uint32_t iteration = 0; iteration < 128; ++iteration) {
+        populate();
+        index.queryManhattan(
+            static_cast<std::int32_t>(iteration % 64u),
+            static_cast<std::int32_t>((iteration * 13u) % 64u),
+            128,
+            result);
+        assert(index.entryCount() == 1024);
+        assert(result.size() == 1024);
+        assert(index.totalBucketCapacity() == bucketCapacity);
+        assert(result.capacity() == resultCapacity);
+        assert((result.front() == ecs::Entity{1, 1}));
+        assert((result.back() == ecs::Entity{1024, 1}));
+    }
+}
+
+void testCombatSpatialCapacityStable() {
+    ecs::World world;
+    ecs::EntityCommandBuffer commands;
+    gameplay::CombatRuntime combat(64, 64);
+
+    const auto attacker = world.create();
+    world.emplace<Position>(attacker, Position{32, 32});
+    world.emplace<gameplay::Team>(attacker, gameplay::Team{1});
+    world.emplace<gameplay::Health>(attacker, gameplay::Health{100, 100});
+    world.emplace<gameplay::Weapon>(attacker, gameplay::Weapon{0, 32, 1, 0});
+    world.emplace<gameplay::CombatTarget>(attacker, gameplay::CombatTarget{});
+
+    for (std::uint32_t value = 0; value < 255; ++value) {
+        const auto enemy = world.create();
+        const auto x = static_cast<std::int32_t>((value * 11u) % 64u);
+        const auto y = static_cast<std::int32_t>((value * 23u) % 64u);
+        world.emplace<Position>(enemy, Position{x, y});
+        world.emplace<gameplay::Team>(enemy, gameplay::Team{2});
+        world.emplace<gameplay::Health>(enemy, gameplay::Health{10, 10});
+    }
+
+    combat.advance<Position>({0, 0, ecs::Stage::Combat}, commands, world);
+    assert(combat.spatialIndex().entryCount() == 256);
+    const auto capacity = combat.spatialIndex().totalBucketCapacity();
+    const auto* target = world.try_get<gameplay::CombatTarget>(attacker);
+    assert(target && target->entity.valid());
+    const auto selected = target->entity;
+
+    for (std::uint64_t tick = 1; tick <= 64; ++tick) {
+        combat.advance<Position>(
+            {tick, 0, ecs::Stage::Combat}, commands, world);
+        assert(combat.spatialIndex().entryCount() == 256);
+        assert(combat.spatialIndex().totalBucketCapacity() == capacity);
+        target = world.try_get<gameplay::CombatTarget>(attacker);
+        assert(target && target->entity == selected);
+    }
+}
+
 void testDeathCallbackReleasesBlocker() {
     ecs::World world;
     ecs::EntityCommandBuffer commands;
@@ -134,6 +224,8 @@ int main() {
     assert(first[2] == 0); // the second stable volley kills the defender
 
     testStableTargetTieBreak();
+    testFixedGridSpatialIndex();
+    testCombatSpatialCapacityStable();
     testDeathCallbackReleasesBlocker();
     std::cout << "combat tests passed\n";
     return 0;
