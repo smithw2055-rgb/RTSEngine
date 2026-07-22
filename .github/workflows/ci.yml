@@ -30,12 +30,3 @@ jobs:
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
-      - name: Capture test diagnostics
-        if: failure() && runner.os == 'Linux'
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure > test-diagnostics.log 2>&1 || true
-      - name: Upload test diagnostics
-        if: failure() && runner.os == 'Linux'
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-diagnostics-${{ matrix.build_type }}
-          path: test-diagnostics.log
