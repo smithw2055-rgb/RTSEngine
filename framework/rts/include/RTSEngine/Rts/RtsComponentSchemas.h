@@ -164,7 +164,7 @@ inline bool RegisterRtsComponentSchemas(
         }) && ok;
 
     ok = schemas.registerSchema<MovementAgent>(
-        0x52545304u, 1u, "rts.MovementAgent",
+        0x52545304u, 2u, "rts.MovementAgent",
         [](foundation::BinaryWriter& writer, const MovementAgent& value) {
             writer.writeU32(static_cast<std::uint32_t>(value.path.size()));
             for (const auto point : value.path) WriteGridPoint(writer, point);
@@ -175,13 +175,16 @@ inline bool RegisterRtsComponentSchemas(
             writer.writeBool(value.combatPath);
             WriteEntity(writer, value.chaseTarget);
             WriteGridPoint(writer, value.chaseTargetPosition);
+            writer.writeU32(value.blockedTicks);
+            writer.writeU32(value.yieldOrdinal);
         },
         [](foundation::BinaryReader& reader,
            ecs::ComponentSchemaVersion version,
            MovementAgent& value) {
             std::uint32_t count = 0;
             std::uint64_t nextPoint = 0;
-            if (version != 1u || !reader.readU32(count) ||
+            if ((version != 1u && version != 2u) ||
+                !reader.readU32(count) ||
                 count > kMaximumPersistentVectorEntries) {
                 return false;
             }
@@ -202,6 +205,13 @@ inline bool RegisterRtsComponentSchemas(
                 return false;
             }
             value.nextPoint = static_cast<std::size_t>(nextPoint);
+            value.blockedTicks = 0;
+            value.yieldOrdinal = 0;
+            if (version == 2u &&
+                (!reader.readU32(value.blockedTicks) ||
+                 !reader.readU32(value.yieldOrdinal))) {
+                return false;
+            }
             return true;
         },
         [](foundation::CanonicalHash& hash, const MovementAgent& value) {
@@ -214,6 +224,8 @@ inline bool RegisterRtsComponentSchemas(
             hash.WriteBool(value.combatPath);
             HashEntity(hash, value.chaseTarget);
             HashGridPoint(hash, value.chaseTargetPosition);
+            hash.WriteU32(value.blockedTicks);
+            hash.WriteU32(value.yieldOrdinal);
         }) && ok;
 
     ok = schemas.registerSchema<Team>(
