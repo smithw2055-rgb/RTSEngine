@@ -2,13 +2,14 @@
 
 ## Scope
 
-RTSEngine separates three persistence contracts:
+RTSEngine separates four persistence contracts:
 
 1. **Replay archives** reconstruct an authoritative session from an ordered command log and verify deterministic world-hash checkpoints.
 2. **Run save archives** persist the outer roguelite progression contract: run state, modifier stacks, resources, gameplay modifier profile, named RNG stream states, hash checkpoints, and pending command streams for the Roguelite, TowerDefense, and RTS layers.
-3. **ECS world archives** persist validated entity-registry state and schema-driven component pools as the foundation for direct mid-wave restoration.
+3. **ECS world archives** persist validated entity-registry state and schema-driven component pools.
+4. **RTS simulation archives** compose the ECS world with navigation, economy, command-stream, modifier, route, identifier, content-compatibility, and completed-Tick state for direct authoritative resume.
 
-The current `RunSaveSchema` does not yet embed the ECS world archive. Direct mid-wave resume still requires navigation and framework-internal state plus registration of the authoritative RTS component schemas.
+The current `RunSaveSchema` does not yet embed the RTS simulation archive. Direct roguelite mid-wave resume still requires TowerDefense and `WaveDirector` state to be composed above the completed RTS restoration contract.
 
 ## Canonical binary format
 
@@ -55,6 +56,18 @@ Registration rejects zero IDs, zero versions, duplicate IDs, duplicate C++ compo
 
 Load callbacks receive the stored schema version and must explicitly migrate supported historical payloads into the current canonical component representation. Payload readers are bounded and must consume the complete record; truncated and trailing payload bytes are rejected.
 
+`RegisterRtsComponentSchemas` assigns stable version-1 schemas to the authoritative RTS component set:
+
+```text
+Position, MoveSpeed, OrderQueue, MovementAgent
+Team, TunableStats, Health, Armor, Weapon
+CombatTarget, CombatDirective, Bounty
+BuildingFootprint, ConstructionSite, Building
+ProductionQueue, RallyPoint
+```
+
+Nested orders, paths, combat profiles, entity references, construction records, and production items are serialized field by field with bounded vector counts and validated enum values.
+
 ## Entity registry state
 
 `EntityRegistryState` stores:
@@ -99,6 +112,43 @@ The schema registry must be frozen before writing or reading. Every non-empty co
 Pool and entity records are emitted in canonical order, independent of component insertion order and sparse-set swap-removal history. A reader rejects duplicate or out-of-order pool IDs, duplicate or out-of-order entities, dead or stale entity handles, unknown schemas, unsupported component versions, excessive counts, truncated payloads, and unconsumed bytes.
 
 World restoration is transactional. The reader constructs and validates a staging `World`, restores its entity registry, creates typed pools through the schema registry, and only move-replaces the destination world after the entire archive has been consumed successfully. Corrupt input therefore cannot partially overwrite the running world.
+
+## RTS simulation archive
+
+`RtsSimulationArchive` version 1 stores:
+
+```text
+RTS archive magic and version
+canonical content-definition hash
+length-delimited ECS WorldArchive
+NavigationGrid state
+ResourceLedger
+ordered TeamModifierProfile entries
+pending TickCommand stream and committed boundary
+required route start and goal
+next ConstructionId and ProductionId
+player team ID
+last completed Tick and stepped flag
+world-hash checkpoint at the save boundary
+```
+
+The navigation state includes dimensions, every blocker cell, and the exact navigation revision. Restores into a simulation with different dimensions are rejected because combat spatial indexing and map-sized runtime services were constructed for the original dimensions.
+
+The content hash covers every registered building and unit definition field, including combat statistics. A destination must register identical content before decoding; changed costs, durations, dimensions, movement rates, or combat profiles reject the save before mutable state is replaced.
+
+Restore validation checks:
+
+- nonnegative resource buckets and exact reserved-cost agreement with active construction and production queues
+- construction and production counters are not behind IDs still present in the world
+- every building footprint is in bounds and represented by navigation blockers
+- queued order targets and active movement paths stay inside the restored grid
+- command-stream committed boundaries agree with the last completed Tick
+- the reconstructed snapshot produces the world hash stored at the save boundary
+- re-encoding the restored ECS world produces exactly the canonical bytes stored in the archive
+
+The decoder stages the world, navigation, resources, modifiers, command stream, counters, and snapshot independently. It updates the destination `RtsSimulation` only after the entire archive and all cross-system invariants pass. Runtime-only events, active command views, combat scratch data, spatial buckets, and structural-command queues are cleared or rebuilt rather than serialized.
+
+The regression scenario saves while movement, pending future commands, an active production queue, modifiers, dynamic blockers, combat-capable units, and identifier counters are live. It then verifies that uninterrupted execution and save -> restore -> continue produce identical world hashes, resources, navigation revisions, construction IDs, and production IDs on every subsequent Tick.
 
 ## RTS replay archive
 
@@ -154,11 +204,10 @@ A named random stream persists its stream ID, algorithm state, and odd PCG incre
 The next persistence milestone will add:
 
 ```text
-stable schemas for authoritative RTS components
-navigation-grid dimensions, blockers, route constraints, and revision
-RtsSimulation world archive composition
-construction and production identifier continuity
-save -> restore -> continue world-hash equivalence
+WaveDirector state and wave-plan continuity
+TowerDefense framework state and pending commands
+embedding RtsSimulationArchive into RunSaveSchema
+full roguelite mid-wave save -> restore -> continue equivalence
 ```
 
-`WaveDirector` internals and embedding the completed world archive into `RunSaveSchema` follow after the RTS-layer restoration contract is stable.
+After the framework composition is complete, fuzzing, recovery slots, and user-safe atomic save replacement move into product-hardening work.
