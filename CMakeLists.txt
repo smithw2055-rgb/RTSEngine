@@ -13,10 +13,12 @@ add_subdirectory(engine/sim)
 add_subdirectory(engine/ecs)
 add_subdirectory(framework/rts)
 add_subdirectory(framework/tower_defense)
+add_subdirectory(framework/roguelite)
 
 if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/headless_demo)
     add_subdirectory(apps/tower_defense_demo)
+    add_subdirectory(apps/roguelite_demo)
 endif()
 
 if(RTSENGINE_BUILD_TESTS)
