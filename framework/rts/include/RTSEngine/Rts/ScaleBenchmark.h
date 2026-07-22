@@ -97,7 +97,7 @@ inline ScaleRegressionBudget MakeScaleRegressionBudget(
     budget.maximumPathSearches = std::max<std::uint64_t>(
         8u, static_cast<std::uint64_t>(agents) / 100u);
     budget.maximumExpandedNodes =
-        static_cast<std::uint64_t>(agents) * 4u;
+        static_cast<std::uint64_t>(agents) * 8u;
     budget.maximumPeakMovementIntents = agents;
     budget.minimumFlowAssignments = agents;
     return budget;
