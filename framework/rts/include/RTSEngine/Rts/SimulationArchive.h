@@ -4,6 +4,7 @@
 #include <RTSEngine/Rts/Replay.h>
 #include <RTSEngine/Rts/RtsComponentSchemas.h>
 #include <RTSEngine/Rts/Simulation.h>
+#include <RTSEngine/Rts/VisionComponentSchema.h>
 #include <rts/foundation/CanonicalHash.h>
 #include <rts/sim/SessionSchema.h>
 
@@ -18,7 +19,8 @@ namespace rts::gameplay {
 class RtsSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31535452u; // "RTS1"
-    static constexpr std::uint16_t kVersion = 1u;
+    static constexpr std::uint16_t kVersion = 2u;
+    static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumWorldBytes = 128u * 1024u * 1024u;
     static constexpr std::uint32_t kMaximumModifierEntries = 4096u;
 
@@ -27,7 +29,7 @@ public:
         if (!simulation.structuralCommands_.empty()) return {};
 
         ecs::ComponentSchemaRegistry schemas;
-        if (!RegisterRtsComponentSchemas(schemas)) return {};
+        if (!registerSchemas(schemas)) return {};
 
         foundation::BinaryWriter worldWriter;
         if (!ecs::WorldArchive::write(worldWriter, simulation.world_, schemas) ||
@@ -44,10 +46,13 @@ public:
         foundation::BinaryWriter writer;
         writer.writeU32(kMagic);
         writer.writeU16(kVersion);
-        writer.writeU64(contentHash(simulation));
+        writer.writeU64(contentHash(simulation, kVersion));
         writer.writeU32(static_cast<std::uint32_t>(worldWriter.bytes().size()));
         writer.writeBytes(worldWriter.bytes());
-        if (!simulation.navigation_.writeState(writer)) return {};
+        if (!simulation.navigation_.writeState(writer) ||
+            !simulation.vision_.writeExploredState(writer)) {
+            return {};
+        }
 
         writer.writeI32(simulation.resources_.available);
         writer.writeI32(simulation.resources_.reserved);
@@ -87,8 +92,8 @@ public:
         std::uint64_t storedContentHash = 0;
         if (!reader.readU32(magic) || !reader.readU16(version) ||
             !reader.readU64(storedContentHash) || magic != kMagic ||
-            version != kVersion ||
-            storedContentHash != contentHash(simulation)) {
+            version < kMinimumVersion || version > kVersion ||
+            storedContentHash != contentHash(simulation, version)) {
             return false;
         }
 
@@ -101,7 +106,7 @@ public:
         }
 
         ecs::ComponentSchemaRegistry schemas;
-        if (!RegisterRtsComponentSchemas(schemas)) return false;
+        if (!registerSchemas(schemas)) return false;
         ecs::World worldCandidate;
         foundation::BinaryReader worldReader(worldBytes);
         if (!ecs::WorldArchive::read(worldReader, schemas, worldCandidate)) {
@@ -116,6 +121,17 @@ public:
         }
         NavigationGrid navigationCandidate;
         if (!navigationCandidate.restore(std::move(navigationState))) {
+            return false;
+        }
+
+        VisionRuntime visionCandidate(
+            navigationCandidate.width(), navigationCandidate.height());
+        if (version >= 2u &&
+            !VisionRuntime::readExploredState(
+                reader,
+                navigationCandidate.width(),
+                navigationCandidate.height(),
+                visionCandidate)) {
             return false;
         }
 
@@ -216,6 +232,8 @@ public:
             return false;
         }
 
+        VisionSystem::run(
+            worldCandidate, navigationCandidate, visionCandidate);
         WorldSnapshot snapshotCandidate;
         if (hasStepped) {
             SnapshotBuilder::build(
@@ -225,12 +243,14 @@ public:
                  modifiersCandidate,
                  navigationCandidate,
                  commandCandidate,
-                 snapshotCandidate});
+                 snapshotCandidate,
+                 version >= 2u ? &visionCandidate : nullptr});
             if (snapshotCandidate.worldHash != storedWorldHash) return false;
         }
 
         simulation.world_ = std::move(worldCandidate);
         simulation.navigation_ = std::move(navigationCandidate);
+        simulation.vision_ = std::move(visionCandidate);
         simulation.resources_ = resources;
         simulation.modifiers_ = std::move(modifiersCandidate);
         simulation.commands_ = std::move(commandCandidate);
@@ -250,6 +270,11 @@ public:
     }
 
 private:
+    static bool registerSchemas(ecs::ComponentSchemaRegistry& schemas) {
+        return RegisterVisionComponentSchema(schemas) &&
+               RegisterRtsComponentSchemas(schemas);
+    }
+
     static void writeGridPoint(
         foundation::BinaryWriter& writer,
         GridPoint point) {
@@ -306,7 +331,8 @@ private:
     }
 
     static std::uint64_t contentHash(
-        const RtsSimulation& simulation) {
+        const RtsSimulation& simulation,
+        std::uint16_t version) {
         foundation::CanonicalHash hash;
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.buildingDefinitions_.values().size()));
@@ -319,6 +345,7 @@ private:
             hash.WriteI32(definition.height);
             hash.WriteBool(definition.producer);
             hashCombatStats(hash, definition.combat);
+            if (version >= 2u) hash.WriteI32(definition.visionRange);
         }
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.unitDefinitions_.values().size()));
@@ -328,6 +355,7 @@ private:
             hash.WriteU32(definition.trainTicks);
             hash.WriteI32(definition.cellsPerTick);
             hashCombatStats(hash, definition.combat);
+            if (version >= 2u) hash.WriteI32(definition.visionRange);
         }
         return hash.Value();
     }
