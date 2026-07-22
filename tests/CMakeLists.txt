@@ -14,6 +14,10 @@ add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
 
+add_executable(rts_navigation_workspace_tests navigation_workspace_tests.cpp)
+target_link_libraries(rts_navigation_workspace_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_navigation_workspace_tests COMMAND rts_navigation_workspace_tests)
+
 add_executable(rts_simulation_persistence_tests rts_simulation_persistence_tests.cpp)
 target_link_libraries(rts_simulation_persistence_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_persistence_tests COMMAND rts_simulation_persistence_tests)
