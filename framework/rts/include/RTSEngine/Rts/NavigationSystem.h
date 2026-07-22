@@ -9,6 +9,7 @@
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/OrderSystem.h>
 #include <RTSEngine/Rts/PathCache.h>
+#include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 
 #include <algorithm>
@@ -22,6 +23,7 @@ struct NavigationSystemDependencies {
     GridPathCache& pathCache;
     GridPathfinderScratch& pathScratch;
     GridFlowFieldCache& flowFields;
+    RuntimeTelemetry& telemetry;
     ecs::EntityCommandBuffer& structuralCommands;
     GameplayModifierSystem& modifiers;
     const DefinitionCatalog<BuildingDefinition>& buildingDefinitions;
@@ -81,7 +83,13 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         NavigationSystemDependencies dependencies) {
+        dependencies.telemetry.beginNavigationTick(context.tick);
         prepareFlowDemands(world, dependencies);
+        for (const auto& demand : dependencies.flowFields.demands()) {
+            dependencies.telemetry.recordDemandGroup(
+                demand.count,
+                demand.count >= kFlowFieldThreshold);
+        }
 
         for (const auto entity :
              world.view<Position, OrderQueue, MovementAgent>()) {
@@ -162,6 +170,8 @@ public:
                     continue;
                 }
                 assignExtractedPath(*agent, goal, false);
+                dependencies.telemetry.recordFlowAssignment(
+                    agent->path.size());
             } else {
                 const auto& path = dependencies.pathCache.resolve(
                     dependencies.navigation,
@@ -174,6 +184,8 @@ public:
                     continue;
                 }
                 assignPath(*agent, path, goal, false);
+                dependencies.telemetry.recordPathCacheAssignment(
+                    path.points.size());
             }
 
             dependencies.events.push_back(
@@ -197,7 +209,10 @@ private:
             const auto* agent = world.try_get<MovementAgent>(entity);
             const auto* directive =
                 world.try_get<CombatDirective>(entity);
-            if (!position || !queue || !agent || queue->pending.empty() ||
+            if (!position || !queue || !agent) continue;
+
+            dependencies.telemetry.recordNavigationAgent();
+            if (queue->pending.empty() ||
                 (directive &&
                  directive->mode == CombatMode::AttackTarget)) {
                 continue;
@@ -210,6 +225,7 @@ private:
                 continue;
             }
             dependencies.flowFields.addDemand(goal);
+            dependencies.telemetry.recordPathRequest();
         }
     }
 
@@ -233,6 +249,7 @@ private:
         if (!queue.pending.empty()) queue.pending.erase(queue.pending.begin());
         OrderSystem::clearPath(agent);
         OrderSystem::applyFrontOrderMode(world, entity, queue);
+        dependencies.telemetry.recordPathFailure();
         dependencies.events.push_back(
             {context.tick,
              DomainEventType::PathFailed,
@@ -306,6 +323,7 @@ private:
             targetChanged;
         if (!needsPath) return;
 
+        dependencies.telemetry.recordPathRequest();
         const auto* path = findAttackPath(
             dependencies.navigation,
             start,
@@ -319,6 +337,7 @@ private:
             directive.forcedTarget = {};
             target->entity = {};
             OrderSystem::clearPath(agent);
+            dependencies.telemetry.recordPathFailure();
             dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::PathFailed,
@@ -336,6 +355,8 @@ private:
         assignPath(agent, *path, goal, true);
         agent.chaseTarget = directive.forcedTarget;
         agent.chaseTargetPosition = targetPoint;
+        dependencies.telemetry.recordAttackAssignment(
+            path->points.size());
         dependencies.events.push_back(
             {context.tick,
              DomainEventType::PathReady,
