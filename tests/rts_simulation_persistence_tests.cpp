@@ -57,6 +57,67 @@ TickCommand command(
     return value;
 }
 
+int testContentionPersistence() {
+    RtsSimulation original(5, 3);
+    registerContent(original);
+    const auto upper = original.createUnit({0, 0}, {1});
+    const auto lower = original.createUnit({0, 2}, {1});
+
+    auto upperMove = command(0, 1, CommandType::Move);
+    upperMove.subject = upper;
+    upperMove.targetX = 2;
+    upperMove.targetY = 1;
+    CHECK(original.submit(upperMove));
+
+    auto lowerMove = command(0, 2, CommandType::Move);
+    lowerMove.subject = lower;
+    lowerMove.targetX = 2;
+    lowerMove.targetY = 1;
+    CHECK(original.submit(lowerMove));
+
+    original.step(0);
+    original.step(1);
+    original.step(2);
+
+    const auto blocked = std::find_if(
+        original.snapshot().entities.begin(),
+        original.snapshot().entities.end(),
+        [](const SnapshotEntity& entity) {
+            return entity.kind == SnapshotKind::Unit &&
+                   entity.movementBlockedTicks > 0;
+        });
+    CHECK(blocked != original.snapshot().entities.end());
+    CHECK(blocked->movementBlockedTicks == 1u);
+
+    const auto archive = EncodeRtsSimulation(original);
+    CHECK(!archive.empty());
+
+    RtsSimulation restored(5, 3);
+    registerContent(restored);
+    CHECK(DecodeRtsSimulation(archive, restored));
+    CHECK(restored.snapshot().worldHash == original.snapshot().worldHash);
+    CHECK(restored.snapshot().entities.size() == original.snapshot().entities.size());
+    CHECK(EncodeRtsSimulation(restored) == archive);
+
+    const auto restoredBlocked = std::find_if(
+        restored.snapshot().entities.begin(),
+        restored.snapshot().entities.end(),
+        [](const SnapshotEntity& entity) {
+            return entity.kind == SnapshotKind::Unit &&
+                   entity.movementBlockedTicks > 0;
+        });
+    CHECK(restoredBlocked != restored.snapshot().entities.end());
+    CHECK(restoredBlocked->entity == blocked->entity);
+    CHECK(restoredBlocked->movementBlockedTicks == blocked->movementBlockedTicks);
+
+    for (std::uint64_t tick = 3; tick <= 8; ++tick) {
+        original.step(tick);
+        restored.step(tick);
+        CHECK(restored.snapshot().worldHash == original.snapshot().worldHash);
+    }
+    return EXIT_SUCCESS;
+}
+
 } // namespace
 
 int main() {
@@ -191,6 +252,8 @@ int main() {
     RtsSimulation wrongDimensions(15, 10);
     registerContent(wrongDimensions);
     CHECK(!DecodeRtsSimulation(archive, wrongDimensions));
+
+    CHECK(testContentionPersistence() == EXIT_SUCCESS);
 
     std::cout << "rts simulation persistence tests passed\n";
     return EXIT_SUCCESS;
