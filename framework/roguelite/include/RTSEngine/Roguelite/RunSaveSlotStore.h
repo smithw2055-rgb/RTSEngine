@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Roguelite/RunSaveEnvelope.h>
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
