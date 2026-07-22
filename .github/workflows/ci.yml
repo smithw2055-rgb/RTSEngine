@@ -18,46 +18,17 @@ jobs:
           fetch-depth: 0
       - name: Apply refactor
         run: python3 .refactor/apply_next_slice.py
-      - name: Restore permanent workflow files
-        shell: bash
-        run: |
-          rm -rf .refactor
-          rm -f .github/workflows/apply-next-slice.yml
-          cat > .github/workflows/ci.yml <<'YAML'
-          name: CI
-
-          on:
-            push:
-            pull_request:
-
-          jobs:
-            build-and-test:
-              strategy:
-                matrix:
-                  os: [ubuntu-latest, windows-latest]
-                  build_type: [Debug, Release]
-              runs-on: ${{ matrix.os }}
-
-              steps:
-                - uses: actions/checkout@v4
-                - name: Configure
-                  run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
-                - name: Build
-                  run: cmake --build build --config ${{ matrix.build_type }} --parallel
-                - name: Test
-                  run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
-          YAML
       - name: Configure refactored tree
         run: cmake -S . -B build-refactor -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build refactored tree
         run: cmake --build build-refactor --parallel
       - name: Test refactored tree
         run: ctest --test-dir build-refactor --output-on-failure
-      - name: Commit refactored tree
+      - name: Commit source and tests only
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "4189826+github-actions[bot]@users.noreply.github.com"
-          git add -A
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add engine framework tests apps CMakeLists.txt
           git commit -m "refactor(rts): extract contracts and apply gameplay modifiers"
           git push origin HEAD:agent/foundation-architecture
 
