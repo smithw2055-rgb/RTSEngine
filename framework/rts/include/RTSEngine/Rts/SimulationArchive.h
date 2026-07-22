@@ -206,7 +206,8 @@ public:
             (!hasStepped &&
              (lastCompletedTick != 0 ||
               commandCandidate.committedThrough() != 0 ||
-              storedWorldHash != 0))) {
+              storedWorldHash != 0 ||
+              visionCandidate.layerCount() != 0u))) {
             return false;
         }
 
@@ -232,10 +233,10 @@ public:
             return false;
         }
 
-        VisionSystem::run(
-            worldCandidate, navigationCandidate, visionCandidate);
         WorldSnapshot snapshotCandidate;
         if (hasStepped) {
+            VisionSystem::run(
+                worldCandidate, navigationCandidate, visionCandidate);
             SnapshotBuilder::build(
                 worldCandidate,
                 lastCompletedTick,
