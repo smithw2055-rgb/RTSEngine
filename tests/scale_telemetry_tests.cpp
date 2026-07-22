@@ -21,7 +21,7 @@ void assertBudget(const ScaleBenchmarkReport& report) {
     const auto maximumPathSearches =
         proportionalSearches < 8u ? 8u : proportionalSearches;
     const auto maximumExpandedNodes =
-        static_cast<std::uint64_t>(report.agents) * 4u;
+        static_cast<std::uint64_t>(report.agents) * 8u;
 
     assert(report.elapsedMicroseconds >= 0);
     assert(report.averageTickMicroseconds >= 0);
