@@ -16,8 +16,8 @@ namespace rts::gameplay {
 struct MovementSystemDependencies {
     const NavigationGrid& navigation;
     MovementReservationRuntime& reservations;
-    RuntimeTelemetry& telemetry;
     std::vector<DomainEvent>& events;
+    RuntimeTelemetry* telemetry{};
 };
 
 class MovementSystem final {
@@ -29,27 +29,31 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         MovementSystemDependencies dependencies) {
-        dependencies.telemetry.beginMovementTick(context.tick);
+        RuntimeTelemetry localTelemetry;
+        if (!dependencies.telemetry) {
+            dependencies.telemetry = &localTelemetry;
+        }
+        dependencies.telemetry->beginMovementTick(context.tick);
         std::int32_t maximumSteps = 0;
         for (const auto entity :
              world.view<Position, MoveSpeed, OrderQueue, MovementAgent>()) {
             const auto* speed = world.try_get<MoveSpeed>(entity);
             const auto* agent = world.try_get<MovementAgent>(entity);
             if (!speed || !agent || agent->path.empty()) continue;
-            dependencies.telemetry.recordMovementAgent();
+            dependencies.telemetry->recordMovementAgent();
             maximumSteps = std::max(
                 maximumSteps,
                 std::max<std::int32_t>(1, speed->cellsPerTick));
         }
 
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
-            dependencies.telemetry.recordMovementSubstep();
+            dependencies.telemetry->recordMovementSubstep();
             runSubstep(world, context, step, dependencies);
         }
         completePaths(
             world,
             context,
-            dependencies.telemetry,
+            *dependencies.telemetry,
             dependencies.events);
     }
 
@@ -75,7 +79,8 @@ private:
         std::int32_t step,
         MovementSystemDependencies dependencies) {
         auto& reservations = dependencies.reservations;
-        rebuildOccupancy(world, reservations, dependencies.telemetry);
+        rebuildOccupancy(
+            world, reservations, *dependencies.telemetry);
         reservations.beginIntents();
 
         for (const auto entity :
@@ -95,7 +100,7 @@ private:
                 dependencies.navigation.blocked(destination)) {
                 clearPathForReplan(*agent);
                 agent->blockedTicks = 0;
-                dependencies.telemetry.recordBlockedSignal();
+                dependencies.telemetry->recordBlockedSignal();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveBlocked,
@@ -131,7 +136,7 @@ private:
             ++agent->nextPoint;
             agent->blockedTicks = 0;
         }
-        dependencies.telemetry.recordReservationBatch(
+        dependencies.telemetry->recordReservationBatch(
             static_cast<std::uint32_t>(reservations.intentCount()),
             accepted,
             static_cast<std::uint32_t>(reservations.rejected().size()));
@@ -147,7 +152,7 @@ private:
             if (agent->blockedTicks == 1u ||
                 agent->blockedTicks == kYieldThreshold ||
                 agent->blockedTicks == kRepathThreshold) {
-                dependencies.telemetry.recordBlockedSignal();
+                dependencies.telemetry->recordBlockedSignal();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveBlocked,
@@ -159,7 +164,8 @@ private:
             }
         }
 
-        rebuildOccupancy(world, reservations, dependencies.telemetry);
+        rebuildOccupancy(
+            world, reservations, *dependencies.telemetry);
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
@@ -175,7 +181,7 @@ private:
                     *agent,
                     dependencies.navigation,
                     reservations)) {
-                dependencies.telemetry.recordYieldedMove();
+                dependencies.telemetry->recordYieldedMove();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveYielded,
@@ -194,7 +200,7 @@ private:
                     std::numeric_limits<std::uint32_t>::max()) {
                     ++agent->yieldOrdinal;
                 }
-                dependencies.telemetry.recordRepathRecovery();
+                dependencies.telemetry->recordRepathRecovery();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveYielded,
