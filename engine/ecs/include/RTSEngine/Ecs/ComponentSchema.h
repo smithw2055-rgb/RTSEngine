@@ -1,5 +1,6 @@
 #pragma once
 
+#include <RTSEngine/Ecs/ComponentPool.h>
 #include <rts/foundation/BinaryArchive.h>
 #include <rts/foundation/CanonicalHash.h>
 
@@ -9,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
@@ -36,8 +38,13 @@ class ComponentSchemaRegistry final {
         virtual bool readPayload(foundation::BinaryReader& reader,
                                  ComponentSchemaVersion storedVersion,
                                  void* value) const = 0;
+        virtual bool readIntoPool(foundation::BinaryReader& reader,
+                                  ComponentSchemaVersion storedVersion,
+                                  Entity entity,
+                                  IComponentPool& pool) const = 0;
         virtual void hashValue(foundation::CanonicalHash& hash,
                                const void* value) const = 0;
+        virtual std::unique_ptr<IComponentPool> createPool() const = 0;
 
         ComponentSchemaDescriptor descriptor;
         std::type_index cppType;
@@ -65,9 +72,29 @@ class ComponentSchemaRegistry final {
             return load(reader, storedVersion, *static_cast<T*>(value));
         }
 
+        bool readIntoPool(foundation::BinaryReader& reader,
+                          ComponentSchemaVersion storedVersion,
+                          Entity entity,
+                          IComponentPool& componentPool) const override {
+            auto* typedPool = dynamic_cast<ComponentPoolModel<T>*>(&componentPool);
+            if (!typedPool) {
+                return false;
+            }
+            T value{};
+            if (!load(reader, storedVersion, value)) {
+                return false;
+            }
+            typedPool->pool.emplace(entity, std::move(value));
+            return true;
+        }
+
         void hashValue(foundation::CanonicalHash& writer,
                        const void* value) const override {
             hash(writer, *static_cast<const T*>(value));
+        }
+
+        std::unique_ptr<IComponentPool> createPool() const override {
+            return std::make_unique<ComponentPoolModel<T>>();
         }
 
         Save save;
@@ -85,6 +112,13 @@ public:
                         Save&& save,
                         Load&& load,
                         Hash&& hash) {
+        static_assert(std::is_default_constructible<T>::value,
+                      "Persistent components must be default constructible");
+        static_assert(std::is_move_constructible<T>::value,
+                      "Persistent components must be move constructible");
+        static_assert(std::is_move_assignable<T>::value,
+                      "Persistent components must be move assignable");
+
         const auto cppType = std::type_index(typeid(T));
         if (frozen_ || typeId == 0 || version == 0 || name.empty() ||
             entriesById_.find(typeId) != entriesById_.end() ||
@@ -118,6 +152,11 @@ public:
         return iterator == entriesById_.end() ? nullptr : &iterator->second->descriptor;
     }
 
+    const ComponentSchemaDescriptor* find(std::type_index cppType) const noexcept {
+        const auto iterator = entriesByType_.find(cppType);
+        return iterator == entriesByType_.end() ? nullptr : &iterator->second->descriptor;
+    }
+
     template<class T>
     const ComponentSchemaDescriptor* find() const noexcept {
         const auto* entry = findEntry<T>();
@@ -136,6 +175,38 @@ public:
                       return left.typeId < right.typeId;
                   });
         return result;
+    }
+
+    bool writePayload(std::type_index cppType,
+                      foundation::BinaryWriter& writer,
+                      const void* value) const {
+        const auto iterator = entriesByType_.find(cppType);
+        if (iterator == entriesByType_.end() || value == nullptr) {
+            return false;
+        }
+        iterator->second->writePayload(writer, value);
+        return writer.bytes().size() <= kMaximumPayloadBytes;
+    }
+
+    std::unique_ptr<IComponentPool> createPool(ComponentTypeId typeId) const {
+        const auto iterator = entriesById_.find(typeId);
+        return iterator == entriesById_.end()
+            ? nullptr
+            : iterator->second->createPool();
+    }
+
+    bool readIntoPool(ComponentTypeId typeId,
+                      ComponentSchemaVersion storedVersion,
+                      foundation::BinaryReader& reader,
+                      Entity entity,
+                      IComponentPool& pool) const {
+        const auto iterator = entriesById_.find(typeId);
+        if (iterator == entriesById_.end() || storedVersion == 0 ||
+            iterator->second->cppType != pool.cppType()) {
+            return false;
+        }
+        return iterator->second->readIntoPool(
+                   reader, storedVersion, entity, pool) && reader.atEnd();
     }
 
     template<class T>

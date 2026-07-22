@@ -2,8 +2,11 @@
 
 #include <RTSEngine/Ecs/Entity.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <limits>
+#include <memory>
+#include <typeindex>
 #include <utility>
 #include <vector>
 
@@ -79,6 +82,44 @@ private:
     std::vector<std::size_t> sparse_;
     std::vector<Entity> entities_;
     std::vector<T> data_;
+};
+
+class IComponentPool {
+public:
+    virtual ~IComponentPool() = default;
+    virtual std::type_index cppType() const noexcept = 0;
+    virtual void remove(Entity entity) = 0;
+    virtual std::size_t size() const noexcept = 0;
+    virtual std::vector<Entity> orderedEntities() const = 0;
+    virtual const void* value(Entity entity) const noexcept = 0;
+};
+
+template<class T>
+class ComponentPoolModel final : public IComponentPool {
+public:
+    std::type_index cppType() const noexcept override {
+        return std::type_index(typeid(T));
+    }
+
+    void remove(Entity entity) override {
+        pool.remove(entity);
+    }
+
+    std::size_t size() const noexcept override {
+        return pool.size();
+    }
+
+    std::vector<Entity> orderedEntities() const override {
+        auto result = pool.entities();
+        std::sort(result.begin(), result.end());
+        return result;
+    }
+
+    const void* value(Entity entity) const noexcept override {
+        return pool.try_get(entity);
+    }
+
+    ComponentPool<T> pool;
 };
 
 } // namespace rts::ecs

@@ -13,19 +13,16 @@
 
 namespace rts::ecs {
 
+class WorldArchive;
+
 class World {
-    struct IPool {
-        virtual ~IPool() = default;
-        virtual void remove(Entity entity) = 0;
-    };
-
-    template<class T>
-    struct PoolModel final : IPool {
-        ComponentPool<T> pool;
-        void remove(Entity entity) override { pool.remove(entity); }
-    };
-
 public:
+    World() = default;
+    World(const World&) = delete;
+    World& operator=(const World&) = delete;
+    World(World&&) noexcept = default;
+    World& operator=(World&&) noexcept = default;
+
     Entity create() { return entities_.create(); }
 
     bool destroy(Entity entity) {
@@ -39,6 +36,8 @@ public:
     }
 
     bool alive(Entity entity) const noexcept { return entities_.alive(entity); }
+
+    std::uint32_t capacity() const noexcept { return entities_.capacity(); }
 
     template<class T, class... Args>
     T& emplace(Entity entity, Args&&... args) {
@@ -82,6 +81,8 @@ public:
     }
 
 private:
+    friend class WorldArchive;
+
     template<class T>
     bool has(Entity entity) const {
         const auto* value = find_pool<T>();
@@ -89,33 +90,34 @@ private:
     }
 
     template<class T>
-    PoolModel<T>& pool() {
+    ComponentPoolModel<T>& pool() {
         const auto key = std::type_index(typeid(T));
         auto iterator = pools_.find(key);
         if (iterator == pools_.end()) {
-            iterator = pools_.emplace(key, std::make_unique<PoolModel<T>>()).first;
+            iterator = pools_.emplace(
+                key, std::make_unique<ComponentPoolModel<T>>()).first;
         }
-        return *static_cast<PoolModel<T>*>(iterator->second.get());
+        return *static_cast<ComponentPoolModel<T>*>(iterator->second.get());
     }
 
     template<class T>
-    PoolModel<T>* find_pool() {
+    ComponentPoolModel<T>* find_pool() {
         auto iterator = pools_.find(std::type_index(typeid(T)));
         return iterator == pools_.end()
             ? nullptr
-            : static_cast<PoolModel<T>*>(iterator->second.get());
+            : static_cast<ComponentPoolModel<T>*>(iterator->second.get());
     }
 
     template<class T>
-    const PoolModel<T>* find_pool() const {
+    const ComponentPoolModel<T>* find_pool() const {
         auto iterator = pools_.find(std::type_index(typeid(T)));
         return iterator == pools_.end()
             ? nullptr
-            : static_cast<const PoolModel<T>*>(iterator->second.get());
+            : static_cast<const ComponentPoolModel<T>*>(iterator->second.get());
     }
 
     EntityRegistry entities_;
-    std::unordered_map<std::type_index, std::unique_ptr<IPool>> pools_;
+    std::unordered_map<std::type_index, std::unique_ptr<IComponentPool>> pools_;
 };
 
 } // namespace rts::ecs
