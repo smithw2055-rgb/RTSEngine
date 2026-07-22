@@ -9,11 +9,12 @@ permissions:
 
 jobs:
   apply-next-slice:
-    if: github.ref == 'refs/heads/agent/foundation-architecture'
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: agent/foundation-architecture
           fetch-depth: 0
       - name: Apply refactor
         run: python3 .refactor/apply_next_slice.py
