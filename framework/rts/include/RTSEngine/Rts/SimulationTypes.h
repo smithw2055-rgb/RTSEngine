@@ -151,6 +151,8 @@ struct WorldSnapshot {
     std::uint64_t tick{};
     std::uint64_t worldHash{};
     ResourceLedger resources{};
+    std::uint64_t commandCommittedThrough{};
+    std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
     std::vector<SnapshotEntity> entities;
 };
