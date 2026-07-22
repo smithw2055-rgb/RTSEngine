@@ -18,6 +18,24 @@ struct MovementSystemDependencies {
     MovementReservationRuntime& reservations;
     std::vector<DomainEvent>& events;
     RuntimeTelemetry* telemetry{};
+
+    MovementSystemDependencies(
+        const NavigationGrid& navigationValue,
+        MovementReservationRuntime& reservationsValue,
+        std::vector<DomainEvent>& eventsValue)
+        : navigation(navigationValue),
+          reservations(reservationsValue),
+          events(eventsValue) {}
+
+    MovementSystemDependencies(
+        const NavigationGrid& navigationValue,
+        MovementReservationRuntime& reservationsValue,
+        RuntimeTelemetry& telemetryValue,
+        std::vector<DomainEvent>& eventsValue)
+        : navigation(navigationValue),
+          reservations(reservationsValue),
+          events(eventsValue),
+          telemetry(&telemetryValue) {}
 };
 
 class MovementSystem final {
