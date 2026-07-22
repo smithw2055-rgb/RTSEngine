@@ -28,5 +28,14 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      - name: Capture build diagnostics
+        if: failure() && runner.os == 'Linux'
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel 1 > build-diagnostics.log 2>&1 || true
+      - name: Upload build diagnostics
+        if: failure() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-diagnostics-${{ matrix.build_type }}
+          path: build-diagnostics.log
       - name: Test
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
