@@ -4,6 +4,7 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/Combat.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/VisionTypes.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -49,6 +50,7 @@ struct BuildingDefinition {
     std::int32_t height{1};
     bool producer{};
     CombatStats combat{};
+    std::int32_t visionRange{8};
 };
 
 struct BuildingFootprint {
@@ -142,6 +144,8 @@ public:
         setBlocked(footprint, true);
         const auto deferred = commands.create(context);
         commands.add(context, deferred, footprint);
+        commands.add(context, deferred, VisionSource{
+            std::max<std::int32_t>(0, definition.visionRange)});
         commands.add(context, deferred, ConstructionSite{
             id,
             definition.id,
@@ -244,7 +248,8 @@ public:
 private:
     static bool valid(const BuildingDefinition& definition) noexcept {
         return definition.id != 0 && definition.cost >= 0 &&
-               definition.width > 0 && definition.height > 0;
+               definition.width > 0 && definition.height > 0 &&
+               definition.visionRange >= 0;
     }
 
     static std::vector<GridPoint> footprintCells(
