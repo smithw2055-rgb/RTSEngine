@@ -46,6 +46,10 @@ add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
 target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_persistence_tests COMMAND rts_roguelite_persistence_tests)
 
+add_executable(rts_save_slot_tests save_slot_tests.cpp)
+target_link_libraries(rts_save_slot_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_save_slot_tests COMMAND rts_save_slot_tests)
+
 add_executable(rts_command_stream_tests deterministic_command_stream_tests.cpp)
 target_link_libraries(rts_command_stream_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_command_stream_tests COMMAND rts_command_stream_tests)
