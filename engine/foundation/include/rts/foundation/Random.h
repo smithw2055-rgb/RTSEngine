@@ -40,7 +40,7 @@ public:
         increment_ =
             (SplitMix64(hash.Value() ^ 0x9E3779B97F4A7C15ull) << 1u) |
             1u;
-        NextU32();
+        (void)NextU32();
     }
 
     [[nodiscard]] std::uint32_t NextU32() noexcept {
