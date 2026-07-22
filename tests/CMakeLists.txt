@@ -22,6 +22,10 @@ add_executable(rts_flow_field_tests flow_field_tests.cpp)
 target_link_libraries(rts_flow_field_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_flow_field_tests COMMAND rts_flow_field_tests)
 
+add_executable(rts_vision_tests vision_tests.cpp)
+target_link_libraries(rts_vision_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_vision_tests COMMAND rts_vision_tests)
+
 add_executable(rts_scale_telemetry_tests scale_telemetry_tests.cpp)
 target_link_libraries(rts_scale_telemetry_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_scale_telemetry_tests COMMAND rts_scale_telemetry_tests)
