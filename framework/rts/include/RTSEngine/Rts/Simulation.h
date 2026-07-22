@@ -11,6 +11,7 @@
 #include <RTSEngine/Rts/EntityFactory.h>
 #include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
+#include <RTSEngine/Rts/Influence.h>
 #include <RTSEngine/Rts/MovementSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/NavigationSystem.h>
@@ -24,6 +25,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -36,6 +38,7 @@ public:
     RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
         : navigation_(width, height),
           vision_(width, height),
+          influence_(width, height),
           movement_(width, height),
           building_(resources_, navigation_),
           combat_(width, height) {
@@ -110,6 +113,11 @@ public:
         return vision_;
     }
 
+    const InfluenceRuntime& influence() const {
+        refreshDerivedInfluence();
+        return influence_;
+    }
+
     const GridPathCache& pathCache() const noexcept {
         return pathCache_;
     }
@@ -145,7 +153,8 @@ public:
         lastCompletedTick_ = tick;
     }
 
-    const WorldSnapshot& snapshot() const noexcept {
+    const WorldSnapshot& snapshot() const {
+        refreshDerivedInfluence();
         return snapshot_;
     }
 
@@ -169,6 +178,27 @@ public:
 
 private:
     friend class RtsSimulationArchive;
+
+    static constexpr std::uint64_t kInvalidDerivedHash =
+        std::numeric_limits<std::uint64_t>::max();
+
+    void refreshDerivedInfluence() const {
+        if (!hasStepped_) {
+            influence_.clear();
+            snapshot_.influenceWidth = 0;
+            snapshot_.influenceHeight = 0;
+            snapshot_.influence.clear();
+            influenceWorldHash_ = kInvalidDerivedHash;
+            return;
+        }
+        if (influenceWorldHash_ == snapshot_.worldHash) return;
+
+        influence_.rebuild(world_, vision_);
+        snapshot_.influenceWidth = influence_.width();
+        snapshot_.influenceHeight = influence_.height();
+        influence_.buildSnapshot(snapshot_.influence);
+        influenceWorldHash_ = snapshot_.worldHash;
+    }
 
     void runStage(std::uint64_t tick, ecs::Stage stage) {
         scheduler_.run_stage(world_, tick, stage);
@@ -323,6 +353,15 @@ private:
 
         scheduler_.add(
             ecs::Stage::Snapshot,
+            -5,
+            395,
+            [this](ecs::World& world,
+                   const ecs::SystemContext&) {
+                InfluenceSystem::run(world, vision_, influence_);
+            });
+
+        scheduler_.add(
+            ecs::Stage::Snapshot,
             0,
             400,
             [this](ecs::World& world,
@@ -336,6 +375,10 @@ private:
                      commands_,
                      snapshot_,
                      &vision_});
+                snapshot_.influenceWidth = influence_.width();
+                snapshot_.influenceHeight = influence_.height();
+                influence_.buildSnapshot(snapshot_.influence);
+                influenceWorldHash_ = snapshot_.worldHash;
             });
     }
 
@@ -345,6 +388,7 @@ private:
     ecs::EntityCommandBuffer structuralCommands_;
     NavigationGrid navigation_;
     VisionRuntime vision_;
+    mutable InfluenceRuntime influence_;
     GridPathCache pathCache_;
     GridPathfinderScratch pathScratch_;
     GridFlowFieldCache flowFields_;
@@ -357,7 +401,7 @@ private:
     std::vector<TickCommand> activeCommands_;
     std::vector<DomainEvent> events_;
     std::vector<DomainEvent> deathSideEffects_;
-    WorldSnapshot snapshot_;
+    mutable WorldSnapshot snapshot_;
     DefinitionCatalog<BuildingDefinition> buildingDefinitions_;
     DefinitionCatalog<UnitDefinition> unitDefinitions_;
     GridPoint requiredPathStart_{0, 0};
@@ -365,6 +409,7 @@ private:
     ProductionId nextProductionId_{};
     std::uint32_t playerTeamId_{1};
     std::uint64_t lastCompletedTick_{};
+    mutable std::uint64_t influenceWorldHash_{kInvalidDerivedHash};
     bool hasStepped_{};
 };
 
