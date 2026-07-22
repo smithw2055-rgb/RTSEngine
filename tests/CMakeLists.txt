@@ -18,6 +18,10 @@ add_executable(rts_navigation_workspace_tests navigation_workspace_tests.cpp)
 target_link_libraries(rts_navigation_workspace_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_navigation_workspace_tests COMMAND rts_navigation_workspace_tests)
 
+add_executable(rts_flow_field_tests flow_field_tests.cpp)
+target_link_libraries(rts_flow_field_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_flow_field_tests COMMAND rts_flow_field_tests)
+
 add_executable(rts_simulation_persistence_tests rts_simulation_persistence_tests.cpp)
 target_link_libraries(rts_simulation_persistence_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_persistence_tests COMMAND rts_simulation_persistence_tests)
@@ -26,7 +30,7 @@ add_executable(rts_base_building_tests base_building_tests.cpp)
 target_link_libraries(rts_base_building_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_base_building_tests COMMAND rts_base_building_tests)
 
-add_executable(rts_economy_production_tests rts_economy_production_tests.cpp)
+add_executable(rts_economy_production_tests economy_production_tests.cpp)
 target_link_libraries(rts_economy_production_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_economy_production_tests COMMAND rts_economy_production_tests)
 
