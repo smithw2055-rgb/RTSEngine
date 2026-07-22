@@ -1,11 +1,7 @@
 name: Diagnose next slice
 
 on:
-  push:
-    branches:
-      - agent/foundation-architecture
-    paths:
-      - .github/workflows/diagnose-next-slice.yml
+  pull_request:
 
 permissions:
   contents: read
