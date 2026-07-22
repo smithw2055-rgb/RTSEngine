@@ -1,4 +1,6 @@
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/PathCache.h>
+#include <RTSEngine/Rts/Simulation.h>
 
 #include <cassert>
 #include <cstdint>
@@ -20,6 +22,13 @@ NavigationGrid makeGrid() {
         assert(grid.setBlocked({x, 44}, true));
     }
     return grid;
+}
+
+bool equalResult(const PathResult& a, const PathResult& b) {
+    return a.found == b.found &&
+           a.budgetExceeded == b.budgetExceeded &&
+           a.expandedNodes == b.expandedNodes &&
+           a.points == b.points;
 }
 
 void testStableHeapPath() {
@@ -103,12 +112,161 @@ void testBudgetAndInvalidRequests() {
     assert(same.expandedNodes == 0);
 }
 
+void testCacheHitMatchesColdSearch() {
+    auto grid = makeGrid();
+    GridPathfinderScratch scratch;
+    GridPathCache cache;
+
+    const auto cold = GridPathfinder::find(
+        grid, {0, 0}, {63, 63}, scratch, 20000);
+    const PathResult first = cache.resolve(
+        grid, {0, 0}, {63, 63}, scratch, 20000);
+    const PathResult second = cache.resolve(
+        grid, {0, 0}, {63, 63}, scratch, 20000);
+
+    assert(equalResult(cold, first));
+    assert(equalResult(first, second));
+    assert(cache.entryCount() == 1);
+    assert(cache.pointCount() == first.points.size());
+    assert(cache.stats().misses == 1);
+    assert(cache.stats().hits == 1);
+    assert(cache.stats().insertions == 1);
+    assert(cache.stats().evictions == 0);
+}
+
+void testCacheStoresNegativeAndBudgetResults() {
+    NavigationGrid grid(8, 8);
+    GridPathfinderScratch scratch;
+    GridPathCache cache;
+
+    const PathResult invalidFirst = cache.resolve(
+        grid, {-1, 0}, {7, 7}, scratch, 20000);
+    const PathResult invalidSecond = cache.resolve(
+        grid, {-1, 0}, {7, 7}, scratch, 20000);
+    assert(equalResult(invalidFirst, invalidSecond));
+    assert(!invalidFirst.found && !invalidFirst.budgetExceeded);
+
+    const PathResult budgetFirst = cache.resolve(
+        grid, {0, 0}, {7, 7}, scratch, 1);
+    const PathResult budgetSecond = cache.resolve(
+        grid, {0, 0}, {7, 7}, scratch, 1);
+    assert(equalResult(budgetFirst, budgetSecond));
+    assert(!budgetFirst.found && budgetFirst.budgetExceeded);
+
+    const PathResult fullBudget = cache.resolve(
+        grid, {0, 0}, {7, 7}, scratch, 20000);
+    assert(fullBudget.found);
+    assert(cache.entryCount() == 3);
+    assert(cache.stats().misses == 3);
+    assert(cache.stats().hits == 2);
+}
+
+void testRevisionAndRestoreInvalidateCache() {
+    NavigationGrid grid(8, 3);
+    GridPathfinderScratch scratch;
+    GridPathCache cache;
+
+    const PathResult straight = cache.resolve(
+        grid, {0, 1}, {7, 1}, scratch, 1000);
+    assert(straight.found);
+    assert(cache.entryCount() == 1);
+
+    assert(grid.setBlocked({3, 1}, true));
+    const PathResult detour = cache.resolve(
+        grid, {0, 1}, {7, 1}, scratch, 1000);
+    assert(detour.found);
+    assert(detour.points != straight.points);
+    for (const auto point : detour.points) {
+        assert(!grid.blocked(point));
+    }
+    assert(cache.stats().invalidations == 1);
+
+    NavigationGrid replacement(8, 3);
+    assert(replacement.setBlocked({4, 1}, true));
+    const auto sameRevision = replacement.revision();
+    assert(sameRevision == grid.revision());
+    grid = std::move(replacement);
+
+    const PathResult restored = cache.resolve(
+        grid, {0, 1}, {7, 1}, scratch, 1000);
+    assert(restored.found);
+    assert(cache.stats().invalidations == 2);
+    for (const auto point : restored.points) {
+        assert(!grid.blocked(point));
+    }
+}
+
+void testDeterministicLruAndPointBudget() {
+    NavigationGrid grid(8, 8);
+    GridPathfinderScratch scratch;
+    GridPathCache cache({2, 64});
+
+    const PathResult a = cache.resolve(
+        grid, {0, 0}, {2, 0}, scratch, 1000);
+    const PathResult b = cache.resolve(
+        grid, {0, 1}, {2, 1}, scratch, 1000);
+    const PathResult aHit = cache.resolve(
+        grid, {0, 0}, {2, 0}, scratch, 1000);
+    const PathResult c = cache.resolve(
+        grid, {0, 2}, {2, 2}, scratch, 1000);
+    assert(a.found && b.found && aHit.found && c.found);
+    assert(cache.entryCount() == 2);
+    assert(cache.stats().misses == 3);
+    assert(cache.stats().hits == 1);
+    assert(cache.stats().evictions == 1);
+
+    const PathResult aSecondHit = cache.resolve(
+        grid, {0, 0}, {2, 0}, scratch, 1000);
+    assert(aSecondHit.found);
+    assert(cache.stats().hits == 2);
+
+    const PathResult bMiss = cache.resolve(
+        grid, {0, 1}, {2, 1}, scratch, 1000);
+    assert(bMiss.found);
+    assert(cache.stats().misses == 4);
+    assert(cache.stats().evictions == 2);
+    assert(cache.entryCapacity() >= 2);
+
+    GridPathCache tiny({8, 1});
+    const PathResult longFirst = tiny.resolve(
+        grid, {0, 0}, {7, 0}, scratch, 1000);
+    const PathResult longSecond = tiny.resolve(
+        grid, {0, 0}, {7, 0}, scratch, 1000);
+    assert(equalResult(longFirst, longSecond));
+    assert(tiny.entryCount() == 0);
+    assert(tiny.stats().misses == 2);
+    assert(tiny.stats().uncachedResults == 2);
+}
+
+void testSimulationUsesSharedCache() {
+    RtsSimulation simulation(8, 4);
+    const auto first = simulation.createUnit({0, 0}, {1});
+    assert(simulation.submit(
+        {0, 1, 1, CommandType::Move, first, 7, 0, false}));
+    simulation.step(0);
+    assert(simulation.pathCache().stats().misses == 1);
+    assert(simulation.pathCache().stats().hits == 0);
+
+    const auto second = simulation.createUnit({0, 0}, {1});
+    assert(simulation.submit(
+        {1, 1, 2, CommandType::Move, second, 7, 0, false}));
+    simulation.step(1);
+    assert(simulation.pathCache().stats().misses == 1);
+    assert(simulation.pathCache().stats().hits == 1);
+    assert(simulation.pathCache().entryCount() == 1);
+}
+
 } // namespace
 
 int main() {
     testStableHeapPath();
     testWorkspaceStopsGrowingAfterWarmup();
     testBudgetAndInvalidRequests();
-    std::cout << "navigation workspace tests passed\n";
+    testCacheHitMatchesColdSearch();
+    testCacheStoresNegativeAndBudgetResults();
+    testRevisionAndRestoreInvalidateCache();
+    testDeterministicLruAndPointBudget();
+    testSimulationUsesSharedCache();
+    std::cout << "navigation workspace and cache tests passed\n";
     return 0;
 }
