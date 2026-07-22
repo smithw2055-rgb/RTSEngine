@@ -36,7 +36,7 @@ void testStableHeapPath() {
     assert(first.points == second.points);
     assert(first.expandedNodes == second.expandedNodes);
     assert(!first.points.empty());
-    assert(first.points.back() == GridPoint{63, 63});
+    assert((first.points.back() == GridPoint{63, 63}));
     for (const auto point : first.points) {
         assert(!grid.blocked(point));
     }
