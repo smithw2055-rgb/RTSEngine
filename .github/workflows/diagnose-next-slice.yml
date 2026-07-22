@@ -1,22 +1,25 @@
 name: Diagnose next slice
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/foundation-architecture
+    paths:
+      - .github/workflows/diagnose-next-slice.yml
 
 permissions:
-  contents: read
-  issues: write
-  pull-requests: write
+  contents: write
 
 jobs:
   diagnose:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: agent/foundation-architecture
+          fetch-depth: 0
       - name: Capture configure, build, and test output
         shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
         run: |
           set +e
           cmake -S . -B build-diagnose -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON > configure.log 2>&1
@@ -35,19 +38,20 @@ jobs:
           else
             : > test.log
           fi
+          mkdir -p diagnostics
           {
-            echo '<details><summary>Next-slice diagnostic output</summary>'
-            echo
-            echo '```text'
             echo "configure_status=$configure_status build_status=$build_status test_status=$test_status"
             echo '--- configure ---'
-            tail -n 80 configure.log
+            tail -n 100 configure.log
             echo '--- build ---'
-            tail -n 240 build.log
+            tail -n 320 build.log
             echo '--- test ---'
-            tail -n 160 test.log
-            echo '```'
-            echo '</details>'
-          } > diagnostic-comment.md
-          gh pr comment 2 --repo smithw2055-rgb/RTSEngine --body-file diagnostic-comment.md
-          exit 0
+            tail -n 200 test.log
+          } > diagnostics/next-slice.log
+      - name: Publish diagnostic log
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add diagnostics/next-slice.log
+          git commit -m "chore(ci): publish next-slice diagnostics" || exit 0
+          git push origin HEAD:agent/foundation-architecture
