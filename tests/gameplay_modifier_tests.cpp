@@ -1,6 +1,6 @@
 #include <RTSEngine/Rts/Simulation.h>
 
-#include <cassert>
+#include <cstdlib>
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -9,6 +9,10 @@ namespace {
 
 using namespace rts;
 using namespace rts::gameplay;
+
+void require(bool condition) {
+    if (!condition) std::abort();
+}
 
 TeamModifierProfile upgradedProfile() {
     TeamModifierProfile profile;
@@ -24,16 +28,16 @@ TeamModifierProfile upgradedProfile() {
     return profile;
 }
 
-void assertUpgradedUnit(const RtsSimulation& simulation,
-                        ecs::Entity entity) {
+void requireUpgradedUnit(const RtsSimulation& simulation,
+                         ecs::Entity entity) {
     const auto* health = simulation.world().try_get<Health>(entity);
     const auto* armor = simulation.world().try_get<Armor>(entity);
     const auto* weapon = simulation.world().try_get<Weapon>(entity);
     const auto* speed = simulation.world().try_get<MoveSpeed>(entity);
-    assert(health && health->current == 15 && health->maximum == 15);
-    assert(armor && armor->value == 3);
-    assert(weapon && weapon->damage == 8);
-    assert(speed && speed->cellsPerTick == 3);
+    require(health && health->current == 15 && health->maximum == 15);
+    require(armor && armor->value == 3);
+    require(weapon && weapon->damage == 8);
+    require(speed && speed->cellsPerTick == 3);
 }
 
 void testExistingAndFutureUnits() {
@@ -42,15 +46,15 @@ void testExistingAndFutureUnits() {
     const auto existing = simulation.createUnit({1, 1}, {2}, 1, base);
 
     simulation.setTeamModifierProfile(1, upgradedProfile());
-    assertUpgradedUnit(simulation, existing);
+    requireUpgradedUnit(simulation, existing);
 
     const auto future = simulation.createUnit({2, 1}, {2}, 1, base);
-    assertUpgradedUnit(simulation, future);
-    assert(simulation.snapshot().teamModifiers.empty());
+    requireUpgradedUnit(simulation, future);
+    require(simulation.snapshot().teamModifiers.empty());
 
     simulation.step(0);
-    assert(simulation.snapshot().teamModifiers.size() == 1);
-    assert(simulation.snapshot().teamModifiers.front().teamId == 1);
+    require(simulation.snapshot().teamModifiers.size() == 1);
+    require(simulation.snapshot().teamModifiers.front().teamId == 1);
 }
 
 void testConstructionAndProductionDurations() {
@@ -85,14 +89,15 @@ void testConstructionAndProductionDurations() {
     build.definitionId = factory.id;
     build.targetX = 4;
     build.targetY = 2;
-    assert(simulation.submit(build));
+    require(simulation.submit(build));
     simulation.step(0);
 
     const auto sites = simulation.world().view<ConstructionSite>();
-    assert(sites.size() == 1);
-    const auto* site = simulation.world().try_get<ConstructionSite>(sites.front());
-    assert(site && site->baseRequiredTicks == 10);
-    assert(site->requiredTicks == 5);
+    require(sites.size() == 1);
+    const auto* site = simulation.world().try_get<ConstructionSite>(
+        sites.front());
+    require(site && site->baseRequiredTicks == 10);
+    require(site->requiredTicks == 5);
 
     for (std::uint64_t tick = 1; tick < 5; ++tick) {
         simulation.step(tick);
@@ -100,12 +105,12 @@ void testConstructionAndProductionDurations() {
 
     const auto factories =
         simulation.world().view<Building, ProductionQueue>();
-    assert(factories.size() == 1);
+    require(factories.size() == 1);
     const auto factoryEntity = factories.front();
     const auto* health = simulation.world().try_get<Health>(factoryEntity);
     const auto* weapon = simulation.world().try_get<Weapon>(factoryEntity);
-    assert(health && health->maximum == 20);
-    assert(weapon && weapon->damage == 3);
+    require(health && health->maximum == 20);
+    require(weapon && weapon->damage == 3);
 
     TickCommand train;
     train.targetTick = 5;
@@ -114,14 +119,14 @@ void testConstructionAndProductionDurations() {
     train.type = CommandType::Train;
     train.subject = factoryEntity;
     train.definitionId = unit.id;
-    assert(simulation.submit(train));
+    require(simulation.submit(train));
     simulation.step(5);
 
     const auto* queue =
         simulation.world().try_get<ProductionQueue>(factoryEntity);
-    assert(queue && queue->items.size() == 1);
-    assert(queue->items.front().baseRequiredTicks == 10);
-    assert(queue->items.front().requiredTicks == 4);
+    require(queue && queue->items.size() == 1);
+    require(queue->items.front().baseRequiredTicks == 10);
+    require(queue->items.front().requiredTicks == 4);
 }
 
 void testExistingConstructionIsRetimed() {
@@ -143,18 +148,19 @@ void testExistingConstructionIsRetimed() {
     command.definitionId = 1;
     command.targetX = 3;
     command.targetY = 3;
-    assert(simulation.submit(command));
+    require(simulation.submit(command));
     simulation.step(0);
 
-    auto sites = simulation.world().view<ConstructionSite>();
-    assert(sites.size() == 1);
-    assert(simulation.world().try_get<ConstructionSite>(sites.front())
-               ->requiredTicks == 10);
+    const auto sites = simulation.world().view<ConstructionSite>();
+    require(sites.size() == 1);
+    const auto* before = simulation.world().try_get<ConstructionSite>(
+        sites.front());
+    require(before && before->requiredTicks == 10);
 
-    auto profile = upgradedProfile();
-    simulation.setTeamModifierProfile(1, profile);
-    assert(simulation.world().try_get<ConstructionSite>(sites.front())
-               ->requiredTicks == 5);
+    simulation.setTeamModifierProfile(1, upgradedProfile());
+    const auto* after = simulation.world().try_get<ConstructionSite>(
+        sites.front());
+    require(after && after->requiredTicks == 5);
 }
 
 std::vector<std::uint64_t> runBountyScenario() {
@@ -171,7 +177,7 @@ std::vector<std::uint64_t> runBountyScenario() {
         simulation.step(tick);
         hashes.push_back(simulation.snapshot().worldHash);
     }
-    assert(simulation.resources().available == 10);
+    require(simulation.resources().available == 10);
     return hashes;
 }
 
@@ -183,7 +189,7 @@ int main() {
     testExistingConstructionIsRetimed();
     const auto first = runBountyScenario();
     const auto second = runBountyScenario();
-    assert(first == second);
+    require(first == second);
     std::cout << "gameplay modifier tests passed\n";
     return 0;
 }
