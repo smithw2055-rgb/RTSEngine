@@ -30,6 +30,7 @@ class RtsSimulation {
 public:
     RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
         : navigation_(width, height),
+          movement_(width, height),
           building_(resources_, navigation_),
           combat_(width, height) {
         installSystems();
@@ -59,8 +60,7 @@ public:
     bool setTeamModifierProfile(
         std::uint32_t teamId,
         TeamModifierProfile profile) {
-        return modifiers_.setProfile<MoveSpeed>(
-            world_, teamId, profile);
+        return modifiers_.setProfile<MoveSpeed>(world_, teamId, profile);
     }
 
     const TeamModifierProfile& teamModifierProfile(
@@ -87,6 +87,10 @@ public:
 
     const NavigationGrid& navigation() const noexcept {
         return navigation_;
+    }
+
+    const MovementReservationRuntime& movementReservations() const noexcept {
+        return movement_;
     }
 
     const ResourceLedger& resources() const noexcept {
@@ -246,7 +250,10 @@ private:
             320,
             [this](ecs::World& world,
                    const ecs::SystemContext& context) {
-                MovementSystem::run(world, context, {events_});
+                MovementSystem::run(
+                    world,
+                    context,
+                    {navigation_, movement_, events_});
             });
 
         scheduler_.add(
@@ -290,6 +297,7 @@ private:
     TickCommandStream commands_;
     ecs::EntityCommandBuffer structuralCommands_;
     NavigationGrid navigation_;
+    MovementReservationRuntime movement_;
     ResourceLedger resources_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
