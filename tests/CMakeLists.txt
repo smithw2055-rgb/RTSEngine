@@ -18,6 +18,10 @@ add_executable(rts_navigation_workspace_tests navigation_workspace_tests.cpp)
 target_link_libraries(rts_navigation_workspace_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_navigation_workspace_tests COMMAND rts_navigation_workspace_tests)
 
+add_executable(rts_spatial_index_tests spatial_index_tests.cpp)
+target_link_libraries(rts_spatial_index_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_spatial_index_tests COMMAND rts_spatial_index_tests)
+
 add_executable(rts_simulation_persistence_tests rts_simulation_persistence_tests.cpp)
 target_link_libraries(rts_simulation_persistence_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_persistence_tests COMMAND rts_simulation_persistence_tests)
@@ -34,7 +38,7 @@ add_executable(rts_combat_tests combat_tests.cpp)
 target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
 
-add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+add_executable(rts_combat_integration_tests combat_integration_tests.cpp)
 target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 
