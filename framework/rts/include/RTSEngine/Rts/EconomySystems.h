@@ -305,7 +305,8 @@ public:
                 Position{rally->point.x, rally->point.y},
                 definition->cellsPerTick,
                 teamId,
-                definition->combat);
+                definition->combat,
+                definition->visionRange);
             queue->items.erase(queue->items.begin());
             dependencies.events.push_back(
                 {context.tick,
