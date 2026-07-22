@@ -1,0 +1,39 @@
+name: Cleanup failed Actions history
+
+on:
+  push:
+    branches:
+      - agent/foundation-architecture
+    paths:
+      - .github/workflows/cleanup-failed-runs.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete failed and cancelled runs for this branch
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          branch="$GITHUB_REF_NAME"
+          current="$GITHUB_RUN_ID"
+
+          gh api --method GET --paginate \
+            "repos/$repo/actions/runs" \
+            -f branch="$branch" \
+            -f status=completed \
+            -f per_page=100 \
+            --jq '.workflow_runs[] | select(.conclusion == "failure" or .conclusion == "cancelled") | .id' \
+          | while read -r run_id; do
+              if [[ -n "$run_id" && "$run_id" != "$current" ]]; then
+                echo "Deleting workflow run $run_id"
+                gh api --method DELETE "repos/$repo/actions/runs/$run_id"
+              fi
+            done
