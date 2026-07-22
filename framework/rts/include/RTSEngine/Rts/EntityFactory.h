@@ -18,13 +18,17 @@ public:
         Position position,
         MoveSpeed speed,
         std::uint32_t teamId,
-        const CombatStats& combat) {
+        const CombatStats& combat,
+        std::int32_t visionRange = 6) {
         const auto entity = world.create();
         world.emplace<Position>(entity, position);
         world.emplace<MoveSpeed>(entity, speed);
         world.emplace<OrderQueue>(entity, OrderQueue{});
         world.emplace<MovementAgent>(entity, MovementAgent{});
         world.emplace<Team>(entity, Team{teamId});
+        world.emplace<VisionSource>(
+            entity,
+            VisionSource{std::max<std::int32_t>(0, visionRange)});
         attachCombatProfile(
             world, entity, combat, false, speed.cellsPerTick);
         modifiers.applyEntity<MoveSpeed>(world, entity);
@@ -40,7 +44,8 @@ public:
         Position position,
         std::int32_t baseMoveSpeed,
         std::uint32_t teamId,
-        const CombatStats& combat) {
+        const CombatStats& combat,
+        std::int32_t visionRange = 6) {
         const auto resolvedSpeed = std::max<std::int32_t>(
             0,
             ScaleGameplayValue(
@@ -51,6 +56,10 @@ public:
         commands.add(context, target, OrderQueue{});
         commands.add(context, target, MovementAgent{});
         commands.add(context, target, Team{teamId});
+        commands.add(
+            context,
+            target,
+            VisionSource{std::max<std::int32_t>(0, visionRange)});
         queueCombatProfile(
             context,
             commands,
