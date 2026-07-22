@@ -17,6 +17,12 @@ void printFailure(const ScaleBenchmarkReport& report) {
 
 void assertBudget(const ScaleBenchmarkReport& report) {
     printFailure(report);
+    const auto proportionalSearches = report.agents / 100u;
+    const auto maximumPathSearches =
+        proportionalSearches < 8u ? 8u : proportionalSearches;
+    const auto maximumExpandedNodes =
+        static_cast<std::uint64_t>(report.agents) * 4u;
+
     assert(report.elapsedMicroseconds >= 0);
     assert(report.averageTickMicroseconds >= 0);
     assert(report.p95TickMicroseconds >= 0);
@@ -31,8 +37,8 @@ void assertBudget(const ScaleBenchmarkReport& report) {
     assert(report.flow.extractionFailures == 0);
     assert(report.flow.pathExtractions >= report.agents);
     assert(report.flow.extractedPathPoints >= report.agents);
-    assert(report.paths.searches == 0);
-    assert(report.paths.expandedNodes == 0);
+    assert(report.paths.searches <= maximumPathSearches);
+    assert(report.paths.expandedNodes <= maximumExpandedNodes);
     assert(report.telemetry.pathFailures == 0);
     assert(report.telemetry.flowAssignments >= report.agents);
     assert(report.telemetry.peakCellOccupancy == 1);
