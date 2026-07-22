@@ -164,6 +164,19 @@ struct TeamVisibilitySnapshot final {
     std::vector<std::uint8_t> explored;
 };
 
+struct TeamInfluenceSnapshot final {
+    std::uint32_t teamId{};
+    std::uint32_t friendlyActiveCells{};
+    std::uint32_t threatActiveCells{};
+    std::int32_t peakFriendly{};
+    std::int32_t peakThreat{};
+    std::int32_t minimumNet{};
+    std::int32_t maximumNet{};
+    std::vector<std::int32_t> friendly;
+    std::vector<std::int32_t> threat;
+    std::vector<std::int32_t> net;
+};
+
 struct WorldSnapshot {
     std::uint64_t tick{};
     std::uint64_t worldHash{};
@@ -175,6 +188,9 @@ struct WorldSnapshot {
     std::int32_t visibilityWidth{};
     std::int32_t visibilityHeight{};
     std::vector<TeamVisibilitySnapshot> visibility;
+    std::int32_t influenceWidth{};
+    std::int32_t influenceHeight{};
+    std::vector<TeamInfluenceSnapshot> influence;
 };
 
 } // namespace rts::gameplay
