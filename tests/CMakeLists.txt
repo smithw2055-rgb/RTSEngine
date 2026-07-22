@@ -50,6 +50,10 @@ add_executable(rts_save_slot_tests save_slot_tests.cpp)
 target_link_libraries(rts_save_slot_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_save_slot_tests COMMAND rts_save_slot_tests)
 
+add_executable(rts_cloud_save_tests cloud_save_tests.cpp)
+target_link_libraries(rts_cloud_save_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_cloud_save_tests COMMAND rts_cloud_save_tests)
+
 add_executable(rts_command_stream_tests deterministic_command_stream_tests.cpp)
 target_link_libraries(rts_command_stream_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_command_stream_tests COMMAND rts_command_stream_tests)
