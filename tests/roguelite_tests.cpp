@@ -11,6 +11,26 @@ namespace {
 using namespace rts;
 using namespace rts::roguelite;
 
+void testSparseStackLookup() {
+    ModifierRuntime runtime;
+    const auto stat = MakeStatId("test.lookup");
+
+    ModifierDefinition low;
+    low.id = 1;
+    low.effects = {{stat, ModifierOperation::Add, 1}};
+    assert(runtime.registerDefinition(low));
+
+    ModifierDefinition high;
+    high.id = 9;
+    high.effects = {{stat, ModifierOperation::Add, 9}};
+    assert(runtime.registerDefinition(high));
+
+    assert(runtime.apply(9).accepted);
+    assert(runtime.stackCount(1) == 0);
+    assert(runtime.stackCount(9) == 1);
+    assert(runtime.canApply(1) == ApplyFailure::None);
+}
+
 void testModifierRules() {
     ModifierRuntime runtime;
     const auto power = MakeStatId("test.power");
@@ -210,6 +230,7 @@ ScenarioResult runScenario() {
 } // namespace
 
 int main() {
+    testSparseStackLookup();
     testModifierRules();
 
     const auto first = runScenario();
