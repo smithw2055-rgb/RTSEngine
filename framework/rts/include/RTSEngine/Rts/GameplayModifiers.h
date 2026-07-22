@@ -56,7 +56,7 @@ struct TunableStats {
 inline TeamModifierProfile SanitizeTeamModifierProfile(
     TeamModifierProfile value) noexcept {
     constexpr std::int32_t maximumMultiplier = 1000000;
-    const auto multiplier = [](std::int32_t current) {
+    const auto multiplier = [maximumMultiplier](std::int32_t current) {
         return std::clamp(current, 0, maximumMultiplier);
     };
     value.unitHealth = multiplier(value.unitHealth);
@@ -93,7 +93,10 @@ inline std::uint32_t ScaleGameplayDuration(
         static_cast<std::uint64_t>(speed - 1);
     const auto resolved = numerator / static_cast<std::uint64_t>(speed);
     return static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
-        resolved, 1, std::numeric_limits<std::uint32_t>::max()));
+        resolved,
+        std::uint64_t{1},
+        static_cast<std::uint64_t>(
+            std::numeric_limits<std::uint32_t>::max())));
 }
 
 class TeamModifierTable final {
