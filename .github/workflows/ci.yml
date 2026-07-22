@@ -25,14 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Configure
-        shell: bash
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON 2>&1 | tee configure.log
-      - name: Upload configure diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: configure-${{ matrix.os }}-${{ matrix.build_type }}
-          path: configure.log
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
       - name: Test
