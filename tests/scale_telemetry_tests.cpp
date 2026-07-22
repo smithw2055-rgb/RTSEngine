@@ -9,7 +9,14 @@ namespace {
 
 using namespace rts::gameplay;
 
+void printFailure(const ScaleBenchmarkReport& report) {
+    if (report.budgetPassed()) return;
+    WriteScaleBenchmarkJson(std::cerr, report);
+    std::cerr << '\n';
+}
+
 void assertBudget(const ScaleBenchmarkReport& report) {
+    printFailure(report);
     assert(report.elapsedMicroseconds >= 0);
     assert(report.averageTickMicroseconds >= 0);
     assert(report.p95TickMicroseconds >= 0);
