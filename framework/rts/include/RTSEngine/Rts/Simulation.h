@@ -14,6 +14,7 @@
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/NavigationSystem.h>
 #include <RTSEngine/Rts/OrderSystem.h>
+#include <RTSEngine/Rts/PathCache.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
 
@@ -89,6 +90,10 @@ public:
         return navigation_;
     }
 
+    const GridPathCache& pathCache() const noexcept {
+        return pathCache_;
+    }
+
     const MovementReservationRuntime& movementReservations() const noexcept {
         return movement_;
     }
@@ -159,6 +164,8 @@ private:
     NavigationSystemDependencies navigationDependencies() {
         return {
             navigation_,
+            pathCache_,
+            pathScratch_,
             structuralCommands_,
             modifiers_,
             buildingDefinitions_,
@@ -297,6 +304,8 @@ private:
     TickCommandStream commands_;
     ecs::EntityCommandBuffer structuralCommands_;
     NavigationGrid navigation_;
+    GridPathCache pathCache_;
+    GridPathfinderScratch pathScratch_;
     MovementReservationRuntime movement_;
     ResourceLedger resources_;
     BaseBuildingRuntime building_;
