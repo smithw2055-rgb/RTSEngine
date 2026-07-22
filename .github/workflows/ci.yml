@@ -4,34 +4,7 @@ on:
   push:
   pull_request:
 
-permissions:
-  contents: write
-
 jobs:
-  apply-next-slice:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: agent/foundation-architecture
-          fetch-depth: 0
-      - name: Apply refactor
-        run: python3 .refactor/apply_next_slice.py
-      - name: Configure refactored tree
-        run: cmake -S . -B build-refactor -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
-      - name: Build refactored tree
-        run: cmake --build build-refactor --parallel
-      - name: Test refactored tree
-        run: ctest --test-dir build-refactor --output-on-failure
-      - name: Commit source and tests only
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add engine framework tests apps CMakeLists.txt
-          git commit -m "refactor(rts): extract contracts and apply gameplay modifiers"
-          git push origin HEAD:agent/foundation-architecture
-
   build-and-test:
     strategy:
       matrix:
