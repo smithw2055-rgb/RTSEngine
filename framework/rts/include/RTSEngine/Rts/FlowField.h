@@ -20,10 +20,13 @@ struct GridFlowFieldStats final {
     std::uint64_t hits{};
     std::uint64_t misses{};
     std::uint64_t builds{};
+    std::uint64_t visitedCells{};
+    std::uint64_t peakReachableCells{};
     std::uint64_t evictions{};
     std::uint64_t invalidations{};
     std::uint64_t uncachedFields{};
     std::uint64_t pathExtractions{};
+    std::uint64_t extractedPathPoints{};
     std::uint64_t extractionFailures{};
 };
 
@@ -192,6 +195,9 @@ public:
         GridFlowField field;
         field.build(grid, goal);
         ++stats_.builds;
+        stats_.visitedCells += field.reachableCells();
+        stats_.peakReachableCells = std::max<std::uint64_t>(
+            stats_.peakReachableCells, field.reachableCells());
         const auto fieldCells = field.cellCount();
         if (limits_.maximumFields == 0 ||
             fieldCells > limits_.maximumCells) {
@@ -228,7 +234,10 @@ public:
         GridPoint start,
         std::vector<GridPoint>& path) {
         ++stats_.pathExtractions;
-        if (field.extract(start, path)) return true;
+        if (field.extract(start, path)) {
+            stats_.extractedPathPoints += path.size();
+            return true;
+        }
         ++stats_.extractionFailures;
         return false;
     }
@@ -259,6 +268,10 @@ public:
         return found != demands_.end() && found->goal == goal
             ? found->count
             : 0u;
+    }
+
+    const std::vector<GridFlowDemand>& demands() const noexcept {
+        return demands_;
     }
 
     void clear() noexcept {
