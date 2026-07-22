@@ -4,6 +4,7 @@
 #include <RTSEngine/Rts/BaseBuilding.h>
 #include <RTSEngine/Rts/GameplayModifiers.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/VisionTypes.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
 #include <cstddef>
@@ -54,6 +55,7 @@ struct UnitDefinition {
     std::uint32_t trainTicks{1};
     std::int32_t cellsPerTick{1};
     CombatStats combat{};
+    std::int32_t visionRange{6};
 };
 
 enum class CommandType : std::uint8_t {
@@ -151,6 +153,15 @@ struct SnapshotEntity {
     CombatMode combatMode{CombatMode::Guard};
     std::uint32_t movementBlockedTicks{};
     std::uint32_t movementYieldOrdinal{};
+    std::int32_t visionRange{};
+};
+
+struct TeamVisibilitySnapshot final {
+    std::uint32_t teamId{};
+    std::uint32_t currentVisibleCells{};
+    std::uint32_t exploredCells{};
+    std::vector<std::uint8_t> current;
+    std::vector<std::uint8_t> explored;
 };
 
 struct WorldSnapshot {
@@ -161,6 +172,9 @@ struct WorldSnapshot {
     std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
     std::vector<SnapshotEntity> entities;
+    std::int32_t visibilityWidth{};
+    std::int32_t visibilityHeight{};
+    std::vector<TeamVisibilitySnapshot> visibility;
 };
 
 } // namespace rts::gameplay
