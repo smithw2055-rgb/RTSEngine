@@ -1,0 +1,57 @@
+name: Diagnose next slice
+
+on:
+  push:
+    branches:
+      - agent/foundation-architecture
+    paths:
+      - .github/workflows/diagnose-next-slice.yml
+
+permissions:
+  contents: read
+  issues: write
+  pull-requests: write
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Capture configure, build, and test output
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          cmake -S . -B build-diagnose -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON > configure.log 2>&1
+          configure_status=$?
+          build_status=99
+          test_status=99
+          if [ "$configure_status" -eq 0 ]; then
+            cmake --build build-diagnose --parallel 2 > build.log 2>&1
+            build_status=$?
+          else
+            : > build.log
+          fi
+          if [ "$build_status" -eq 0 ]; then
+            ctest --test-dir build-diagnose --output-on-failure > test.log 2>&1
+            test_status=$?
+          else
+            : > test.log
+          fi
+          {
+            echo '<details><summary>Next-slice diagnostic output</summary>'
+            echo
+            echo '```text'
+            echo "configure_status=$configure_status build_status=$build_status test_status=$test_status"
+            echo '--- configure ---'
+            tail -n 80 configure.log
+            echo '--- build ---'
+            tail -n 240 build.log
+            echo '--- test ---'
+            tail -n 160 test.log
+            echo '```'
+            echo '</details>'
+          } > diagnostic-comment.md
+          gh pr comment 2 --repo smithw2055-rgb/RTSEngine --body-file diagnostic-comment.md
+          exit 0
