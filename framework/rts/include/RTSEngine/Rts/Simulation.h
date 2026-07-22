@@ -16,10 +16,12 @@
 #include <RTSEngine/Rts/NavigationSystem.h>
 #include <RTSEngine/Rts/OrderSystem.h>
 #include <RTSEngine/Rts/PathCache.h>
+#include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -57,6 +59,10 @@ public:
 
     void setPlayerTeam(std::uint32_t teamId) noexcept {
         playerTeamId_ = teamId;
+    }
+
+    void reserveMovementAgents(std::size_t count) {
+        movement_.reserveAgents(count);
     }
 
     bool setTeamModifierProfile(
@@ -101,6 +107,10 @@ public:
 
     const MovementReservationRuntime& movementReservations() const noexcept {
         return movement_;
+    }
+
+    const RuntimeTelemetry& telemetry() const noexcept {
+        return telemetry_;
     }
 
     const ResourceLedger& resources() const noexcept {
@@ -172,6 +182,7 @@ private:
             pathCache_,
             pathScratch_,
             flowFields_,
+            telemetry_,
             structuralCommands_,
             modifiers_,
             buildingDefinitions_,
@@ -266,7 +277,7 @@ private:
                 MovementSystem::run(
                     world,
                     context,
-                    {navigation_, movement_, events_});
+                    {navigation_, movement_, telemetry_, events_});
             });
 
         scheduler_.add(
@@ -313,6 +324,7 @@ private:
     GridPathCache pathCache_;
     GridPathfinderScratch pathScratch_;
     GridFlowFieldCache flowFields_;
+    RuntimeTelemetry telemetry_;
     MovementReservationRuntime movement_;
     ResourceLedger resources_;
     BaseBuildingRuntime building_;
