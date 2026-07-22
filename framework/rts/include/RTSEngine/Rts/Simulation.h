@@ -5,192 +5,19 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/BaseBuilding.h>
 #include <RTSEngine/Rts/Combat.h>
+#include <RTSEngine/Rts/DefinitionCatalog.h>
+#include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/SimulationTypes.h>
 #include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace rts::gameplay {
-
-struct Position {
-    std::int32_t x{};
-    std::int32_t y{};
-};
-
-struct MoveSpeed {
-    std::int32_t cellsPerTick{1};
-};
-
-enum class OrderType : std::uint8_t {
-    Move,
-    AttackMove
-};
-
-struct Order {
-    OrderType type{OrderType::Move};
-    GridPoint target{};
-};
-
-struct OrderQueue {
-    std::vector<Order> pending;
-};
-
-struct MovementAgent {
-    std::vector<GridPoint> path;
-    std::size_t nextPoint{};
-    std::uint64_t pathRevision{};
-    GridPoint pathGoal{};
-    bool hasPathGoal{};
-    bool combatPath{};
-    ecs::Entity chaseTarget{};
-    GridPoint chaseTargetPosition{};
-};
-
-struct UnitDefinition {
-    std::uint32_t id{};
-    std::int32_t cost{};
-    std::uint32_t trainTicks{1};
-    std::int32_t cellsPerTick{1};
-    CombatStats combat{};
-};
-
-enum class CommandType : std::uint8_t {
-    Move,
-    Stop,
-    Build,
-    CancelConstruction,
-    Train,
-    CancelProduction,
-    SetRally,
-    Attack,
-    AttackMove,
-    HoldPosition
-};
-
-struct TickCommand {
-    std::uint64_t targetTick{};
-    std::uint32_t issuer{};
-    std::uint32_t sequence{};
-    CommandType type{CommandType::Move};
-    ecs::Entity subject{};
-    std::int32_t targetX{};
-    std::int32_t targetY{};
-    bool append{};
-    std::uint32_t definitionId{};
-    std::uint32_t objectId{};
-    ecs::Entity targetEntity{};
-};
-
-class TickCommandStream {
-public:
-    bool submit(TickCommand command) {
-        if (command.targetTick < committedThrough_) return false;
-        commands_.push_back(command);
-        return true;
-    }
-
-    std::vector<TickCommand> consume(std::uint64_t tick) {
-        committedThrough_ = tick + 1;
-        std::vector<TickCommand> result;
-        auto iterator = commands_.begin();
-        while (iterator != commands_.end()) {
-            if (iterator->targetTick == tick) {
-                result.push_back(*iterator);
-                iterator = commands_.erase(iterator);
-            } else {
-                ++iterator;
-            }
-        }
-        std::sort(result.begin(), result.end(), [](const TickCommand& a, const TickCommand& b) {
-            return a.issuer != b.issuer ? a.issuer < b.issuer : a.sequence < b.sequence;
-        });
-        result.erase(std::unique(result.begin(), result.end(),
-                                 [](const TickCommand& a, const TickCommand& b) {
-                                     return a.issuer == b.issuer &&
-                                            a.sequence == b.sequence;
-                                 }),
-                     result.end());
-        return result;
-    }
-
-private:
-    std::vector<TickCommand> commands_;
-    std::uint64_t committedThrough_{};
-};
-
-enum class DomainEventType : std::uint8_t {
-    MoveAccepted,
-    MoveCompleted,
-    OrderStopped,
-    PathReady,
-    PathFailed,
-    ConstructionAccepted,
-    ConstructionRejected,
-    ConstructionCancelled,
-    ConstructionCompleted,
-    ConstructionDestroyed,
-    ProductionAccepted,
-    ProductionRejected,
-    ProductionCancelled,
-    ProductionCompleted,
-    RallyPointChanged,
-    AttackAccepted,
-    AttackRejected,
-    AttackMoveAccepted,
-    HoldPositionAccepted,
-    AttackTargetLost,
-    TargetAcquired,
-    WeaponFired,
-    DamageApplied,
-    EntityDied,
-    BountyAwarded
-};
-
-struct DomainEvent {
-    std::uint64_t tick{};
-    DomainEventType type{};
-    ecs::Entity entity{};
-    std::uint32_t objectId{};
-    std::uint32_t reason{};
-    ecs::Entity secondary{};
-    std::int32_t value{};
-};
-
-enum class SnapshotKind : std::uint8_t {
-    Unit,
-    Construction,
-    Building
-};
-
-struct SnapshotEntity {
-    ecs::Entity entity{};
-    std::int32_t x{};
-    std::int32_t y{};
-    bool moving{};
-    std::uint32_t queuedOrders{};
-    SnapshotKind kind{SnapshotKind::Unit};
-    std::uint32_t definitionId{};
-    std::uint32_t progressTicks{};
-    std::uint32_t requiredTicks{};
-    std::uint32_t productionQueueSize{};
-    std::uint32_t teamId{};
-    std::int32_t healthCurrent{};
-    std::int32_t healthMaximum{};
-    std::int32_t armor{};
-    std::uint32_t cooldownRemaining{};
-    ecs::Entity target{};
-    CombatMode combatMode{CombatMode::Guard};
-};
-
-struct WorldSnapshot {
-    std::uint64_t tick{};
-    std::uint64_t worldHash{};
-    ResourceLedger resources{};
-    std::vector<SnapshotEntity> entities;
-};
 
 class RtsSimulation {
 public:
@@ -202,11 +29,11 @@ public:
     }
 
     void registerBuilding(BuildingDefinition definition) {
-        replaceDefinition(buildingDefinitions_, definition);
+        buildingDefinitions_.replace(std::move(definition));
     }
 
     void registerUnit(UnitDefinition definition) {
-        replaceDefinition(unitDefinitions_, definition);
+        unitDefinitions_.replace(std::move(definition));
     }
 
     void setResources(std::int32_t available) noexcept {
@@ -222,6 +49,17 @@ public:
         playerTeamId_ = teamId;
     }
 
+    bool setTeamModifierProfile(std::uint32_t teamId,
+                                TeamModifierProfile profile) {
+        return modifiers_.setProfile<MoveSpeed>(
+            world_, teamId, profile);
+    }
+
+    const TeamModifierProfile& teamModifierProfile(
+        std::uint32_t teamId) const noexcept {
+        return modifiers_.profile(teamId);
+    }
+
     ecs::Entity createUnit(Position position,
                            MoveSpeed speed,
                            std::uint32_t teamId = 1,
@@ -232,7 +70,9 @@ public:
         world_.emplace<OrderQueue>(entity, OrderQueue{});
         world_.emplace<MovementAgent>(entity, MovementAgent{});
         world_.emplace<Team>(entity, Team{teamId});
-        attachCombatProfile(entity, combat);
+        attachCombatProfile(
+            entity, combat, false, speed.cellsPerTick);
+        modifiers_.applyEntity<MoveSpeed>(world_, entity);
         return entity;
     }
 
@@ -261,46 +101,20 @@ public:
     const ecs::World& world() const noexcept { return world_; }
 
 private:
-    template<class Definition>
-    static void replaceDefinition(std::vector<Definition>& definitions,
-                                  Definition definition) {
-        auto iterator = std::find_if(definitions.begin(), definitions.end(),
-                                     [&](const Definition& value) {
-                                         return value.id == definition.id;
-                                     });
-        if (iterator == definitions.end()) {
-            definitions.push_back(definition);
-        } else {
-            *iterator = definition;
-        }
-        std::sort(definitions.begin(), definitions.end(),
-                  [](const Definition& a, const Definition& b) {
-                      return a.id < b.id;
-                  });
-    }
-
     static std::int32_t distance(GridPoint a, GridPoint b) noexcept {
         const auto dx = a.x > b.x ? a.x - b.x : b.x - a.x;
         const auto dy = a.y > b.y ? a.y - b.y : b.y - a.y;
         return dx + dy;
     }
 
-    const BuildingDefinition* buildingDefinition(std::uint32_t id) const {
-        const auto iterator =
-            std::find_if(buildingDefinitions_.begin(), buildingDefinitions_.end(),
-                         [id](const BuildingDefinition& value) {
-                             return value.id == id;
-                         });
-        return iterator == buildingDefinitions_.end() ? nullptr : &*iterator;
+    const BuildingDefinition* buildingDefinition(
+        std::uint32_t id) const noexcept {
+        return buildingDefinitions_.find(id);
     }
 
-    const UnitDefinition* unitDefinition(std::uint32_t id) const {
-        const auto iterator =
-            std::find_if(unitDefinitions_.begin(), unitDefinitions_.end(),
-                         [id](const UnitDefinition& value) {
-                             return value.id == id;
-                         });
-        return iterator == unitDefinitions_.end() ? nullptr : &*iterator;
+    const UnitDefinition* unitDefinition(
+        std::uint32_t id) const noexcept {
+        return unitDefinitions_.find(id);
     }
 
     void runStage(std::uint64_t tick, ecs::Stage stage) {
@@ -315,6 +129,12 @@ private:
                            for (const auto& command : activeCommands_) {
                                processCommand(world, context, command);
                            }
+                       });
+
+        scheduler_.add(ecs::Stage::Navigation, -20, 180,
+                       [this](ecs::World& world,
+                              const ecs::SystemContext&) {
+                           synchronizeTeamModifiers(world);
                        });
 
         scheduler_.add(ecs::Stage::Navigation, -10, 190,
@@ -401,14 +221,19 @@ private:
                 buildingDefinition(command.definitionId);
             BuildResult result;
             if (definition) {
+                auto resolvedDefinition = *definition;
+                resolvedDefinition.buildTicks =
+                    modifiers_.constructionTicks(
+                        command.issuer, definition->buildTicks);
                 result = building_.begin(
                     context,
                     structuralCommands_,
-                    *definition,
+                    resolvedDefinition,
                     {command.targetX, command.targetY},
                     requiredPathStart_,
                     requiredPathGoal_,
-                    command.issuer);
+                    command.issuer,
+                    definition->buildTicks);
             } else {
                 result = {false, BuildFailure::InvalidDefinition, 0};
             }
@@ -672,6 +497,7 @@ private:
                          const TickCommand& command) {
         auto* queue = world.try_get<ProductionQueue>(command.subject);
         const auto* building = world.try_get<Building>(command.subject);
+        const auto* ownerTeam = world.try_get<Team>(command.subject);
         const auto* definition = unitDefinition(command.definitionId);
         if (!queue || !building || !building->producer || !definition ||
             definition->id == 0 || definition->cost < 0 ||
@@ -686,12 +512,18 @@ private:
         }
 
         const ProductionId id = ++nextProductionId_;
+        const auto baseTicks =
+            std::max<std::uint32_t>(1, definition->trainTicks);
+        const auto teamId = ownerTeam ? ownerTeam->id : 0;
+        const auto requiredTicks =
+            modifiers_.productionTicks(teamId, baseTicks);
         queue->items.push_back(
             {id,
              definition->id,
              definition->cost,
              0,
-             std::max<std::uint32_t>(1, definition->trainTicks)});
+             requiredTicks,
+             baseTicks});
         events_.push_back(
             {context.tick,
              DomainEventType::ProductionAccepted,
@@ -776,14 +608,26 @@ private:
             structuralCommands_.add(
                 context,
                 deferred,
-                MoveSpeed{definition->cellsPerTick});
+                MoveSpeed{std::max<std::int32_t>(
+                    0,
+                    ScaleGameplayValue(
+                        definition->cellsPerTick,
+                        modifiers_.profile(
+                            ownerTeam ? ownerTeam->id : 0)
+                            .unitMoveSpeed))});
             structuralCommands_.add(context, deferred, OrderQueue{});
             structuralCommands_.add(context, deferred, MovementAgent{});
             structuralCommands_.add(
                 context,
                 deferred,
                 Team{ownerTeam ? ownerTeam->id : 0});
-            queueCombatProfile(context, deferred, definition->combat);
+            queueCombatProfile(
+                context,
+                deferred,
+                definition->combat,
+                false,
+                definition->cellsPerTick,
+                ownerTeam ? ownerTeam->id : 0);
             queue->items.erase(queue->items.begin());
             events_.push_back(
                 {context.tick,
@@ -791,6 +635,12 @@ private:
                  entity,
                  producedId,
                  definition->id});
+        }
+    }
+
+    void synchronizeTeamModifiers(ecs::World& world) {
+        for (const auto entity : world.view<Team, TunableStats>()) {
+            modifiers_.applyEntity<MoveSpeed>(world, entity);
         }
     }
 
@@ -816,10 +666,15 @@ private:
             }
             const auto* definition =
                 buildingDefinition(site->definitionId);
-            if (definition && definition->combat.maximumHealth > 0 &&
-                !world.try_get<Health>(entity)) {
+            if (definition &&
+                !world.try_get<TunableStats>(entity)) {
                 queueCombatProfile(
-                    context, entity, definition->combat);
+                    context,
+                    entity,
+                    definition->combat,
+                    true,
+                    0,
+                    site->ownerTeam);
             }
         }
     }
@@ -1134,33 +989,29 @@ private:
     }
 
     void attachCombatProfile(ecs::Entity entity,
-                             const CombatStats& profile) {
+                             const CombatStats& profile,
+                             bool building,
+                             std::int32_t baseMoveSpeed) {
+        world_.emplace<TunableStats>(
+            entity, TunableStats{building, baseMoveSpeed, profile});
         if (profile.maximumHealth <= 0) return;
         world_.emplace<Health>(
             entity,
-            Health{profile.maximumHealth,
-                   profile.maximumHealth});
+            Health{profile.maximumHealth, profile.maximumHealth});
         world_.emplace<Armor>(
-            entity,
-            Armor{std::max<std::int32_t>(0, profile.armor)});
+            entity, Armor{std::max<std::int32_t>(0, profile.armor)});
         if (profile.bounty > 0) {
-            world_.emplace<Bounty>(
-                entity,
-                Bounty{profile.bounty});
+            world_.emplace<Bounty>(entity, Bounty{profile.bounty});
         }
         if (profile.attackCapable()) {
             world_.emplace<Weapon>(
                 entity,
-                Weapon{
-                    profile.weaponDamage,
-                    profile.weaponRange,
-                    std::max<std::uint32_t>(
-                        1, profile.cooldownTicks),
-                    0});
-            world_.emplace<CombatTarget>(
-                entity, CombatTarget{});
-            world_.emplace<CombatDirective>(
-                entity, CombatDirective{});
+                Weapon{profile.weaponDamage,
+                       profile.weaponRange,
+                       std::max<std::uint32_t>(1, profile.cooldownTicks),
+                       0});
+            world_.emplace<CombatTarget>(entity, CombatTarget{});
+            world_.emplace<CombatDirective>(entity, CombatDirective{});
         }
     }
 
@@ -1168,18 +1019,34 @@ private:
     void queueCombatProfile(
         const ecs::SystemContext& context,
         Target target,
-        const CombatStats& profile) {
+        const CombatStats& profile,
+        bool building,
+        std::int32_t baseMoveSpeed,
+        std::uint32_t teamId) {
+        structuralCommands_.add(
+            context,
+            target,
+            TunableStats{building, baseMoveSpeed, profile});
         if (profile.maximumHealth <= 0) return;
+
+        const auto& teamProfile = modifiers_.profile(teamId);
+        const auto healthMultiplier = building
+            ? teamProfile.buildingHealth
+            : teamProfile.unitHealth;
+        const auto damageMultiplier = building
+            ? teamProfile.buildingDamage
+            : teamProfile.unitDamage;
+        const auto maximumHealth = std::max<std::int32_t>(
+            1, ScaleGameplayValue(
+                   profile.maximumHealth, healthMultiplier));
+        const auto armor = std::max<std::int32_t>(
+            0, profile.armor +
+                   (building ? 0 : teamProfile.unitArmorAdd));
+
         structuralCommands_.add(
-            context,
-            target,
-            Health{profile.maximumHealth,
-                   profile.maximumHealth});
-        structuralCommands_.add(
-            context,
-            target,
-            Armor{std::max<std::int32_t>(
-                0, profile.armor)});
+            context, target,
+            Health{maximumHealth, maximumHealth});
+        structuralCommands_.add(context, target, Armor{armor});
         if (profile.bounty > 0) {
             structuralCommands_.add(
                 context, target, Bounty{profile.bounty});
@@ -1189,10 +1056,12 @@ private:
                 context,
                 target,
                 Weapon{
-                    profile.weaponDamage,
-                    profile.weaponRange,
-                    std::max<std::uint32_t>(
-                        1, profile.cooldownTicks),
+                    std::max<std::int32_t>(
+                        0, ScaleGameplayValue(
+                               profile.weaponDamage,
+                               damageMultiplier)),
+                    std::max<std::int32_t>(0, profile.weaponRange),
+                    std::max<std::uint32_t>(1, profile.cooldownTicks),
                     0});
             structuralCommands_.add(
                 context, target, CombatTarget{});
@@ -1240,15 +1109,19 @@ private:
             victimTeam &&
             killerTeam->id == playerTeamId_ &&
             killerTeam->id != victimTeam->id) {
-            resources_.available += bounty->amount;
-            deathSideEffects_.push_back(
-                {context.tick,
-                 DomainEventType::BountyAwarded,
-                 killer,
-                 0,
-                 0,
-                 victim,
-                 bounty->amount});
+            const auto awarded =
+                modifiers_.bounty(killerTeam->id, bounty->amount);
+            if (awarded > 0) {
+                resources_.available += awarded;
+                deathSideEffects_.push_back(
+                    {context.tick,
+                     DomainEventType::BountyAwarded,
+                     killer,
+                     0,
+                     0,
+                     victim,
+                     awarded});
+            }
         }
     }
 
@@ -1392,6 +1265,19 @@ private:
         const auto* bounty = world.try_get<Bounty>(entity);
         hash.WriteBool(bounty != nullptr);
         if (bounty) hash.WriteI32(bounty->amount);
+
+        const auto* tunable = world.try_get<TunableStats>(entity);
+        hash.WriteBool(tunable != nullptr);
+        if (tunable) {
+            hash.WriteBool(tunable->building);
+            hash.WriteI32(tunable->baseMoveSpeed);
+            hash.WriteI32(tunable->baseCombat.maximumHealth);
+            hash.WriteI32(tunable->baseCombat.armor);
+            hash.WriteI32(tunable->baseCombat.weaponDamage);
+            hash.WriteI32(tunable->baseCombat.weaponRange);
+            hash.WriteU32(tunable->baseCombat.cooldownTicks);
+            hash.WriteI32(tunable->baseCombat.bounty);
+        }
     }
 
     static void hashFootprint(
@@ -1446,6 +1332,7 @@ private:
                        std::uint64_t tick) {
         snapshot_.tick = tick;
         snapshot_.resources = resources_;
+        snapshot_.teamModifiers = modifiers_.entries();
         snapshot_.entities.clear();
 
         foundation::CanonicalHash hash;
@@ -1453,6 +1340,7 @@ private:
         hash.WriteI32(resources_.available);
         hash.WriteI32(resources_.reserved);
         hash.WriteI32(resources_.spent);
+        modifiers_.appendHash(hash);
         hash.WriteU64(navigation_.revision());
         for (const auto blocked : navigation_.blockers()) {
             hash.WriteU8(blocked);
@@ -1520,6 +1408,7 @@ private:
             hash.WriteI32(site->reservedCost);
             hash.WriteU32(site->progressTicks);
             hash.WriteU32(site->requiredTicks);
+            hash.WriteU32(site->baseRequiredTicks);
             hash.WriteBool(site->producer);
             hash.WriteU32(site->ownerTeam);
             hashFootprint(hash, *footprint);
@@ -1565,6 +1454,7 @@ private:
                     hash.WriteI32(item.reservedCost);
                     hash.WriteU32(item.progressTicks);
                     hash.WriteU32(item.requiredTicks);
+                    hash.WriteU32(item.baseRequiredTicks);
                 }
             }
             const auto* rally =
@@ -1595,12 +1485,13 @@ private:
     ResourceLedger resources_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
+    GameplayModifierSystem modifiers_;
     std::vector<TickCommand> activeCommands_;
     std::vector<DomainEvent> events_;
     std::vector<DomainEvent> deathSideEffects_;
     WorldSnapshot snapshot_;
-    std::vector<BuildingDefinition> buildingDefinitions_;
-    std::vector<UnitDefinition> unitDefinitions_;
+    DefinitionCatalog<BuildingDefinition> buildingDefinitions_;
+    DefinitionCatalog<UnitDefinition> unitDefinitions_;
     GridPoint requiredPathStart_{0, 0};
     GridPoint requiredPathGoal_{0, 0};
     ProductionId nextProductionId_{};

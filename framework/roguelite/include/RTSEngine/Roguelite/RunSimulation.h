@@ -1,8 +1,10 @@
 #pragma once
 
+#include <RTSEngine/Roguelite/GameplayStats.h>
 #include <RTSEngine/Roguelite/ModifierRuntime.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
 #include <rts/foundation/CanonicalHash.h>
+#include <rts/sim/DeterministicCommandStream.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -49,47 +51,8 @@ struct TickCommand {
     std::uint32_t objectId{};
 };
 
-class TickCommandStream {
-public:
-    bool submit(TickCommand command) {
-        if (command.targetTick < committedThrough_) return false;
-        commands_.push_back(command);
-        return true;
-    }
-
-    std::vector<TickCommand> consume(std::uint64_t tick) {
-        committedThrough_ = tick + 1;
-        std::vector<TickCommand> result;
-        auto iterator = commands_.begin();
-        while (iterator != commands_.end()) {
-            if (iterator->targetTick == tick) {
-                result.push_back(*iterator);
-                iterator = commands_.erase(iterator);
-            } else {
-                ++iterator;
-            }
-        }
-        std::sort(result.begin(), result.end(),
-                  [](const TickCommand& a, const TickCommand& b) {
-                      return a.issuer != b.issuer
-                          ? a.issuer < b.issuer
-                          : a.sequence < b.sequence;
-                  });
-        result.erase(
-            std::unique(result.begin(), result.end(),
-                        [](const TickCommand& a,
-                           const TickCommand& b) {
-                            return a.issuer == b.issuer &&
-                                   a.sequence == b.sequence;
-                        }),
-            result.end());
-        return result;
-    }
-
-private:
-    std::vector<TickCommand> commands_;
-    std::uint64_t committedThrough_{};
-};
+using TickCommandStream =
+    sim::DeterministicCommandStream<TickCommand>;
 
 enum class RunFailure : std::uint8_t {
     None,
@@ -131,6 +94,7 @@ struct RunSnapshot {
     RunState state{};
     std::int32_t availableResources{};
     std::int32_t waveCompletionResourceBonus{};
+    gameplay::TeamModifierProfile gameplayProfile{};
     std::vector<ModifierStack> modifiers;
 };
 
@@ -185,7 +149,9 @@ public:
     }
 
     void setPlayerTeam(std::uint32_t teamId) noexcept {
+        playerTeamId_ = teamId;
         tower_.setPlayerTeam(teamId);
+        synchronizeGameplayModifiers();
     }
 
     void setRequiredRoute(gameplay::GridPoint start,
@@ -449,6 +415,7 @@ private:
     void onModifierChosen(std::uint64_t tick, ModifierId id) {
         const auto result = modifiers_.apply(id);
         if (result.accepted) {
+            synchronizeGameplayModifiers();
             events_.push_back(
                 {tick, EventType::ModifierApplied, state_.runId,
                  state_.currentWave, id,
@@ -507,6 +474,11 @@ private:
              static_cast<std::uint32_t>(failure)});
     }
 
+    void synchronizeGameplayModifiers() {
+        tower_.setTeamModifierProfile(
+            playerTeamId_, ResolveGameplayProfile(modifiers_));
+    }
+
     void buildSnapshot(std::uint64_t tick) {
         snapshot_.tick = tick;
         snapshot_.towerDefenseWorldHash =
@@ -516,6 +488,8 @@ private:
             tower_.resources().available;
         snapshot_.waveCompletionResourceBonus =
             modifiers_.resolve(WaveCompletionResourceStat(), 0);
+        snapshot_.gameplayProfile =
+            ResolveGameplayProfile(modifiers_);
         snapshot_.modifiers = modifiers_.stacks();
 
         foundation::CanonicalHash hash;
@@ -531,6 +505,16 @@ private:
         hash.WriteU32(nextInternalSequence_);
         hash.WriteI32(snapshot_.availableResources);
         hash.WriteI32(snapshot_.waveCompletionResourceBonus);
+        hash.WriteU32(playerTeamId_);
+        hash.WriteI32(snapshot_.gameplayProfile.unitHealth);
+        hash.WriteI32(snapshot_.gameplayProfile.unitDamage);
+        hash.WriteI32(snapshot_.gameplayProfile.unitArmorAdd);
+        hash.WriteI32(snapshot_.gameplayProfile.unitMoveSpeed);
+        hash.WriteI32(snapshot_.gameplayProfile.buildingHealth);
+        hash.WriteI32(snapshot_.gameplayProfile.buildingDamage);
+        hash.WriteI32(snapshot_.gameplayProfile.constructionSpeed);
+        hash.WriteI32(snapshot_.gameplayProfile.productionSpeed);
+        hash.WriteI32(snapshot_.gameplayProfile.bountyMultiplier);
 
         const auto* run = findById(runs_, state_.runId);
         hash.WriteBool(run != nullptr);
@@ -561,6 +545,7 @@ private:
     std::uint64_t nextWaveTick_{};
     std::uint64_t lastTick_{};
     std::uint32_t nextInternalSequence_{1};
+    std::uint32_t playerTeamId_{1};
     bool hasStepped_{};
 };
 

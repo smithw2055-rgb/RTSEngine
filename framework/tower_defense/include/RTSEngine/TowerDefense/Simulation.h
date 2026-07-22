@@ -3,6 +3,7 @@
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/TowerDefense/WaveDirector.h>
 #include <rts/foundation/CanonicalHash.h>
+#include <rts/sim/DeterministicCommandStream.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -25,48 +26,8 @@ struct TickCommand {
     std::uint32_t objectId{};
 };
 
-class TickCommandStream {
-public:
-    bool submit(TickCommand command) {
-        if (command.targetTick < committedThrough_) return false;
-        commands_.push_back(command);
-        return true;
-    }
-
-    std::vector<TickCommand> consume(std::uint64_t tick) {
-        committedThrough_ = tick + 1;
-        std::vector<TickCommand> result;
-        auto iterator = commands_.begin();
-        while (iterator != commands_.end()) {
-            if (iterator->targetTick == tick) {
-                result.push_back(*iterator);
-                iterator = commands_.erase(iterator);
-            } else {
-                ++iterator;
-            }
-        }
-        std::sort(result.begin(), result.end(),
-                  [](const TickCommand& a,
-                     const TickCommand& b) {
-                      return a.issuer != b.issuer
-                          ? a.issuer < b.issuer
-                          : a.sequence < b.sequence;
-                  });
-        result.erase(
-            std::unique(result.begin(), result.end(),
-                        [](const TickCommand& a,
-                           const TickCommand& b) {
-                            return a.issuer == b.issuer &&
-                                   a.sequence == b.sequence;
-                        }),
-            result.end());
-        return result;
-    }
-
-private:
-    std::vector<TickCommand> commands_;
-    std::uint64_t committedThrough_{};
-};
+using TickCommandStream =
+    sim::DeterministicCommandStream<TickCommand>;
 
 enum class EventType : std::uint8_t {
     WaveStarted,
@@ -153,6 +114,12 @@ public:
     void setPlayerTeam(std::uint32_t teamId) noexcept {
         playerTeamId_ = teamId;
         rts_.setPlayerTeam(teamId);
+    }
+
+    bool setTeamModifierProfile(
+        std::uint32_t teamId,
+        gameplay::TeamModifierProfile profile) {
+        return rts_.setTeamModifierProfile(teamId, profile);
     }
 
     void setRequiredRoute(gameplay::GridPoint start,

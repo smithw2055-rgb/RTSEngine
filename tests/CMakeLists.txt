@@ -33,3 +33,12 @@ add_test(NAME rts_tower_defense_tests COMMAND rts_tower_defense_tests)
 add_executable(rts_roguelite_tests roguelite_tests.cpp)
 target_link_libraries(rts_roguelite_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_tests COMMAND rts_roguelite_tests)
+
+
+add_executable(rts_command_stream_tests deterministic_command_stream_tests.cpp)
+target_link_libraries(rts_command_stream_tests PRIVATE RTSEngine::Sim)
+add_test(NAME rts_command_stream_tests COMMAND rts_command_stream_tests)
+
+add_executable(rts_gameplay_modifier_tests gameplay_modifier_tests.cpp)
+target_link_libraries(rts_gameplay_modifier_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_gameplay_modifier_tests COMMAND rts_gameplay_modifier_tests)
