@@ -19,6 +19,9 @@ struct GridPathCacheLimits final {
 struct GridPathCacheStats final {
     std::uint64_t hits{};
     std::uint64_t misses{};
+    std::uint64_t searches{};
+    std::uint64_t expandedNodes{};
+    std::uint64_t returnedPathPoints{};
     std::uint64_t insertions{};
     std::uint64_t evictions{};
     std::uint64_t invalidations{};
@@ -49,13 +52,17 @@ public:
         auto found = lowerBound(key);
         if (found != entries_.end() && equalKey(found->key, key)) {
             ++stats_.hits;
+            stats_.returnedPathPoints += found->result.points.size();
             found->lastUse = nextAccessSerial();
             return found->result;
         }
 
         ++stats_.misses;
+        ++stats_.searches;
         auto result = GridPathfinder::find(
             grid, start, goal, scratch, nodeBudget);
+        stats_.expandedNodes += result.expandedNodes;
+        stats_.returnedPathPoints += result.points.size();
         const auto resultPoints = result.points.size();
         if (limits_.maximumEntries == 0 ||
             resultPoints > limits_.maximumPoints) {
