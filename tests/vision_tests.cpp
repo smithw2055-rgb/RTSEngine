@@ -125,11 +125,26 @@ TickCommand moveCommand(
     return command;
 }
 
+int testUnsteppedArchiveRoundTrip() {
+    RtsSimulation original(8, 6);
+    original.createUnit({2, 2}, {1}, 1, {}, 4);
+    CHECK(original.vision().layerCount() == 0u);
+    const auto archive = EncodeRtsSimulation(original);
+    CHECK(!archive.empty());
+
+    RtsSimulation restored(8, 6);
+    CHECK(DecodeRtsSimulation(archive, restored));
+    CHECK(restored.vision().layerCount() == 0u);
+    CHECK(restored.snapshot().worldHash == 0u);
+    CHECK(EncodeRtsSimulation(restored) == archive);
+    return EXIT_SUCCESS;
+}
+
 int testSimulationSnapshotAndPersistence() {
     RtsSimulation original(12, 8);
     CHECK(original.setBlocked({6, 2}, true));
     const auto scout = original.createUnit(
-        {2, 2}, {1}, 1, {}, 3);
+        {2, 2}, {1}, 1, {}, 6);
     original.createUnit({9, 5}, {0}, 2, {}, 2);
 
     original.step(0);
@@ -147,7 +162,7 @@ int testSimulationSnapshotAndPersistence() {
             return entity.entity == scout;
         });
     CHECK(scoutSnapshot != original.snapshot().entities.end());
-    CHECK(scoutSnapshot->visionRange == 3);
+    CHECK(scoutSnapshot->visionRange == 6);
 
     CHECK(original.submit(moveCommand(1, 1, scout, {4, 5})));
     original.step(1);
@@ -208,6 +223,7 @@ int testDeterministicHashes() {
 int main() {
     CHECK(testLineOfSightAndTeams() == EXIT_SUCCESS);
     CHECK(testExploredHistoryAndBinaryState() == EXIT_SUCCESS);
+    CHECK(testUnsteppedArchiveRoundTrip() == EXIT_SUCCESS);
     CHECK(testSimulationSnapshotAndPersistence() == EXIT_SUCCESS);
     CHECK(testDeterministicHashes() == EXIT_SUCCESS);
     std::cout << "vision and fog-of-war tests passed\n";
