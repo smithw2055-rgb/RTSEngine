@@ -41,9 +41,33 @@ public:
           blocked_(static_cast<std::size_t>(width_) *
                    static_cast<std::size_t>(height_), 0) {}
 
+    NavigationGrid(const NavigationGrid&) = default;
+    NavigationGrid(NavigationGrid&&) noexcept = default;
+
+    NavigationGrid& operator=(const NavigationGrid& other) {
+        if (this == &other) return *this;
+        width_ = other.width_;
+        height_ = other.height_;
+        blocked_ = other.blocked_;
+        revision_ = other.revision_;
+        bumpCacheEpoch();
+        return *this;
+    }
+
+    NavigationGrid& operator=(NavigationGrid&& other) noexcept {
+        if (this == &other) return *this;
+        width_ = other.width_;
+        height_ = other.height_;
+        blocked_ = std::move(other.blocked_);
+        revision_ = other.revision_;
+        bumpCacheEpoch();
+        return *this;
+    }
+
     std::int32_t width() const noexcept { return width_; }
     std::int32_t height() const noexcept { return height_; }
     std::uint64_t revision() const noexcept { return revision_; }
+    std::uint64_t cacheEpoch() const noexcept { return cacheEpoch_; }
 
     bool contains(GridPoint point) const noexcept {
         return point.x >= 0 && point.y >= 0 &&
@@ -65,6 +89,7 @@ public:
         }
         cell = next;
         ++revision_;
+        bumpCacheEpoch();
         return true;
     }
 
@@ -82,6 +107,7 @@ public:
         height_ = state.height;
         blocked_ = state.blocked;
         revision_ = state.revision;
+        bumpCacheEpoch();
         return true;
     }
 
@@ -91,6 +117,7 @@ public:
         height_ = state.height;
         blocked_ = std::move(state.blocked);
         revision_ = state.revision;
+        bumpCacheEpoch();
         return true;
     }
 
@@ -142,6 +169,14 @@ public:
     }
 
 private:
+    void bumpCacheEpoch() noexcept {
+        if (cacheEpoch_ == std::numeric_limits<std::uint64_t>::max()) {
+            cacheEpoch_ = 1;
+        } else {
+            ++cacheEpoch_;
+        }
+    }
+
     std::size_t index(GridPoint point) const noexcept {
         return static_cast<std::size_t>(point.y) *
                    static_cast<std::size_t>(width_) +
@@ -152,6 +187,7 @@ private:
     std::int32_t height_{};
     std::vector<std::uint8_t> blocked_;
     std::uint64_t revision_{};
+    std::uint64_t cacheEpoch_{1};
 };
 
 struct PathResult {
