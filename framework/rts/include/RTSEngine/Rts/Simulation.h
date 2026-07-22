@@ -19,6 +19,7 @@
 #include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
+#include <RTSEngine/Rts/Vision.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -34,6 +35,7 @@ class RtsSimulation {
 public:
     RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
         : navigation_(width, height),
+          vision_(width, height),
           movement_(width, height),
           building_(resources_, navigation_),
           combat_(width, height) {
@@ -80,9 +82,16 @@ public:
         Position position,
         MoveSpeed speed,
         std::uint32_t teamId = 1,
-        CombatStats combat = {}) {
+        CombatStats combat = {},
+        std::int32_t visionRange = 6) {
         return EntityFactory::createUnit(
-            world_, modifiers_, position, speed, teamId, combat);
+            world_,
+            modifiers_,
+            position,
+            speed,
+            teamId,
+            combat,
+            visionRange);
     }
 
     bool submit(TickCommand command) {
@@ -95,6 +104,10 @@ public:
 
     const NavigationGrid& navigation() const noexcept {
         return navigation_;
+    }
+
+    const VisionRuntime& vision() const noexcept {
+        return vision_;
     }
 
     const GridPathCache& pathCache() const noexcept {
@@ -301,6 +314,15 @@ private:
 
         scheduler_.add(
             ecs::Stage::Snapshot,
+            -10,
+            390,
+            [this](ecs::World& world,
+                   const ecs::SystemContext&) {
+                VisionSystem::run(world, navigation_, vision_);
+            });
+
+        scheduler_.add(
+            ecs::Stage::Snapshot,
             0,
             400,
             [this](ecs::World& world,
@@ -312,7 +334,8 @@ private:
                      modifiers_,
                      navigation_,
                      commands_,
-                     snapshot_});
+                     snapshot_,
+                     &vision_});
             });
     }
 
@@ -321,6 +344,7 @@ private:
     TickCommandStream commands_;
     ecs::EntityCommandBuffer structuralCommands_;
     NavigationGrid navigation_;
+    VisionRuntime vision_;
     GridPathCache pathCache_;
     GridPathfinderScratch pathScratch_;
     GridFlowFieldCache flowFields_;
