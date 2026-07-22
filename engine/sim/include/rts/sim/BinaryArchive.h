@@ -136,7 +136,9 @@ public:
 
 private:
     bool require(std::size_t count) noexcept {
-        if (!ok_ || count > size_ - offset_) return fail();
+        if (!ok_ || offset_ > size_ || count > size_ - offset_) {
+            return fail();
+        }
         return true;
     }
 
