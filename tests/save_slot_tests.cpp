@@ -12,6 +12,65 @@ namespace {
 
 using namespace rts;
 
+class InjectedDurability final : public roguelite::IRunSaveDurability {
+public:
+    roguelite::RunSaveDurabilityOperation failOperation{
+        roguelite::RunSaveDurabilityOperation::None};
+    std::int64_t nativeCode{4242};
+
+    roguelite::RunSaveDurabilityResult syncFile(
+        const std::filesystem::path& path) noexcept override {
+        if (failOperation == roguelite::RunSaveDurabilityOperation::SyncFile) {
+            return failure(
+                roguelite::RunSaveDurabilityOperation::SyncFile,
+                roguelite::RunSaveDurabilityError::SyncFailed);
+        }
+        return platform_.syncFile(path);
+    }
+
+    roguelite::RunSaveDurabilityResult replaceFile(
+        const std::filesystem::path& source,
+        const std::filesystem::path& destination) noexcept override {
+        if (failOperation ==
+            roguelite::RunSaveDurabilityOperation::ReplaceFile) {
+            return failure(
+                roguelite::RunSaveDurabilityOperation::ReplaceFile,
+                roguelite::RunSaveDurabilityError::ReplaceFailed);
+        }
+        return platform_.replaceFile(source, destination);
+    }
+
+    roguelite::RunSaveDurabilityResult removeFile(
+        const std::filesystem::path& path) noexcept override {
+        if (failOperation == roguelite::RunSaveDurabilityOperation::RemoveFile) {
+            return failure(
+                roguelite::RunSaveDurabilityOperation::RemoveFile,
+                roguelite::RunSaveDurabilityError::RemoveFailed);
+        }
+        return platform_.removeFile(path);
+    }
+
+    roguelite::RunSaveDurabilityResult syncDirectory(
+        const std::filesystem::path& path) noexcept override {
+        if (failOperation ==
+            roguelite::RunSaveDurabilityOperation::SyncDirectory) {
+            return failure(
+                roguelite::RunSaveDurabilityOperation::SyncDirectory,
+                roguelite::RunSaveDurabilityError::DirectorySyncFailed);
+        }
+        return platform_.syncDirectory(path);
+    }
+
+private:
+    roguelite::RunSaveDurabilityResult failure(
+        roguelite::RunSaveDurabilityOperation operation,
+        roguelite::RunSaveDurabilityError error) const noexcept {
+        return {operation, error, nativeCode};
+    }
+
+    roguelite::PlatformRunSaveDurability platform_;
+};
+
 roguelite::RunSaveSchema makeSave(
     std::uint64_t tick,
     std::vector<std::uint8_t> authoritative) {
@@ -195,12 +254,16 @@ void testPrimaryRecoverySlots() {
         directory, "slot_1", expected);
     assert(loaded.error == roguelite::RunSaveSlotError::None);
     assert(loaded.source == roguelite::RunSaveSlotSource::Primary);
+    assert(loaded.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::LoadedPrimary);
     assert(loaded.decoded.envelope.manifest.sequence == 1);
     assert(loaded.decoded.envelope.save.tick == 10);
 
     const auto stale = roguelite::RunSaveSlotStore::write(
         directory, "slot_1", expected, 1, secondPayload);
     assert(stale.error == roguelite::RunSaveSlotError::StaleSequence);
+    assert(stale.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::StaleSequence);
 
     const auto secondWrite = roguelite::RunSaveSlotStore::write(
         directory, "slot_1", expected, 2, secondPayload);
@@ -219,6 +282,11 @@ void testPrimaryRecoverySlots() {
     assert(loaded.error == roguelite::RunSaveSlotError::None);
     assert(loaded.source == roguelite::RunSaveSlotSource::Recovery);
     assert(loaded.repairedPrimary);
+    assert(loaded.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::LoadedRecovery);
+    assert(loaded.diagnostic.fallbackUsed);
+    assert(loaded.diagnostic.repairAttempted);
+    assert(loaded.diagnostic.repairSucceeded);
     assert(loaded.decoded.envelope.manifest.sequence == 1);
     assert(loaded.decoded.envelope.save.tick == 10);
 
@@ -239,6 +307,8 @@ void testPrimaryRecoverySlots() {
         directory, "slot_1", identity(0x9999u));
     assert(wrongManifest.error ==
            roguelite::RunSaveSlotError::ManifestMismatch);
+    assert(wrongManifest.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::ManifestMismatch);
 
     const auto buildAgnostic = roguelite::RunSaveSlotStore::load(
         directory, "slot_1", identity(0x2222u, 0x9999u), false);
@@ -255,12 +325,77 @@ void testPrimaryRecoverySlots() {
     std::filesystem::remove_all(directory, error);
 }
 
+void testDurabilityFailuresAndDiagnosticCodes() {
+    const auto directory = uniqueDirectory();
+    std::error_code error;
+    std::filesystem::remove_all(directory, error);
+
+    const auto expected = identity();
+    const auto firstPayload = roguelite::EncodeRunSave(
+        makeSave(10, {1, 2, 3}));
+    const auto secondPayload = roguelite::EncodeRunSave(
+        makeSave(20, {4, 5, 6}));
+
+    InjectedDurability injected;
+    injected.failOperation = roguelite::RunSaveDurabilityOperation::SyncFile;
+    const auto failedSync = roguelite::RunSaveSlotStore::write(
+        directory, "durable", expected, 1, firstPayload, injected);
+    assert(failedSync.error ==
+           roguelite::RunSaveSlotError::TemporarySyncFailed);
+    assert(failedSync.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::TemporarySyncFailed);
+    assert(failedSync.diagnostic.stage ==
+           roguelite::RunSaveDiagnosticStage::SyncTemporary);
+    assert(failedSync.diagnostic.durability.error ==
+           roguelite::RunSaveDurabilityError::SyncFailed);
+    assert(failedSync.diagnostic.nativeCode == injected.nativeCode);
+    assert(!std::filesystem::exists(directory / "durable.sav"));
+
+    injected.failOperation = roguelite::RunSaveDurabilityOperation::None;
+    assert(roguelite::RunSaveSlotStore::write(
+               directory, "durable", expected, 1, firstPayload, injected)
+               .error == roguelite::RunSaveSlotError::None);
+    assert(roguelite::RunSaveSlotStore::write(
+               directory, "durable", expected, 2, secondPayload, injected)
+               .error == roguelite::RunSaveSlotError::None);
+
+    overwriteFile(directory / "durable.sav", {9, 8, 7});
+    injected.failOperation =
+        roguelite::RunSaveDurabilityOperation::ReplaceFile;
+    const auto repairFailed = roguelite::RunSaveSlotStore::load(
+        directory, "durable", expected, false, true, injected);
+    assert(repairFailed.error == roguelite::RunSaveSlotError::None);
+    assert(repairFailed.source == roguelite::RunSaveSlotSource::Recovery);
+    assert(!repairFailed.repairedPrimary);
+    assert(repairFailed.diagnostic.code ==
+           roguelite::RunSaveDiagnosticCode::LoadedRecoveryRepairFailed);
+    assert(repairFailed.diagnostic.fallbackUsed);
+    assert(repairFailed.diagnostic.repairAttempted);
+    assert(!repairFailed.diagnostic.repairSucceeded);
+    assert(repairFailed.diagnostic.durability.error ==
+           roguelite::RunSaveDurabilityError::ReplaceFailed);
+    assert(repairFailed.diagnostic.nativeCode == injected.nativeCode);
+
+    assert(roguelite::RunSaveDiagnosticCodeName(
+               repairFailed.diagnostic.code) ==
+           "save.loaded_recovery_repair_failed");
+    assert(roguelite::RunSaveEnvelopeErrorName(
+               roguelite::RunSaveEnvelopeError::ChecksumMismatch) ==
+           "checksum_mismatch");
+    assert(roguelite::RunSaveDurabilityErrorName(
+               roguelite::RunSaveDurabilityError::SyncFailed) ==
+           "sync_failed");
+
+    std::filesystem::remove_all(directory, error);
+}
+
 } // namespace
 
 int main() {
     testMigrationPolicy();
     testEnvelopeCorruptionCorpus();
     testPrimaryRecoverySlots();
+    testDurabilityFailuresAndDiagnosticCodes();
     std::cout << "save slot tests passed\n";
     return 0;
 }

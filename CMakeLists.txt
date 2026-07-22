@@ -7,6 +7,20 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(RTSENGINE_BUILD_TESTS "Build RTSEngine tests" ON)
 option(RTSENGINE_BUILD_EXAMPLES "Build RTSEngine examples" ON)
+option(RTSENGINE_ENABLE_SANITIZERS
+       "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
+option(RTSENGINE_BUILD_FUZZERS
+       "Build Clang libFuzzer persistence targets" OFF)
+
+if(RTSENGINE_ENABLE_SANITIZERS)
+    if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        add_compile_options(-fsanitize=address,undefined -fno-omit-frame-pointer)
+        add_link_options(-fsanitize=address,undefined)
+    else()
+        message(FATAL_ERROR
+            "RTSENGINE_ENABLE_SANITIZERS currently requires GCC or Clang")
+    endif()
+endif()
 
 add_subdirectory(engine/foundation)
 add_subdirectory(engine/sim)
@@ -24,4 +38,8 @@ endif()
 if(RTSENGINE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+endif()
+
+if(RTSENGINE_BUILD_FUZZERS)
+    add_subdirectory(tests/fuzz)
 endif()
