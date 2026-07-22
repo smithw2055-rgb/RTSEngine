@@ -31,26 +31,49 @@ public:
 
     std::int32_t width() const noexcept { return width_; }
     std::int32_t height() const noexcept { return height_; }
+
+    void reserveAgents(std::size_t count) {
+        intents_.reserve(count);
+        resolution_.reserve(count);
+        rejected_.reserve(count);
+    }
+
     std::size_t intentCapacity() const noexcept { return intents_.capacity(); }
-    std::size_t rejectedCapacity() const noexcept { return rejected_.capacity(); }
+    std::size_t resolutionCapacity() const noexcept {
+        return resolution_.capacity();
+    }
+    std::size_t rejectedCapacity() const noexcept {
+        return rejected_.capacity();
+    }
     std::size_t cellCapacity() const noexcept {
         return firstOccupant_.capacity() + occupantCount_.capacity() +
                destinationWinner_.capacity();
+    }
+    std::uint32_t occupiedCellCount() const noexcept {
+        return occupiedCells_;
+    }
+    std::uint32_t maximumCellOccupancy() const noexcept {
+        return maximumCellOccupancy_;
     }
 
     void clearOccupancy() noexcept {
         std::fill(firstOccupant_.begin(), firstOccupant_.end(), ecs::Entity{});
         std::fill(occupantCount_.begin(), occupantCount_.end(), 0u);
+        occupiedCells_ = 0;
+        maximumCellOccupancy_ = 0;
     }
 
     bool addOccupant(ecs::Entity entity, GridPoint point) noexcept {
         if (!entity.valid() || !contains(point)) return false;
         const auto cell = index(point);
         auto& count = occupantCount_[cell];
+        if (count == 0) ++occupiedCells_;
         if (count == 0 || entity < firstOccupant_[cell]) {
             firstOccupant_[cell] = entity;
         }
         if (count != std::numeric_limits<std::uint16_t>::max()) ++count;
+        maximumCellOccupancy_ = std::max<std::uint32_t>(
+            maximumCellOccupancy_, count);
         return true;
     }
 
@@ -117,21 +140,25 @@ public:
             intents_.end());
 
         resolution_.assign(intents_.size(), kUnknown);
-        for (std::size_t indexValue = 0; indexValue < intents_.size(); ++indexValue) {
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
             const auto cell = index(intents_[indexValue].destination);
             const auto current = destinationWinner_[cell];
             if (current < 0 || better(
                     intents_[indexValue],
                     intents_[static_cast<std::size_t>(current)])) {
-                destinationWinner_[cell] = static_cast<std::int32_t>(indexValue);
+                destinationWinner_[cell] =
+                    static_cast<std::int32_t>(indexValue);
             }
         }
 
-        for (std::size_t indexValue = 0; indexValue < intents_.size(); ++indexValue) {
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
             resolve(indexValue);
         }
 
-        for (std::size_t indexValue = 0; indexValue < intents_.size(); ++indexValue) {
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
             if (!accepted(indexValue)) rejected_.push_back(indexValue);
         }
         std::sort(
@@ -222,7 +249,8 @@ private:
         const auto destinationCell = index(intentValue.destination);
         const auto count = occupantCount_[destinationCell];
         if (count == 0 ||
-            (count == 1 && firstOccupant_[destinationCell] == intentValue.entity)) {
+            (count == 1 &&
+             firstOccupant_[destinationCell] == intentValue.entity)) {
             state = kAccepted;
             return true;
         }
@@ -243,6 +271,8 @@ private:
 
     std::int32_t width_{};
     std::int32_t height_{};
+    std::uint32_t occupiedCells_{};
+    std::uint32_t maximumCellOccupancy_{};
     std::vector<ecs::Entity> firstOccupant_;
     std::vector<std::uint16_t> occupantCount_;
     std::vector<std::int32_t> destinationWinner_;
