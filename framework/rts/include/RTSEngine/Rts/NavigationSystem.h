@@ -4,6 +4,7 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/DefinitionCatalog.h>
 #include <RTSEngine/Rts/EntityFactory.h>
+#include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/OrderSystem.h>
@@ -20,6 +21,7 @@ struct NavigationSystemDependencies {
     NavigationGrid& navigation;
     GridPathCache& pathCache;
     GridPathfinderScratch& pathScratch;
+    GridFlowFieldCache& flowFields;
     ecs::EntityCommandBuffer& structuralCommands;
     GameplayModifierSystem& modifiers;
     const DefinitionCatalog<BuildingDefinition>& buildingDefinitions;
@@ -28,6 +30,8 @@ struct NavigationSystemDependencies {
 
 class NavigationSystem final {
 public:
+    static constexpr std::uint32_t kFlowFieldThreshold = 8u;
+
     static void synchronizeTeamModifiers(
         ecs::World& world,
         NavigationSystemDependencies dependencies) {
@@ -77,6 +81,8 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         NavigationSystemDependencies dependencies) {
+        prepareFlowDemands(world, dependencies);
+
         for (const auto entity :
              world.view<Position, OrderQueue, MovementAgent>()) {
             auto* position = world.try_get<Position>(entity);
@@ -135,32 +141,41 @@ public:
                 continue;
             }
 
-            if (!agent->path.empty() && agent->hasPathGoal &&
-                agent->pathGoal == goal &&
-                agent->pathRevision == dependencies.navigation.revision() &&
-                !agent->combatPath) {
+            if (hasReusableRegularPath(
+                    *agent, goal, dependencies.navigation.revision())) {
                 continue;
             }
 
-            const auto& path = dependencies.pathCache.resolve(
-                dependencies.navigation,
-                {position->x, position->y},
-                goal,
-                dependencies.pathScratch);
+            const GridPoint start{position->x, position->y};
+            const bool useFlowField =
+                dependencies.flowFields.demandCount(goal) >=
+                kFlowFieldThreshold;
             agent->pathRevision = dependencies.navigation.revision();
-            if (!path.found) {
-                queue->pending.erase(queue->pending.begin());
-                OrderSystem::clearPath(*agent);
-                OrderSystem::applyFrontOrderMode(world, entity, *queue);
-                dependencies.events.push_back(
-                    {context.tick,
-                     DomainEventType::PathFailed,
-                     entity,
-                     0,
-                     0});
-                continue;
+
+            if (useFlowField) {
+                const auto& field = dependencies.flowFields.resolve(
+                    dependencies.navigation, goal);
+                if (!dependencies.flowFields.extractPath(
+                        field, start, agent->path)) {
+                    failRegularPath(
+                        world, context, entity, *queue, *agent, dependencies);
+                    continue;
+                }
+                assignExtractedPath(*agent, goal, false);
+            } else {
+                const auto& path = dependencies.pathCache.resolve(
+                    dependencies.navigation,
+                    start,
+                    goal,
+                    dependencies.pathScratch);
+                if (!path.found) {
+                    failRegularPath(
+                        world, context, entity, *queue, *agent, dependencies);
+                    continue;
+                }
+                assignPath(*agent, path, goal, false);
             }
-            assignPath(*agent, path, goal, false);
+
             dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::PathReady,
@@ -171,6 +186,61 @@ public:
     }
 
 private:
+    static void prepareFlowDemands(
+        const ecs::World& world,
+        NavigationSystemDependencies dependencies) {
+        dependencies.flowFields.beginDemands();
+        for (const auto entity :
+             world.view<Position, OrderQueue, MovementAgent>()) {
+            const auto* position = world.try_get<Position>(entity);
+            const auto* queue = world.try_get<OrderQueue>(entity);
+            const auto* agent = world.try_get<MovementAgent>(entity);
+            const auto* directive =
+                world.try_get<CombatDirective>(entity);
+            if (!position || !queue || !agent || queue->pending.empty() ||
+                (directive &&
+                 directive->mode == CombatMode::AttackTarget)) {
+                continue;
+            }
+
+            const auto goal = queue->pending.front().target;
+            if ((position->x == goal.x && position->y == goal.y) ||
+                hasReusableRegularPath(
+                    *agent, goal, dependencies.navigation.revision())) {
+                continue;
+            }
+            dependencies.flowFields.addDemand(goal);
+        }
+    }
+
+    static bool hasReusableRegularPath(
+        const MovementAgent& agent,
+        GridPoint goal,
+        std::uint64_t navigationRevision) noexcept {
+        return !agent.path.empty() && agent.hasPathGoal &&
+               agent.pathGoal == goal &&
+               agent.pathRevision == navigationRevision &&
+               !agent.combatPath;
+    }
+
+    static void failRegularPath(
+        ecs::World& world,
+        const ecs::SystemContext& context,
+        ecs::Entity entity,
+        OrderQueue& queue,
+        MovementAgent& agent,
+        NavigationSystemDependencies dependencies) {
+        if (!queue.pending.empty()) queue.pending.erase(queue.pending.begin());
+        OrderSystem::clearPath(agent);
+        OrderSystem::applyFrontOrderMode(world, entity, queue);
+        dependencies.events.push_back(
+            {context.tick,
+             DomainEventType::PathFailed,
+             entity,
+             0,
+             0});
+    }
+
     static std::int32_t distance(GridPoint a, GridPoint b) noexcept {
         const auto dx = a.x > b.x ? a.x - b.x : b.x - a.x;
         const auto dy = a.y > b.y ? a.y - b.y : b.y - a.y;
@@ -315,16 +385,23 @@ private:
         return nullptr;
     }
 
+    static void assignExtractedPath(
+        MovementAgent& agent,
+        GridPoint goal,
+        bool combatPath) {
+        agent.nextPoint = 0;
+        agent.pathGoal = goal;
+        agent.hasPathGoal = true;
+        agent.combatPath = combatPath;
+    }
+
     static void assignPath(
         MovementAgent& agent,
         const PathResult& path,
         GridPoint goal,
         bool combatPath) {
         agent.path = path.points;
-        agent.nextPoint = 0;
-        agent.pathGoal = goal;
-        agent.hasPathGoal = true;
-        agent.combatPath = combatPath;
+        assignExtractedPath(agent, goal, combatPath);
     }
 };
 
