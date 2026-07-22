@@ -1,5 +1,6 @@
 #pragma once
 
+#include <RTSEngine/Ecs/Scheduler.h>
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 
