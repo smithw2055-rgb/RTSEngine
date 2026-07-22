@@ -136,7 +136,7 @@ void testReplayRoundTripAndPlayback() {
         decoded.commandStream.pending.front()));
 
     auto corrupted = bytes;
-    corrupted.back() ^= 0xffu;
+    corrupted.front() ^= 0xffu;
     gameplay::RtsReplay rejected;
     require(!gameplay::DecodeRtsReplay(corrupted, rejected));
 }
