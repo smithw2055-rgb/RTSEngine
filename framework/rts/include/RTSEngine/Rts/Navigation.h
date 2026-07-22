@@ -18,6 +18,10 @@ struct GridPoint {
     friend bool operator==(GridPoint a, GridPoint b) noexcept {
         return a.x == b.x && a.y == b.y;
     }
+
+    friend bool operator!=(GridPoint a, GridPoint b) noexcept {
+        return !(a == b);
+    }
 };
 
 struct NavigationGridState final {
@@ -153,15 +157,68 @@ private:
 struct PathResult {
     bool found{};
     bool budgetExceeded{};
+    std::uint32_t expandedNodes{};
     std::vector<GridPoint> points;
+};
+
+class GridPathfinderScratch final {
+public:
+    std::size_t cellCapacity() const noexcept { return cost_.capacity(); }
+    std::size_t heapCapacity() const noexcept { return heap_.capacity(); }
+    std::size_t reverseCapacity() const noexcept { return reverse_.capacity(); }
+
+private:
+    friend class GridPathfinder;
+
+    struct HeapNode final {
+        std::int32_t index{};
+        std::int32_t cost{};
+        std::int32_t heuristic{};
+    };
+
+    void prepare(std::size_t cells) {
+        if (cost_.size() < cells) {
+            cost_.resize(cells);
+            parent_.resize(cells);
+            state_.resize(cells);
+        }
+        std::fill_n(cost_.begin(), cells, infinity());
+        std::fill_n(parent_.begin(), cells, -1);
+        std::fill_n(state_.begin(), cells, static_cast<std::uint8_t>(0));
+        heap_.clear();
+        reverse_.clear();
+        if (heap_.capacity() < cells) heap_.reserve(cells);
+        if (reverse_.capacity() < cells) reverse_.reserve(cells);
+    }
+
+    static constexpr std::int32_t infinity() noexcept {
+        return std::numeric_limits<std::int32_t>::max();
+    }
+
+    std::vector<std::int32_t> cost_;
+    std::vector<std::int32_t> parent_;
+    std::vector<std::uint8_t> state_;
+    std::vector<HeapNode> heap_;
+    std::vector<GridPoint> reverse_;
 };
 
 class GridPathfinder {
 public:
-    static PathResult find(const NavigationGrid& grid,
-                           GridPoint start,
-                           GridPoint goal,
-                           std::uint32_t nodeBudget = 4096) {
+    static PathResult find(
+        const NavigationGrid& grid,
+        GridPoint start,
+        GridPoint goal,
+        std::uint32_t nodeBudget = 4096) {
+        thread_local GridPathfinderScratch scratch;
+        return find(grid, start, goal, scratch, nodeBudget);
+    }
+
+    static PathResult find(
+        const NavigationGrid& grid,
+        GridPoint start,
+        GridPoint goal,
+        GridPathfinderScratch& scratch,
+        std::uint32_t nodeBudget = 4096) {
         PathResult result;
         if (!grid.contains(start) || !grid.contains(goal) ||
             grid.blocked(start) || grid.blocked(goal)) {
@@ -175,12 +232,7 @@ public:
         const auto width = grid.width();
         const auto total = static_cast<std::size_t>(
             static_cast<std::int64_t>(width) * grid.height());
-        constexpr std::int32_t infinity =
-            std::numeric_limits<std::int32_t>::max();
-        std::vector<std::int32_t> cost(total, infinity);
-        std::vector<std::int32_t> parent(total, -1);
-        std::vector<std::uint8_t> open(total, 0);
-        std::vector<std::uint8_t> closed(total, 0);
+        scratch.prepare(total);
 
         const auto toIndex = [width](GridPoint point) {
             return static_cast<std::int32_t>(point.y * width + point.x);
@@ -196,71 +248,118 @@ public:
 
         const auto startIndex = toIndex(start);
         const auto goalIndex = toIndex(goal);
-        cost[static_cast<std::size_t>(startIndex)] = 0;
-        open[static_cast<std::size_t>(startIndex)] = 1;
+        scratch.cost_[static_cast<std::size_t>(startIndex)] = 0;
+        scratch.state_[static_cast<std::size_t>(startIndex)] = 1;
+        pushHeap(
+            scratch.heap_,
+            {startIndex, 0, heuristic(start, goal)});
 
         static constexpr GridPoint directions[] = {
             {0, -1}, {1, 0}, {0, 1}, {-1, 0}
         };
 
-        std::uint32_t expanded = 0;
-        while (true) {
-            std::int32_t current = -1;
-            std::int32_t bestF = infinity;
-            std::int32_t bestH = infinity;
-            for (std::int32_t candidate = 0;
-                 candidate < static_cast<std::int32_t>(total);
-                 ++candidate) {
-                if (!open[static_cast<std::size_t>(candidate)]) continue;
-                const auto point = toPoint(candidate);
-                const auto h = heuristic(point, goal);
-                const auto f = cost[static_cast<std::size_t>(candidate)] + h;
-                if (f < bestF ||
-                    (f == bestF &&
-                     (h < bestH ||
-                      (h == bestH && candidate < current)))) {
-                    current = candidate;
-                    bestF = f;
-                    bestH = h;
-                }
+        bool reached = false;
+        while (!scratch.heap_.empty()) {
+            const auto currentNode = popHeap(scratch.heap_);
+            const auto currentIndex = static_cast<std::size_t>(
+                currentNode.index);
+            if (scratch.state_[currentIndex] == 2 ||
+                scratch.cost_[currentIndex] != currentNode.cost) {
+                continue;
             }
 
-            if (current < 0) return result;
-            if (++expanded > nodeBudget) {
+            ++result.expandedNodes;
+            if (result.expandedNodes > nodeBudget) {
                 result.budgetExceeded = true;
                 return result;
             }
-            if (current == goalIndex) break;
+            if (currentNode.index == goalIndex) {
+                reached = true;
+                break;
+            }
 
-            open[static_cast<std::size_t>(current)] = 0;
-            closed[static_cast<std::size_t>(current)] = 1;
-            const auto point = toPoint(current);
+            scratch.state_[currentIndex] = 2;
+            const auto point = toPoint(currentNode.index);
             for (const auto direction : directions) {
                 const GridPoint next{
                     point.x + direction.x,
                     point.y + direction.y};
                 if (!grid.contains(next) || grid.blocked(next)) continue;
+
                 const auto nextIndex = toIndex(next);
-                if (closed[static_cast<std::size_t>(nextIndex)]) continue;
-                const auto nextCost =
-                    cost[static_cast<std::size_t>(current)] + 1;
-                if (nextCost < cost[static_cast<std::size_t>(nextIndex)]) {
-                    cost[static_cast<std::size_t>(nextIndex)] = nextCost;
-                    parent[static_cast<std::size_t>(nextIndex)] = current;
-                    open[static_cast<std::size_t>(nextIndex)] = 1;
-                }
+                const auto nextOffset = static_cast<std::size_t>(nextIndex);
+                if (scratch.state_[nextOffset] == 2) continue;
+
+                const auto nextCost = currentNode.cost + 1;
+                if (nextCost >= scratch.cost_[nextOffset]) continue;
+
+                scratch.cost_[nextOffset] = nextCost;
+                scratch.parent_[nextOffset] = currentNode.index;
+                scratch.state_[nextOffset] = 1;
+                pushHeap(
+                    scratch.heap_,
+                    {nextIndex, nextCost, heuristic(next, goal)});
             }
         }
 
-        std::vector<GridPoint> reversed;
-        for (auto cursor = goalIndex;
-             cursor != startIndex;
-             cursor = parent[static_cast<std::size_t>(cursor)]) {
+        if (!reached) return result;
+
+        for (auto cursor = goalIndex; cursor != startIndex;) {
             if (cursor < 0) return {};
-            reversed.push_back(toPoint(cursor));
+            scratch.reverse_.push_back(toPoint(cursor));
+            cursor = scratch.parent_[static_cast<std::size_t>(cursor)];
         }
-        result.points.assign(reversed.rbegin(), reversed.rend());
+        result.points.assign(
+            scratch.reverse_.rbegin(), scratch.reverse_.rend());
         result.found = true;
+        return result;
+    }
+
+private:
+    using HeapNode = GridPathfinderScratch::HeapNode;
+
+    static bool better(const HeapNode& a, const HeapNode& b) noexcept {
+        const auto aTotal = a.cost + a.heuristic;
+        const auto bTotal = b.cost + b.heuristic;
+        if (aTotal != bTotal) return aTotal < bTotal;
+        if (a.heuristic != b.heuristic) {
+            return a.heuristic < b.heuristic;
+        }
+        return a.index < b.index;
+    }
+
+    static void pushHeap(
+        std::vector<HeapNode>& heap,
+        HeapNode value) {
+        heap.push_back(value);
+        auto child = heap.size() - 1;
+        while (child > 0) {
+            const auto parent = (child - 1) / 2;
+            if (!better(heap[child], heap[parent])) break;
+            std::swap(heap[child], heap[parent]);
+            child = parent;
+        }
+    }
+
+    static HeapNode popHeap(std::vector<HeapNode>& heap) {
+        const auto result = heap.front();
+        heap.front() = heap.back();
+        heap.pop_back();
+        if (heap.empty()) return result;
+
+        std::size_t parent = 0;
+        while (true) {
+            const auto left = parent * 2 + 1;
+            if (left >= heap.size()) break;
+            const auto right = left + 1;
+            auto bestChild = left;
+            if (right < heap.size() && better(heap[right], heap[left])) {
+                bestChild = right;
+            }
+            if (!better(heap[bestChild], heap[parent])) break;
+            std::swap(heap[parent], heap[bestChild]);
+            parent = bestChild;
+        }
         return result;
     }
 };
