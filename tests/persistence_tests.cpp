@@ -36,8 +36,8 @@ bool sameCommand(
 void testRandomStateRestore() {
     const auto id = foundation::MakeRandomStreamId("save-test");
     foundation::RandomStream original(99, id);
-    original.NextU32();
-    original.NextU32();
+    (void)original.NextU32();
+    (void)original.NextU32();
     const auto state = original.Snapshot();
     const auto expected = original.NextU32();
 
@@ -91,7 +91,7 @@ ReplayScenario recordReplay() {
 
     foundation::RandomStream random(
         1234, foundation::MakeRandomStreamId("replay.random"));
-    random.NextU32();
+    (void)random.NextU32();
     recorder.setRandomStreams({random.Snapshot()});
 
     ReplayScenario result;
@@ -156,7 +156,7 @@ void testRunSaveSchemaRoundTrip() {
     foundation::RandomStream random(
         save.rootSeed,
         foundation::MakeRandomStreamId("run.reward"));
-    random.NextU32();
+    (void)random.NextU32();
     save.randomStreams = {random.Snapshot()};
     save.checkpoints = {{40, 1001}, {42, 2002}};
 
