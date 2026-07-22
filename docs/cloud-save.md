@@ -68,7 +68,7 @@ Cleanup executes through `IRunSaveDurability` and reports removed bytes plus per
 
 `rts_cloud_transport_tests` covers create-only upload, descendant upload/download, stale revision rejection, fetch-to-upload race injection, divergent preserve-both, explicit local preference, invalid input, named/idempotent branch preservation, inventory, invalid/excess branch cleanup, byte budgets, and protection of primary/recovery slots.
 
-The final head is validated on Ubuntu and Windows in Debug and Release.
+The final implementation head is validated on Ubuntu and Windows in Debug and Release by GitHub Actions run `#276`.
 
 ## Remaining product work
 
