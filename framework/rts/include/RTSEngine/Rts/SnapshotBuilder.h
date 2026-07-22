@@ -5,6 +5,7 @@
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
+#include <RTSEngine/Rts/Vision.h>
 #include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
@@ -18,6 +19,7 @@ struct SnapshotBuilderDependencies {
     const NavigationGrid& navigation;
     const TickCommandStream& commands;
     WorldSnapshot& snapshot;
+    const VisionRuntime* vision{};
 };
 
 class SnapshotBuilder final {
@@ -35,6 +37,14 @@ public:
         snapshot.pendingCommands = static_cast<std::uint32_t>(
             commandState.pending.size());
         snapshot.entities.clear();
+        snapshot.visibility.clear();
+        snapshot.visibilityWidth = 0;
+        snapshot.visibilityHeight = 0;
+        if (dependencies.vision) {
+            snapshot.visibilityWidth = dependencies.vision->width();
+            snapshot.visibilityHeight = dependencies.vision->height();
+            dependencies.vision->buildSnapshot(snapshot.visibility);
+        }
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
@@ -52,10 +62,14 @@ public:
         for (const auto blocked : dependencies.navigation.blockers()) {
             hash.WriteU8(blocked);
         }
+        if (dependencies.vision) {
+            dependencies.vision->appendExploredHash(hash);
+        }
 
-        appendUnits(world, hash, snapshot);
-        appendConstruction(world, hash, snapshot);
-        appendBuildings(world, hash, snapshot);
+        const bool includeVision = dependencies.vision != nullptr;
+        appendUnits(world, hash, snapshot, includeVision);
+        appendConstruction(world, hash, snapshot, includeVision);
+        appendBuildings(world, hash, snapshot, includeVision);
 
         std::sort(
             snapshot.entities.begin(),
@@ -113,6 +127,9 @@ private:
         if (const auto* directive =
                 world.try_get<CombatDirective>(entity)) {
             snapshot.combatMode = directive->mode;
+        }
+        if (const auto* vision = world.try_get<VisionSource>(entity)) {
+            snapshot.visionRange = vision->range;
         }
     }
 
@@ -173,6 +190,15 @@ private:
         }
     }
 
+    static void hashVision(
+        foundation::CanonicalHash& hash,
+        const ecs::World& world,
+        ecs::Entity entity) {
+        const auto* vision = world.try_get<VisionSource>(entity);
+        hash.WriteBool(vision != nullptr);
+        if (vision) hash.WriteI32(vision->range);
+    }
+
     static void hashFootprint(
         foundation::CanonicalHash& hash,
         const BuildingFootprint& footprint) {
@@ -189,7 +215,8 @@ private:
         const Position& position,
         const OrderQueue& queue,
         const MovementAgent& agent,
-        bool moving) {
+        bool moving,
+        bool includeVision) {
         hashEntity(hash, entity);
         hash.WriteI32(position.x);
         hash.WriteI32(position.y);
@@ -217,12 +244,14 @@ private:
         hash.WriteU32(agent.blockedTicks);
         hash.WriteU32(agent.yieldOrdinal);
         hashCombat(hash, world, entity);
+        if (includeVision) hashVision(hash, world, entity);
     }
 
     static void appendUnits(
         const ecs::World& world,
         foundation::CanonicalHash& hash,
-        WorldSnapshot& snapshot) {
+        WorldSnapshot& snapshot,
+        bool includeVision) {
         for (const auto entity :
              world.view<Position, OrderQueue, MovementAgent>()) {
             const auto* position = world.try_get<Position>(entity);
@@ -248,14 +277,22 @@ private:
 
             hash.WriteU8(static_cast<std::uint8_t>(SnapshotKind::Unit));
             hashUnit(
-                hash, world, entity, *position, *queue, *agent, moving);
+                hash,
+                world,
+                entity,
+                *position,
+                *queue,
+                *agent,
+                moving,
+                includeVision);
         }
     }
 
     static void appendConstruction(
         const ecs::World& world,
         foundation::CanonicalHash& hash,
-        WorldSnapshot& snapshot) {
+        WorldSnapshot& snapshot,
+        bool includeVision) {
         for (const auto entity :
              world.view<ConstructionSite, BuildingFootprint>()) {
             const auto* site = world.try_get<ConstructionSite>(entity);
@@ -286,13 +323,15 @@ private:
             hash.WriteU32(site->ownerTeam);
             hashFootprint(hash, *footprint);
             hashCombat(hash, world, entity);
+            if (includeVision) hashVision(hash, world, entity);
         }
     }
 
     static void appendBuildings(
         const ecs::World& world,
         foundation::CanonicalHash& hash,
-        WorldSnapshot& snapshot) {
+        WorldSnapshot& snapshot,
+        bool includeVision) {
         for (const auto entity :
              world.view<Building, BuildingFootprint>()) {
             const auto* building = world.try_get<Building>(entity);
@@ -337,6 +376,7 @@ private:
                 hash.WriteI32(rally->point.y);
             }
             hashCombat(hash, world, entity);
+            if (includeVision) hashVision(hash, world, entity);
         }
     }
 };
