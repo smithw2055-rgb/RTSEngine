@@ -7,6 +7,7 @@
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/OrderSystem.h>
+#include <RTSEngine/Rts/PathCache.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 
 #include <algorithm>
@@ -17,6 +18,8 @@ namespace rts::gameplay {
 
 struct NavigationSystemDependencies {
     NavigationGrid& navigation;
+    GridPathCache& pathCache;
+    GridPathfinderScratch& pathScratch;
     ecs::EntityCommandBuffer& structuralCommands;
     GameplayModifierSystem& modifiers;
     const DefinitionCatalog<BuildingDefinition>& buildingDefinitions;
@@ -139,10 +142,11 @@ public:
                 continue;
             }
 
-            const auto path = GridPathfinder::find(
+            const auto& path = dependencies.pathCache.resolve(
                 dependencies.navigation,
                 {position->x, position->y},
-                goal);
+                goal,
+                dependencies.pathScratch);
             agent->pathRevision = dependencies.navigation.revision();
             if (!path.found) {
                 queue->pending.erase(queue->pending.begin());
@@ -232,12 +236,14 @@ private:
             targetChanged;
         if (!needsPath) return;
 
-        const auto path = findAttackPath(
+        const auto* path = findAttackPath(
             dependencies.navigation,
             start,
             targetPoint,
-            weapon->range);
-        if (!path.found) {
+            weapon->range,
+            dependencies.pathCache,
+            dependencies.pathScratch);
+        if (!path || !path->found) {
             const auto lost = directive.forcedTarget;
             directive.mode = CombatMode::Guard;
             directive.forcedTarget = {};
@@ -255,9 +261,9 @@ private:
         }
 
         const auto goal =
-            path.points.empty() ? start : path.points.back();
+            path->points.empty() ? start : path->points.back();
         agent.pathRevision = dependencies.navigation.revision();
-        assignPath(agent, path, goal, true);
+        assignPath(agent, *path, goal, true);
         agent.chaseTarget = directive.forcedTarget;
         agent.chaseTargetPosition = targetPoint;
         dependencies.events.push_back(
@@ -270,11 +276,13 @@ private:
              0});
     }
 
-    static PathResult findAttackPath(
+    static const PathResult* findAttackPath(
         const NavigationGrid& navigation,
         GridPoint start,
         GridPoint target,
-        std::int32_t range) {
+        std::int32_t range,
+        GridPathCache& pathCache,
+        GridPathfinderScratch& pathScratch) {
         std::vector<GridPoint> candidates;
         const auto boundedRange = std::max<std::int32_t>(0, range);
         for (std::int32_t y = 0; y < navigation.height(); ++y) {
@@ -300,11 +308,11 @@ private:
             });
 
         for (const auto candidate : candidates) {
-            const auto path =
-                GridPathfinder::find(navigation, start, candidate);
-            if (path.found) return path;
+            const auto& path = pathCache.resolve(
+                navigation, start, candidate, pathScratch);
+            if (path.found) return &path;
         }
-        return {};
+        return nullptr;
     }
 
     static void assignPath(
