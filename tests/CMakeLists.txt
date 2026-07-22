@@ -26,6 +26,10 @@ add_executable(rts_vision_tests vision_tests.cpp)
 target_link_libraries(rts_vision_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_vision_tests COMMAND rts_vision_tests)
 
+add_executable(rts_influence_tests influence_tests.cpp)
+target_link_libraries(rts_influence_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_influence_tests COMMAND rts_influence_tests)
+
 add_executable(rts_scale_telemetry_tests scale_telemetry_tests.cpp)
 target_link_libraries(rts_scale_telemetry_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_scale_telemetry_tests COMMAND rts_scale_telemetry_tests)
