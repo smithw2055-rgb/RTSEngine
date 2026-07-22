@@ -9,11 +9,16 @@
 namespace rts::sim {
 
 // Command must expose targetTick, issuer, and sequence fields. The stream owns
-// ordering, duplicate suppression, and the late-command boundary shared by the
-// RTS, tower-defense, and roguelite orchestration layers.
+// ordering, duplicate suppression, skipped-Tick cleanup, late-command rejection,
+// and a canonical persistence state shared by all orchestration layers.
 template<class Command>
 class DeterministicCommandStream final {
 public:
+    struct State {
+        std::uint64_t committedThrough{};
+        std::vector<Command> pending;
+    };
+
     bool submit(Command command) {
         if (command.targetTick < committedThrough_) return false;
         commands_.push_back(std::move(command));
@@ -40,20 +45,29 @@ public:
         }
         commands_ = std::move(remaining);
 
-        std::stable_sort(result.begin(), result.end(),
-                         [](const Command& a, const Command& b) {
-                             return a.issuer != b.issuer
-                                 ? a.issuer < b.issuer
-                                 : a.sequence < b.sequence;
-                         });
-        result.erase(
-            std::unique(result.begin(), result.end(),
-                        [](const Command& a, const Command& b) {
-                            return a.issuer == b.issuer &&
-                                   a.sequence == b.sequence;
-                        }),
-            result.end());
+        sortAndDeduplicate(result);
         return result;
+    }
+
+    State snapshot() const {
+        State result{committedThrough_, commands_};
+        sortAndDeduplicate(result.pending);
+        return result;
+    }
+
+    bool restore(State state) {
+        if (std::any_of(
+                state.pending.begin(),
+                state.pending.end(),
+                [&](const Command& command) {
+                    return command.targetTick < state.committedThrough;
+                })) {
+            return false;
+        }
+        sortAndDeduplicate(state.pending);
+        committedThrough_ = state.committedThrough;
+        commands_ = std::move(state.pending);
+        return true;
     }
 
     void clearPending() noexcept { commands_.clear(); }
@@ -64,6 +78,28 @@ public:
     }
 
 private:
+    static bool less(const Command& a, const Command& b) {
+        if (a.targetTick != b.targetTick) {
+            return a.targetTick < b.targetTick;
+        }
+        if (a.issuer != b.issuer) return a.issuer < b.issuer;
+        return a.sequence < b.sequence;
+    }
+
+    static void sortAndDeduplicate(std::vector<Command>& commands) {
+        std::stable_sort(commands.begin(), commands.end(), less);
+        commands.erase(
+            std::unique(
+                commands.begin(),
+                commands.end(),
+                [](const Command& a, const Command& b) {
+                    return a.targetTick == b.targetTick &&
+                           a.issuer == b.issuer &&
+                           a.sequence == b.sequence;
+                }),
+            commands.end());
+    }
+
     std::vector<Command> commands_;
     std::uint64_t committedThrough_{};
 };
