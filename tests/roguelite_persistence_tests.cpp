@@ -65,10 +65,13 @@ void testTowerDefenseRoundTrip() {
     choose.objectId = 101;
     assert(original.submit(choose));
 
-    assert(original.step(0));
-    assert(original.step(1));
+    for (std::uint64_t tick = 0; tick <= 5; ++tick) {
+        assert(original.step(tick));
+    }
     assert(original.snapshot().wave.phase ==
            tower_defense::WavePhase::Spawning);
+    assert(original.snapshot().wave.spawned == 2);
+    assert(original.snapshot().wave.resolved == 2);
 
     const auto bytes =
         tower_defense::EncodeTowerDefenseSimulation(original);
@@ -80,7 +83,7 @@ void testTowerDefenseRoundTrip() {
     assert(restored.snapshot().worldHash == original.snapshot().worldHash);
     assert(restored.commandStreamState().pending.size() == 1);
 
-    for (std::uint64_t tick = 2; tick <= 52; ++tick) {
+    for (std::uint64_t tick = 6; tick <= 52; ++tick) {
         assert(original.step(tick));
         assert(restored.step(tick));
         assert(original.snapshot().worldHash == restored.snapshot().worldHash);

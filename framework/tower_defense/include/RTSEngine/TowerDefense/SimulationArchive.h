@@ -579,10 +579,10 @@ private:
             }
         }
         for (std::uint32_t index = 0; index < state.resolved; ++index) {
-            if (!director.markEnemyResolved() &&
-                index + 1u != state.resolved) {
+            if (director.state().resolved >= director.state().spawned) {
                 return false;
             }
+            (void)director.markEnemyResolved();
         }
         if (state.phase == WavePhase::Failed) {
             if (!director.fail()) return false;
