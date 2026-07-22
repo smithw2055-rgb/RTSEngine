@@ -80,24 +80,24 @@ class ModifierRuntime {
 public:
     static constexpr std::int32_t kMultiplierScale = 1000;
 
-    bool registerDefinition(ModifierDefinition definition) {
-        if (!valid(definition)) return false;
-        normalize(definition.tags);
-        normalize(definition.requiredModifiers);
-        normalize(definition.requiredTags);
-        normalize(definition.excludedModifiers);
-        normalize(definition.excludedTags);
+    bool registerDefinition(ModifierDefinition value) {
+        if (!valid(value)) return false;
+        normalize(value.tags);
+        normalize(value.requiredModifiers);
+        normalize(value.requiredTags);
+        normalize(value.excludedModifiers);
+        normalize(value.excludedTags);
 
         const auto iterator = std::lower_bound(
-            definitions_.begin(), definitions_.end(), definition.id,
+            definitions_.begin(), definitions_.end(), value.id,
             [](const ModifierDefinition& current, ModifierId id) {
                 return current.id < id;
             });
         if (iterator != definitions_.end() &&
-            iterator->id == definition.id) {
-            *iterator = std::move(definition);
+            iterator->id == value.id) {
+            *iterator = std::move(value);
         } else {
-            definitions_.insert(iterator, std::move(definition));
+            definitions_.insert(iterator, std::move(value));
         }
         return true;
     }
@@ -129,8 +129,8 @@ public:
     }
 
     std::uint32_t stackCount(ModifierId id) const noexcept {
-        const auto iterator = stackIterator(id);
-        return iterator == stacks_.end() ? 0u : iterator->stacks;
+        const auto* value = stack(id);
+        return value ? value->stacks : 0u;
     }
 
     bool hasModifier(ModifierId id) const noexcept {
@@ -139,9 +139,9 @@ public:
 
     bool hasTag(TagId tag) const noexcept {
         if (tag == 0) return false;
-        for (const auto& stack : stacks_) {
-            if (stack.stacks == 0) continue;
-            const auto* value = definition(stack.id);
+        for (const auto& active : stacks_) {
+            if (active.stacks == 0) continue;
+            const auto* value = definition(active.id);
             if (value && contains(value->tags, tag)) return true;
         }
         return false;
@@ -153,7 +153,6 @@ public:
         if (stackCount(id) >= candidate->maxStacks) {
             return ApplyFailure::MaximumStacks;
         }
-
         for (const auto required : candidate->requiredModifiers) {
             if (!hasModifier(required)) {
                 return ApplyFailure::MissingPrerequisite;
@@ -220,47 +219,47 @@ public:
 
     std::int32_t resolve(StatId stat,
                          std::int32_t baseValue) const noexcept {
-        std::int64_t value = baseValue;
-        for (const auto& stack : stacks_) {
-            const auto* modifier = definition(stack.id);
+        std::int64_t current = baseValue;
+        for (const auto& active : stacks_) {
+            const auto* modifier = definition(active.id);
             if (!modifier) continue;
             for (std::uint32_t layer = 0;
-                 layer < stack.stacks; ++layer) {
+                 layer < active.stacks; ++layer) {
                 for (const auto& effect : modifier->effects) {
                     if (effect.stat != stat) continue;
                     switch (effect.operation) {
                     case ModifierOperation::Add:
-                        value = clamp(value + effect.value);
+                        current = clamp(current + effect.value);
                         break;
                     case ModifierOperation::Multiply:
-                        value = clamp(
-                            (value * effect.value) /
+                        current = clamp(
+                            (current * effect.value) /
                             kMultiplierScale);
                         break;
                     case ModifierOperation::Override:
-                        value = effect.value;
+                        current = effect.value;
                         break;
                     }
                 }
             }
         }
-        return static_cast<std::int32_t>(clamp(value));
+        return static_cast<std::int32_t>(clamp(current));
     }
 
     void appendHash(foundation::CanonicalHash& hash) const noexcept {
         hash.WriteU32(static_cast<std::uint32_t>(definitions_.size()));
-        for (const auto& definitionValue : definitions_) {
-            hash.WriteU32(definitionValue.id);
-            hash.WriteU32(definitionValue.weight);
-            hash.WriteU32(definitionValue.maxStacks);
-            hashVector(hash, definitionValue.tags);
-            hashVector(hash, definitionValue.requiredModifiers);
-            hashVector(hash, definitionValue.requiredTags);
-            hashVector(hash, definitionValue.excludedModifiers);
-            hashVector(hash, definitionValue.excludedTags);
+        for (const auto& value : definitions_) {
+            hash.WriteU32(value.id);
+            hash.WriteU32(value.weight);
+            hash.WriteU32(value.maxStacks);
+            hashVector(hash, value.tags);
+            hashVector(hash, value.requiredModifiers);
+            hashVector(hash, value.requiredTags);
+            hashVector(hash, value.excludedModifiers);
+            hashVector(hash, value.excludedTags);
             hash.WriteU32(
-                static_cast<std::uint32_t>(definitionValue.effects.size()));
-            for (const auto& effect : definitionValue.effects) {
+                static_cast<std::uint32_t>(value.effects.size()));
+            for (const auto& effect : value.effects) {
                 hash.WriteU64(effect.stat);
                 hash.WriteU8(
                     static_cast<std::uint8_t>(effect.operation));
@@ -269,9 +268,9 @@ public:
         }
 
         hash.WriteU32(static_cast<std::uint32_t>(stacks_.size()));
-        for (const auto& stack : stacks_) {
-            hash.WriteU32(stack.id);
-            hash.WriteU32(stack.stacks);
+        for (const auto& active : stacks_) {
+            hash.WriteU32(active.id);
+            hash.WriteU32(active.stacks);
         }
     }
 
@@ -289,24 +288,22 @@ private:
         return std::binary_search(values.begin(), values.end(), value);
     }
 
-    static bool valid(const ModifierDefinition& definitionValue) noexcept {
-        if (definitionValue.id == 0 || definitionValue.weight == 0 ||
-            definitionValue.maxStacks == 0) {
+    static bool valid(const ModifierDefinition& value) noexcept {
+        if (value.id == 0 || value.weight == 0 ||
+            value.maxStacks == 0) {
             return false;
         }
-        if (std::find(definitionValue.requiredModifiers.begin(),
-                      definitionValue.requiredModifiers.end(),
-                      definitionValue.id) !=
-            definitionValue.requiredModifiers.end()) {
+        if (std::find(value.requiredModifiers.begin(),
+                      value.requiredModifiers.end(), value.id) !=
+            value.requiredModifiers.end()) {
             return false;
         }
-        if (std::find(definitionValue.excludedModifiers.begin(),
-                      definitionValue.excludedModifiers.end(),
-                      definitionValue.id) !=
-            definitionValue.excludedModifiers.end()) {
+        if (std::find(value.excludedModifiers.begin(),
+                      value.excludedModifiers.end(), value.id) !=
+            value.excludedModifiers.end()) {
             return false;
         }
-        for (const auto& effect : definitionValue.effects) {
+        for (const auto& effect : value.effects) {
             if (effect.stat == 0) return false;
             if (effect.operation == ModifierOperation::Multiply &&
                 effect.value < 0) {
@@ -316,20 +313,22 @@ private:
         return true;
     }
 
+    const ModifierStack* stack(ModifierId id) const noexcept {
+        const auto iterator = std::lower_bound(
+            stacks_.begin(), stacks_.end(), id,
+            [](const ModifierStack& current, ModifierId key) {
+                return current.id < key;
+            });
+        return iterator != stacks_.end() && iterator->id == id
+            ? &*iterator
+            : nullptr;
+    }
+
     static std::int64_t clamp(std::int64_t value) noexcept {
         return std::max<std::int64_t>(
             std::numeric_limits<std::int32_t>::min(),
             std::min<std::int64_t>(
                 std::numeric_limits<std::int32_t>::max(), value));
-    }
-
-    std::vector<ModifierStack>::const_iterator stackIterator(
-        ModifierId id) const noexcept {
-        return std::lower_bound(
-            stacks_.begin(), stacks_.end(), id,
-            [](const ModifierStack& current, ModifierId key) {
-                return current.id < key;
-            });
     }
 
     template<class T>
