@@ -33,6 +33,7 @@ if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/headless_demo)
     add_subdirectory(apps/tower_defense_demo)
     add_subdirectory(apps/roguelite_demo)
+    add_subdirectory(apps/scale_benchmark)
 endif()
 
 if(RTSENGINE_BUILD_TESTS)
