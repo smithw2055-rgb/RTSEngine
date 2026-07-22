@@ -18,6 +18,7 @@ namespace {
         } \
     } while (false)
 
+using namespace rts;
 using namespace rts::gameplay;
 
 std::uint32_t countVisible(
