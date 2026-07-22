@@ -9,6 +9,7 @@
 #include <RTSEngine/Rts/DefinitionCatalog.h>
 #include <RTSEngine/Rts/EconomySystems.h>
 #include <RTSEngine/Rts/EntityFactory.h>
+#include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/MovementSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
@@ -94,6 +95,10 @@ public:
         return pathCache_;
     }
 
+    const GridFlowFieldCache& flowFields() const noexcept {
+        return flowFields_;
+    }
+
     const MovementReservationRuntime& movementReservations() const noexcept {
         return movement_;
     }
@@ -166,6 +171,7 @@ private:
             navigation_,
             pathCache_,
             pathScratch_,
+            flowFields_,
             structuralCommands_,
             modifiers_,
             buildingDefinitions_,
@@ -306,6 +312,7 @@ private:
     NavigationGrid navigation_;
     GridPathCache pathCache_;
     GridPathfinderScratch pathScratch_;
+    GridFlowFieldCache flowFields_;
     MovementReservationRuntime movement_;
     ResourceLedger resources_;
     BaseBuildingRuntime building_;
