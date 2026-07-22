@@ -92,9 +92,14 @@ struct ScaleRegressionBudget final {
 
 inline ScaleRegressionBudget MakeScaleRegressionBudget(
     const ScaleBenchmarkConfig& config) {
+    const auto agents = config.agentCount();
     ScaleRegressionBudget budget;
-    budget.maximumPeakMovementIntents = config.agentCount();
-    budget.minimumFlowAssignments = config.agentCount();
+    budget.maximumPathSearches = std::max<std::uint64_t>(
+        8u, static_cast<std::uint64_t>(agents) / 100u);
+    budget.maximumExpandedNodes =
+        static_cast<std::uint64_t>(agents) * 4u;
+    budget.maximumPeakMovementIntents = agents;
+    budget.minimumFlowAssignments = agents;
     return budget;
 }
 
