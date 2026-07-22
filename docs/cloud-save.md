@@ -1,13 +1,17 @@
-# Cloud Save Revision and Conflict Contract
+# Cloud Save Revision, Transport, and Retention Contract
 
 ## Scope
 
-Cloud synchronization operates on validated `RunSaveEnvelope` records. The simulation archive remains unchanged: cloud metadata is envelope-level product state used to compare two save heads before deciding whether to upload, download, preserve both, or reject them.
-
-The local storage and cloud comparison chain is:
+Cloud synchronization operates on validated `RunSaveEnvelope` records. The authoritative simulation archive remains provider-independent: cloud metadata, transport, conflict preservation, and retention are product-layer services around the canonical save bytes.
 
 ```text
-RunSaveSlotStore
+RunSaveCloudSync
+  -> IRunSaveCloudTransport
+      -> conditional compare-and-swap remote head
+  -> RunSaveCloudBranchStore
+      -> named local conflict branches
+  -> RunSaveStoragePolicy
+      -> inventory, budgets, retention, cleanup
   -> RunSaveEnvelope v2
       -> optional RunSaveCloudRevision
           -> RunSaveSchema v2
@@ -45,106 +49,163 @@ The revision ID is finalized by `RunSaveEnvelopeCodec` from the product/content 
 
 ## Envelope version 2
 
-Envelope v2 appends the cloud revision fields to the existing manifest and protects them with the envelope checksum. The cloud flag must agree with whether revision metadata is present. The decoder rejects:
+Envelope v2 appends the cloud revision fields to the existing manifest and protects them with the envelope checksum. The cloud flag must agree with whether revision metadata is present. The decoder rejects malformed clocks, excessive parents/devices, zero IDs/counters, mismatched canonical revision IDs, invalid flags, truncation, checksum failure, and trailing data.
 
-- malformed or noncanonical vector clocks
-- more than two parents or more than 32 devices
-- zero IDs/counters in tracked records
-- revision IDs that do not match the canonical payload-derived value
-- cloud flags without metadata or metadata without the cloud flag
-- checksum, payload, or manifest mismatches
-
-Version-1 checksum and field order remain unchanged, so old local save files continue to decode.
-
-`RunSaveManifestIdentity` carries optional cloud revision metadata when a save is written. Existing callers that initialize only product, content, and build IDs remain source compatible; the cloud fields default to untracked.
+Version-1 checksum and field order remain unchanged, so old local save files continue to decode. Existing callers that initialize only product, content, and build IDs remain source compatible; the cloud fields default to untracked.
 
 ## Causal comparison
 
 For revisions in the same lineage, vector clocks provide deterministic ancestry classification:
 
-- local clock strictly dominates cloud: local is a descendant and should upload
-- cloud clock strictly dominates local: cloud is a descendant and should download
+- local clock strictly dominates cloud: local is a descendant
+- cloud clock strictly dominates local: cloud is a descendant
 - equal revision ID: both heads are identical
 - neither clock dominates: the heads diverged
 
-A newly introduced device produces a new vector-clock component. A merge revision dominates both parents because it takes the component-wise maximum and then increments the merging device.
+A merge revision dominates both parents because it takes the component-wise maximum and then increments the merging device.
 
-## Conflict classification
+`ResolveRunSaveCloudConflict` classifies missing, invalid, identical, descendant, divergent, unrelated-lineage, incompatible-manifest, and untracked records. The default divergence policy is `PreserveBoth`; the engine never silently overwrites two valid incomparable branches.
 
-`ResolveRunSaveCloudConflict` classifies:
+Optional policies are `PreferLocal`, `PreferCloud`, and `PreferDeterministicLatest`. Deterministic-latest is a stable product tie-break, not a semantic merge.
+
+## Cloud transport contract
+
+`IRunSaveCloudTransport` intentionally exposes only two operations:
 
 ```text
-both missing
-local only / cloud only
-identical revision
-equivalent untracked payloads
-local descendant / cloud descendant
-diverged
-ancestry unavailable
-unrelated lineage
-incompatible product/content manifest
-local invalid / cloud invalid / both invalid
+fetch(key)
+compareExchange(key, expectedRevisionId, envelopeBytes)
 ```
 
-The default divergence policy is `PreserveBoth`. The engine never silently overwrites two valid incomparable branches.
+`expectedRevisionId == 0` means create the remote object only when it does not yet exist. For an existing object, the upload succeeds only when the current remote head still equals the expected revision.
 
-Optional policies are:
+A compare-and-swap failure returns the latest remote object and revision. `SynchronizeRunSaveCloud` then reclassifies the local head against that current remote head. This closes the race between the initial fetch and upload without requiring the engine to know a provider-specific ETag, generation number, transaction API, or HTTP implementation.
 
-- `PreferLocal`
-- `PreferCloud`
-- `PreferDeterministicLatest`
+A provider adapter may map the revision contract to:
 
-The deterministic-latest policy compares, in order:
+- HTTP `If-Match` / ETag
+- object-store generation preconditions
+- database compare-and-swap
+- Steam/Xbox/PlayStation cloud version tokens
+- PlayFab or proprietary account storage revisions
 
-1. total vector-clock progress
-2. save Tick
-3. slot sequence
-4. authoring device logical clock
-5. revision ID
-6. device ID
+The in-memory reference transport enforces:
 
-This tie-break is deterministic but is a product policy, not a semantic merge. Products should normally preserve both branches and ask the user when divergent progress is valuable.
+- bounded valid keys
+- valid checksummed envelopes
+- mandatory tracked cloud revisions
+- exact expected-revision matching
+- product/content and lineage compatibility for replacement
 
-## Compatibility and missing metadata
+The transport does not decide whether divergent progress should overwrite another branch. That decision belongs to the conflict policy and, normally, the user.
 
-Product ID and content-manifest ID must match before ancestry is considered. Different content manifests are rejected instead of compared by Tick or revision.
+## Synchronization outcomes
 
-When one or both valid envelopes lack cloud metadata:
+`SynchronizeRunSaveCloud` returns one of:
 
-- byte-identical payloads are equivalent
-- different payloads are classified as `AncestryUnavailable`
-- the safe default is to preserve both
+```text
+NoChange
+Uploaded
+Downloaded
+ConflictPreserved
+Rejected
+InvalidLocal
+TransportFailure
+CompareExchangeConflict
+```
 
-This allows pre-cloud and version-1 saves to coexist without inventing false ancestry.
+Typical behavior is:
 
-## Local slot integration
+- local only or local descendant: CAS upload
+- cloud only or cloud descendant: return exact cloud envelope for local import
+- identical: no action
+- divergent with default policy: return both exact envelopes
+- manifest incompatibility: reject
+- CAS race: return the latest remote head and updated conflict classification
 
-`RunSaveSlotStore` already passes `RunSaveManifestIdentity` into the envelope codec. Supplying a root/child/merge revision in `identity.cloud` therefore writes cloud metadata directly into the primary and recovery envelopes; no sidecar file is required.
+No provider call mutates `RunSimulation`, `TowerDefenseSimulation`, or `RtsSimulation` directly.
 
-A caller normally:
+## Conflict branch preservation and naming
 
-1. loads and decodes the current local/cloud heads
-2. creates a child revision from the selected parent, or a two-parent merge revision
-3. writes the new local slot with a higher local slot sequence
-4. uploads the exact validated envelope bytes
+`PreserveRunSaveCloudBranch` stores the original validated Envelope bytes under a deterministic branch filename:
 
-The local slot sequence still prevents stale asynchronous local writes. Cloud vector clocks and revision IDs handle cross-device causality; they do not replace the local sequence contract.
+```text
+<base>--branch--<normalized-label>--<revision>.branch.sav
+```
+
+User labels are normalized to bounded lowercase ASCII alphanumeric/hyphen text. Empty labels fall back to `local` or `cloud`. Tracked records use the cloud revision ID as the suffix; untracked legacy records use the envelope checksum.
+
+Because the exact Envelope bytes are preserved, creating a conflict branch does not change its revision, vector clock, payload, build metadata, or checksum. Repeating the same preservation request is idempotent.
+
+Conflict branches are separate from `<slot>.sav` and `<slot>.recovery.sav`. Selecting a branch for active play is an explicit product action that should create a new child or merge revision rather than silently renaming history.
+
+## Storage inventory and observability
+
+`InspectRunSaveStorage` reports:
+
+- total bytes
+- primary, recovery, conflict-branch, and temporary bytes
+- counts by file kind
+- invalid envelope count
+- per-file validity, envelope error, sequence, save Tick, revision ID, and base slot
+
+This inventory is suitable for settings UI, telemetry, support diagnostics, and preflight capacity checks. It does not require decoding the nested authoritative world beyond the envelope and run-save validation already performed by the codec.
+
+## Retention and capacity budgets
+
+`RunSaveStoragePolicy` supports:
+
+```text
+maximum total storage bytes
+maximum conflict-branch bytes
+maximum conflict branches per base slot
+remove temporary files
+remove invalid conflict branches
+```
+
+Retention is deterministic and independent from wall-clock timestamps. Cleanup order is:
+
+1. temporary files
+2. invalid conflict branches
+3. branches beyond the per-slot count, oldest canonical metadata first
+4. oldest remaining branches until conflict and total byte budgets are satisfied
+
+Primary and recovery files are never automatically selected for deletion. When protected primary/recovery bytes alone exceed the total budget, the plan reports that the budget remains unsatisfied rather than deleting recoverable gameplay state.
+
+`ApplyRunSaveStorageRetentionPlan` removes each planned file through `IRunSaveDurability` and reports planned count, removed count, removed bytes, and per-file durability failures.
+
+## Local sequence versus cloud revision
+
+The local slot sequence still prevents stale asynchronous writes from replacing a newer local save. Cloud vector clocks and revision IDs handle cross-device causality. Neither mechanism replaces the other:
+
+```text
+slot sequence -> local write ordering
+revision ID + vector clock -> cross-device ancestry
+provider CAS -> race-free remote head update
+```
 
 ## Acceptance tests
 
-`rts_cloud_save_tests` covers:
+`rts_cloud_save_tests` covers Envelope compatibility and revision/conflict semantics.
 
-- Envelope v1 backward compatibility
-- root, child, divergent, and two-parent merge revisions
-- exact vector-clock dominance in both directions
-- identical and unrelated revisions
-- default preserve-both behavior
-- deterministic divergence tie-breaking
-- incompatible content manifests
-- untracked equivalent and untracked conflicting payloads
-- invalid and missing candidates
-- cloud metadata round-trip through `RunSaveSlotStore`
+`rts_cloud_transport_tests` adds:
+
+- create-only remote upload
+- descendant upload and download
+- stale expected-revision rejection
+- fetch-to-upload race injection and reclassification
+- default divergent preserve-both behavior
+- explicit prefer-local CAS replacement
+- invalid key and missing cloud revision rejection
+- deterministic user-labelled branch preservation
+- idempotent branch writes
+- real primary/recovery/branch/temporary inventory
+- invalid and excess branch cleanup
+- branch-byte budget enforcement
+- proof that primary and recovery slots survive cleanup
 
 ## Remaining product work
 
-Cloud transport, authentication, account ownership, server-side compare-and-swap, retention, and user-facing branch naming remain product/platform responsibilities. A production upload API should condition writes on the expected remote revision ID; otherwise two clients can still race between classification and upload.
+A production transport still owns authentication, account authorization, retries, cancellation, offline queues, encryption in transit, provider quotas, and server-side storage. Upload APIs should always condition writes on the expected remote revision.
+
+Future slices may add localized conflict actions, branch promotion/merge workflows, process-kill and suspend fault injection, scheduled cleanup, telemetry sinks, and optional authenticated encryption or signatures.
