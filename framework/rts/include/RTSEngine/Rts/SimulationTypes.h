@@ -44,6 +44,8 @@ struct MovementAgent {
     bool combatPath{};
     ecs::Entity chaseTarget{};
     GridPoint chaseTargetPosition{};
+    std::uint32_t blockedTicks{};
+    std::uint32_t yieldOrdinal{};
 };
 
 struct UnitDefinition {
@@ -108,7 +110,9 @@ enum class DomainEventType : std::uint8_t {
     WeaponFired,
     DamageApplied,
     EntityDied,
-    BountyAwarded
+    BountyAwarded,
+    MoveBlocked,
+    MoveYielded
 };
 
 struct DomainEvent {
@@ -145,6 +149,8 @@ struct SnapshotEntity {
     std::uint32_t cooldownRemaining{};
     ecs::Entity target{};
     CombatMode combatMode{CombatMode::Guard};
+    std::uint32_t movementBlockedTicks{};
+    std::uint32_t movementYieldOrdinal{};
 };
 
 struct WorldSnapshot {
