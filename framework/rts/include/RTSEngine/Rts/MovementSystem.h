@@ -3,6 +3,7 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/MovementReservations.h>
 #include <RTSEngine/Rts/OrderSystem.h>
+#include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 
 #include <algorithm>
@@ -15,6 +16,7 @@ namespace rts::gameplay {
 struct MovementSystemDependencies {
     const NavigationGrid& navigation;
     MovementReservationRuntime& reservations;
+    RuntimeTelemetry& telemetry;
     std::vector<DomainEvent>& events;
 };
 
@@ -27,33 +29,44 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         MovementSystemDependencies dependencies) {
+        dependencies.telemetry.beginMovementTick(context.tick);
         std::int32_t maximumSteps = 0;
         for (const auto entity :
              world.view<Position, MoveSpeed, OrderQueue, MovementAgent>()) {
             const auto* speed = world.try_get<MoveSpeed>(entity);
             const auto* agent = world.try_get<MovementAgent>(entity);
             if (!speed || !agent || agent->path.empty()) continue;
+            dependencies.telemetry.recordMovementAgent();
             maximumSteps = std::max(
                 maximumSteps,
                 std::max<std::int32_t>(1, speed->cellsPerTick));
         }
 
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
+            dependencies.telemetry.recordMovementSubstep();
             runSubstep(world, context, step, dependencies);
         }
-        completePaths(world, context, dependencies.events);
+        completePaths(
+            world,
+            context,
+            dependencies.telemetry,
+            dependencies.events);
     }
 
 private:
     static void rebuildOccupancy(
         const ecs::World& world,
-        MovementReservationRuntime& reservations) {
+        MovementReservationRuntime& reservations,
+        RuntimeTelemetry& telemetry) {
         reservations.clearOccupancy();
         for (const auto entity : world.view<Position, MovementAgent>()) {
             const auto* position = world.try_get<Position>(entity);
             if (!position) continue;
             reservations.addOccupant(entity, {position->x, position->y});
         }
+        telemetry.recordOccupancyRebuild(
+            reservations.occupiedCellCount(),
+            reservations.maximumCellOccupancy());
     }
 
     static void runSubstep(
@@ -62,7 +75,7 @@ private:
         std::int32_t step,
         MovementSystemDependencies dependencies) {
         auto& reservations = dependencies.reservations;
-        rebuildOccupancy(world, reservations);
+        rebuildOccupancy(world, reservations, dependencies.telemetry);
         reservations.beginIntents();
 
         for (const auto entity :
@@ -82,6 +95,7 @@ private:
                 dependencies.navigation.blocked(destination)) {
                 clearPathForReplan(*agent);
                 agent->blockedTicks = 0;
+                dependencies.telemetry.recordBlockedSignal();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveBlocked,
@@ -99,8 +113,10 @@ private:
         }
 
         reservations.arbitrate();
+        std::uint32_t accepted = 0;
         for (std::size_t index = 0; index < reservations.intentCount(); ++index) {
             if (!reservations.accepted(index)) continue;
+            ++accepted;
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
             auto* agent = world.try_get<MovementAgent>(intent.entity);
@@ -115,6 +131,10 @@ private:
             ++agent->nextPoint;
             agent->blockedTicks = 0;
         }
+        dependencies.telemetry.recordReservationBatch(
+            static_cast<std::uint32_t>(reservations.intentCount()),
+            accepted,
+            static_cast<std::uint32_t>(reservations.rejected().size()));
 
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
@@ -127,6 +147,7 @@ private:
             if (agent->blockedTicks == 1u ||
                 agent->blockedTicks == kYieldThreshold ||
                 agent->blockedTicks == kRepathThreshold) {
+                dependencies.telemetry.recordBlockedSignal();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveBlocked,
@@ -138,7 +159,7 @@ private:
             }
         }
 
-        rebuildOccupancy(world, reservations);
+        rebuildOccupancy(world, reservations, dependencies.telemetry);
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
@@ -154,6 +175,7 @@ private:
                     *agent,
                     dependencies.navigation,
                     reservations)) {
+                dependencies.telemetry.recordYieldedMove();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveYielded,
@@ -172,6 +194,7 @@ private:
                     std::numeric_limits<std::uint32_t>::max()) {
                     ++agent->yieldOrdinal;
                 }
+                dependencies.telemetry.recordRepathRecovery();
                 dependencies.events.push_back(
                     {context.tick,
                      DomainEventType::MoveYielded,
@@ -235,6 +258,7 @@ private:
     static void completePaths(
         ecs::World& world,
         const ecs::SystemContext& context,
+        RuntimeTelemetry& telemetry,
         std::vector<DomainEvent>& events) {
         for (const auto entity :
              world.view<Position, OrderQueue, MovementAgent>()) {
@@ -252,6 +276,7 @@ private:
 
             if (!queue->pending.empty()) queue->pending.erase(queue->pending.begin());
             OrderSystem::applyFrontOrderMode(world, entity, *queue);
+            telemetry.recordCompletedMove();
             events.push_back(
                 {context.tick,
                  DomainEventType::MoveCompleted,
