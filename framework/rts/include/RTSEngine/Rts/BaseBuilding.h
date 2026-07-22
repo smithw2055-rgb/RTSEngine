@@ -65,6 +65,7 @@ struct ConstructionSite {
     std::uint32_t requiredTicks{1};
     bool producer{};
     std::uint32_t ownerTeam{};
+    std::uint32_t baseRequiredTicks{1};
 };
 
 struct Building {
@@ -78,6 +79,7 @@ struct ProductionItem {
     std::int32_t reservedCost{};
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
+    std::uint32_t baseRequiredTicks{1};
 };
 
 struct ProductionQueue {
@@ -115,10 +117,14 @@ public:
                       GridPoint origin,
                       GridPoint requiredPathStart,
                       GridPoint requiredPathGoal,
-                      std::uint32_t ownerTeam = 0) {
-        if (!valid(definition)) return {false, BuildFailure::InvalidDefinition, 0};
+                      std::uint32_t ownerTeam = 0,
+                      std::uint32_t baseBuildTicks = 0) {
+        if (!valid(definition)) {
+            return {false, BuildFailure::InvalidDefinition, 0};
+        }
 
-        const BuildingFootprint footprint{origin, definition.width, definition.height};
+        const BuildingFootprint footprint{
+            origin, definition.width, definition.height};
         const auto placementFailure =
             validatePlacement(footprint, requiredPathStart, requiredPathGoal);
         if (placementFailure != BuildFailure::None) {
@@ -129,6 +135,10 @@ public:
         }
 
         const ConstructionId id = ++nextConstructionId_;
+        const auto requiredTicks =
+            std::max<std::uint32_t>(1, definition.buildTicks);
+        const auto sourceTicks = std::max<std::uint32_t>(
+            1, baseBuildTicks == 0 ? definition.buildTicks : baseBuildTicks);
         setBlocked(footprint, true);
         const auto deferred = commands.create(context);
         commands.add(context, deferred, footprint);
@@ -137,9 +147,10 @@ public:
             definition.id,
             definition.cost,
             0,
-            std::max<std::uint32_t>(1, definition.buildTicks),
+            requiredTicks,
             definition.producer,
-            ownerTeam
+            ownerTeam,
+            sourceTicks
         });
         return {true, BuildFailure::None, id};
     }
@@ -148,9 +159,11 @@ public:
                         ecs::EntityCommandBuffer& commands,
                         ecs::World& world,
                         ConstructionId id) {
-        for (const auto entity : world.view<ConstructionSite, BuildingFootprint>()) {
+        for (const auto entity :
+             world.view<ConstructionSite, BuildingFootprint>()) {
             const auto* site = world.try_get<ConstructionSite>(entity);
-            const auto* footprint = world.try_get<BuildingFootprint>(entity);
+            const auto* footprint =
+                world.try_get<BuildingFootprint>(entity);
             if (!site || !footprint || site->id != id) continue;
             releaseFootprint(*footprint);
             ledger_.release(site->reservedCost);
@@ -163,15 +176,19 @@ public:
     void advance(const ecs::SystemContext& context,
                  ecs::EntityCommandBuffer& commands,
                  ecs::World& world) {
-        for (const auto entity : world.view<ConstructionSite, BuildingFootprint>()) {
+        for (const auto entity :
+             world.view<ConstructionSite, BuildingFootprint>()) {
             auto* site = world.try_get<ConstructionSite>(entity);
-            const auto* footprint = world.try_get<BuildingFootprint>(entity);
+            const auto* footprint =
+                world.try_get<BuildingFootprint>(entity);
             if (!site || !footprint) continue;
             ++site->progressTicks;
             if (site->progressTicks < site->requiredTicks) continue;
 
             ledger_.commit(site->reservedCost);
-            commands.add(context, entity, Building{site->definitionId, site->producer});
+            commands.add(
+                context, entity,
+                Building{site->definitionId, site->producer});
             if (site->producer) {
                 commands.add(context, entity, ProductionQueue{});
                 commands.add(context, entity, RallyPoint{
@@ -188,8 +205,12 @@ public:
                                    GridPoint requiredPathGoal) const {
         const auto cells = footprintCells(footprint);
         for (const auto cell : cells) {
-            if (!navigation_.contains(cell)) return BuildFailure::OutOfBounds;
-            if (navigation_.blocked(cell)) return BuildFailure::Occupied;
+            if (!navigation_.contains(cell)) {
+                return BuildFailure::OutOfBounds;
+            }
+            if (navigation_.blocked(cell)) {
+                return BuildFailure::Occupied;
+            }
         }
 
         NavigationGrid preview = navigation_;
@@ -199,7 +220,8 @@ public:
                 ? BuildFailure::BlocksRequiredPath
                 : BuildFailure::None;
         }
-        if (!GridPathfinder::find(preview, requiredPathStart, requiredPathGoal).found) {
+        if (!GridPathfinder::find(
+                 preview, requiredPathStart, requiredPathGoal).found) {
             return BuildFailure::BlocksRequiredPath;
         }
         return BuildFailure::None;
@@ -217,12 +239,15 @@ private:
                definition.width > 0 && definition.height > 0;
     }
 
-    static std::vector<GridPoint> footprintCells(const BuildingFootprint& footprint) {
+    static std::vector<GridPoint> footprintCells(
+        const BuildingFootprint& footprint) {
         std::vector<GridPoint> cells;
-        cells.reserve(static_cast<std::size_t>(footprint.width * footprint.height));
+        cells.reserve(static_cast<std::size_t>(
+            footprint.width * footprint.height));
         for (std::int32_t y = 0; y < footprint.height; ++y) {
             for (std::int32_t x = 0; x < footprint.width; ++x) {
-                cells.push_back({footprint.origin.x + x, footprint.origin.y + y});
+                cells.push_back(
+                    {footprint.origin.x + x, footprint.origin.y + y});
             }
         }
         return cells;
