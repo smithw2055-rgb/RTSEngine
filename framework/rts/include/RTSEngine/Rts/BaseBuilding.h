@@ -233,6 +233,14 @@ public:
 
     const ResourceLedger& ledger() const noexcept { return ledger_; }
 
+    ConstructionId nextConstructionId() const noexcept {
+        return nextConstructionId_;
+    }
+
+    void restoreNextConstructionId(ConstructionId value) noexcept {
+        nextConstructionId_ = value;
+    }
+
 private:
     static bool valid(const BuildingDefinition& definition) noexcept {
         return definition.id != 0 && definition.cost >= 0 &&

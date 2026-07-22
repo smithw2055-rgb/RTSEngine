@@ -24,6 +24,8 @@
 
 namespace rts::gameplay {
 
+class RtsSimulationArchive;
+
 class RtsSimulation {
 public:
     RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
@@ -129,6 +131,8 @@ public:
     }
 
 private:
+    friend class RtsSimulationArchive;
+
     void runStage(std::uint64_t tick, ecs::Stage stage) {
         scheduler_.run_stage(world_, tick, stage);
         structuralCommands_.commit_through(world_, stage);
