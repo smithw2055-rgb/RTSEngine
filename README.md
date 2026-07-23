@@ -18,7 +18,11 @@ The repository is being built as small, testable vertical slices rather than imp
 - deterministic reward rarity budgets, minimum-rarity guarantees, and persisted pity counters
 - immutable presentation scenes extracted from RTS snapshots with logical asset bindings and fog visibility filtering
 - double-buffered snapshot interpolation with spawn, despawn and teleport policies
-- backend-neutral render packets, platform contracts, generational render handles, NullPlatform and NullRenderDevice
+- backend-neutral platform, render and audio contracts with generational handles and Null backends
+- fixed 2D passes, cooked sprite batching, world UI quads and device-generation recovery
+- stable animation, effect and audio event consumption with replay-safe deduplication
+- virtual file systems, versioned cooked assets, dependency loading, cancellation, CPU budgets and transactional hot reload
+- optional Sokol render-device implementation behind engine-owned interfaces
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
@@ -30,6 +34,14 @@ The repository is being built as small, testable vertical slices rather than imp
 cmake -S . -B build -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
 cmake --build build --parallel
 ctest --test-dir build --output-on-failure
+```
+
+The optional Sokol backend is enabled by providing a Sokol include directory:
+
+```bash
+cmake -S . -B build \
+  -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+  -DRTSENGINE_SOKOL_INCLUDE_DIR=/path/to/sokol
 ```
 
 The authoritative simulation layer does not depend on rendering, audio, UI, scripting, networking, or platform services. See `docs/architecture.md`, `docs/roadmap.md`, `docs/phase7-presentation-foundations.md`, and `docs/adr/` for the design constraints and phased plan.
