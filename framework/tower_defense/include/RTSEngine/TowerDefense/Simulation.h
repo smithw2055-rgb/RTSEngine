@@ -91,12 +91,51 @@ public:
         rts_.registerBuilding(std::move(definition));
     }
 
+    bool upsertLaneNode(LaneNode node) {
+        return rts_.navigation().contains(node.point) &&
+               director_.upsertLaneNode(node);
+    }
+
+    bool removeLaneNode(LaneNodeId id) {
+        return director_.removeLaneNode(id);
+    }
+
+    bool connectLaneNodes(
+        LaneNodeId from,
+        LaneNodeId to,
+        std::uint32_t cost = 1) {
+        return director_.connectLaneNodes(from, to, cost);
+    }
+
+    bool connectLaneNodesBidirectional(
+        LaneNodeId first,
+        LaneNodeId second,
+        std::uint32_t cost = 1) {
+        return director_.connectLaneNodesBidirectional(first, second, cost);
+    }
+
+    bool disconnectLaneNodes(LaneNodeId from, LaneNodeId to) {
+        return director_.disconnectLaneNodes(from, to);
+    }
+
+    bool setLaneConnectionEnabled(
+        LaneNodeId from,
+        LaneNodeId to,
+        bool enabled) {
+        return director_.setLaneConnectionEnabled(from, to, enabled);
+    }
+
     bool registerLane(SpawnLane lane) {
-        if (!rts_.navigation().contains(lane.spawn) ||
-            !rts_.navigation().contains(lane.goal) ||
-            !director_.registerLane(lane)) {
+        gameplay::GridPoint spawn;
+        gameplay::GridPoint goal;
+        if (!resolveLaneEndpoints(lane, spawn, goal) ||
+            !rts_.navigation().contains(spawn) ||
+            !rts_.navigation().contains(goal)) {
             return false;
         }
+        lane.spawn = spawn;
+        lane.goal = goal;
+        if (!director_.registerLane(lane)) return false;
         replaceById(laneDefinitions_, lane);
         return true;
     }
@@ -231,6 +270,24 @@ private:
             : nullptr;
     }
 
+    bool resolveLaneEndpoints(
+        const SpawnLane& lane,
+        gameplay::GridPoint& spawn,
+        gameplay::GridPoint& goal) const noexcept {
+        if (!lane.usesGraph()) {
+            spawn = lane.spawn;
+            goal = lane.goal;
+            return true;
+        }
+        if (lane.startNodeId == 0 || lane.goalNodeId == 0) return false;
+        const auto* start = director_.laneGraph().node(lane.startNodeId);
+        const auto* end = director_.laneGraph().node(lane.goalNodeId);
+        if (!start || !end) return false;
+        spawn = start->point;
+        goal = end->point;
+        return true;
+    }
+
     void processCommand(std::uint64_t tick, const TickCommand& command) {
         if (command.type == CommandType::StartWave) {
             startWave(tick, command.objectId);
@@ -287,13 +344,24 @@ private:
         if (lanes.empty()) return {false, WaveStartFailure::MissingLane, id};
 
         for (const auto* lane : lanes) {
-            if (!rts_.navigation().contains(lane->spawn) ||
-                !rts_.navigation().contains(lane->goal) ||
-                rts_.navigation().blocked(lane->spawn) ||
-                rts_.navigation().blocked(lane->goal) ||
-                !gameplay::GridPathfinder::find(
-                    rts_.navigation(), lane->spawn, lane->goal).found) {
-                return {false, WaveStartFailure::InvalidLane, id};
+            PlannedLaneRoute route;
+            if (!director_.resolveLaneRoute(lane->id, route) ||
+                route.points.empty()) {
+                return {false, WaveStartFailure::InvalidLaneRoute, id};
+            }
+            for (const auto point : route.points) {
+                if (!rts_.navigation().contains(point) ||
+                    rts_.navigation().blocked(point)) {
+                    return {false, WaveStartFailure::InvalidLane, id};
+                }
+            }
+            for (std::size_t index = 1; index < route.points.size(); ++index) {
+                if (!gameplay::GridPathfinder::find(
+                        rts_.navigation(),
+                        route.points[index - 1],
+                        route.points[index]).found) {
+                    return {false, WaveStartFailure::InvalidLane, id};
+                }
             }
         }
         return {true, WaveStartFailure::None, id};
