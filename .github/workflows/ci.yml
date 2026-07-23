@@ -36,5 +36,7 @@ jobs:
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_continuation$"
       - name: Test roguelite persistence
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_persistence_tests$"
+      - name: Test reward rarity
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_tests$"
       - name: Test remaining suite
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests)$"
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_reward_rarity_tests|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
