@@ -110,7 +110,7 @@ private:
         std::vector<std::uint8_t> bytes;
     };
 
-    auto lower(const std::string& path) {
+    std::vector<Entry>::iterator lower(const std::string& path) {
         return std::lower_bound(
             entries_.begin(), entries_.end(), path,
             [](const Entry& value, const std::string& lookup) {
@@ -118,7 +118,8 @@ private:
             });
     }
 
-    auto lower(const std::string& path) const {
+    std::vector<Entry>::const_iterator lower(
+        const std::string& path) const {
         return std::lower_bound(
             entries_.begin(), entries_.end(), path,
             [](const Entry& value, const std::string& lookup) {
