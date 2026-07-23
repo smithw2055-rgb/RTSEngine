@@ -104,6 +104,7 @@ void checkFirstWaveRewardHistory(
     check(history.runId == 7);
     check(history.phase == roguelite::RunHistoryPhase::Active);
     check(!history.legacyImported);
+    check(history.rewardPityMisses == 0);
     check(history.waves.size() == 1);
 
     const auto& wave = history.waves.front();
@@ -124,8 +125,139 @@ void checkFirstWaveRewardHistory(
     check(wave.affixes.empty());
     check(wave.bosses.empty());
     check(wave.rewardChoices == std::vector<roguelite::ModifierId>({1}));
+    check(wave.rewardRarities ==
+          std::vector<roguelite::RewardRarity>({
+              roguelite::RewardRarity::Common}));
+    check(wave.rewardRarityBudget == 0);
     check(wave.selectedModifier == 0);
     check(!wave.modifierApplied);
+}
+
+void hashEnemyModifier(
+    foundation::CanonicalHash& hash,
+    const tower_defense::EnemyStatModifier& value) {
+    hash.WriteI32(value.healthPermille);
+    hash.WriteI32(value.armorAdd);
+    hash.WriteI32(value.damagePermille);
+    hash.WriteI32(value.speedPermille);
+    hash.WriteI32(value.bountyPermille);
+}
+
+std::uint64_t legacyTowerConfigurationHash(
+    const roguelite::RunSimulation& simulation) {
+    foundation::CanonicalHash hash;
+    hash.WriteU64(simulation.rootSeed());
+    const auto& director = simulation.tower().director();
+    director.laneGraph().appendHash(hash);
+    hash.WriteU32(static_cast<std::uint32_t>(director.lanes().size()));
+    for (const auto& lane : director.lanes()) {
+        hash.WriteU32(lane.id);
+        hash.WriteI32(lane.spawn.x);
+        hash.WriteI32(lane.spawn.y);
+        hash.WriteI32(lane.goal.x);
+        hash.WriteI32(lane.goal.y);
+        hash.WriteU32(lane.weight);
+        hash.WriteU32(lane.startNodeId);
+        hash.WriteU32(lane.goalNodeId);
+    }
+    hash.WriteU32(static_cast<std::uint32_t>(director.affixes().size()));
+    for (const auto& affix : director.affixes()) {
+        hash.WriteU32(affix.id);
+        hash.WriteU32(affix.weight);
+        hashEnemyModifier(hash, affix.modifier);
+    }
+    hash.WriteU32(static_cast<std::uint32_t>(director.bosses().size()));
+    for (const auto& boss : director.bosses()) {
+        hash.WriteU32(boss.id);
+        hash.WriteU32(boss.unitDefinitionId);
+        hash.WriteU32(boss.budgetCost);
+        hash.WriteU32(boss.weight);
+        hashEnemyModifier(hash, boss.modifier);
+    }
+    return hash.Value();
+}
+
+void hashWaveDefinition(
+    foundation::CanonicalHash& hash,
+    const tower_defense::WaveDefinition& value) {
+    hash.WriteU32(value.id);
+    hash.WriteU32(value.budget);
+    hash.WriteU32(value.spawnIntervalTicks);
+    hash.WriteU32(value.enemyTeamId);
+    hash.WriteU32(static_cast<std::uint32_t>(value.laneIds.size()));
+    for (const auto id : value.laneIds) hash.WriteU32(id);
+    hash.WriteU32(static_cast<std::uint32_t>(value.enemies.size()));
+    for (const auto& enemy : value.enemies) {
+        hash.WriteU32(enemy.unitDefinitionId);
+        hash.WriteU32(enemy.budgetCost);
+        hash.WriteU32(enemy.weight);
+        hash.WriteU32(enemy.maxPerWave);
+    }
+    hash.WriteU32(static_cast<std::uint32_t>(value.bossPool.size()));
+    for (const auto id : value.bossPool) hash.WriteU32(id);
+    hash.WriteU32(value.bossCount);
+    hash.WriteU32(static_cast<std::uint32_t>(value.affixPool.size()));
+    for (const auto id : value.affixPool) hash.WriteU32(id);
+    hash.WriteU32(value.affixChoices);
+    hash.WriteU32(static_cast<std::uint32_t>(value.rewardPool.size()));
+    for (const auto id : value.rewardPool) hash.WriteU32(id);
+    hash.WriteU32(value.rewardChoices);
+}
+
+template<class T>
+void hashVector(foundation::CanonicalHash& hash,
+                const std::vector<T>& values) {
+    hash.WriteU32(static_cast<std::uint32_t>(values.size()));
+    for (const auto value : values) {
+        if constexpr (sizeof(T) <= sizeof(std::uint32_t)) {
+            hash.WriteU32(static_cast<std::uint32_t>(value));
+        } else {
+            hash.WriteU64(static_cast<std::uint64_t>(value));
+        }
+    }
+}
+
+void hashLegacyModifier(
+    foundation::CanonicalHash& hash,
+    const roguelite::ModifierDefinition& value) {
+    hash.WriteU32(value.id);
+    hash.WriteU32(value.weight);
+    hash.WriteU32(value.maxStacks);
+    hashVector(hash, value.tags);
+    hashVector(hash, value.requiredModifiers);
+    hashVector(hash, value.requiredTags);
+    hashVector(hash, value.excludedModifiers);
+    hashVector(hash, value.excludedTags);
+    hash.WriteU32(static_cast<std::uint32_t>(value.effects.size()));
+    for (const auto& effect : value.effects) {
+        hash.WriteU64(effect.stat);
+        hash.WriteU8(static_cast<std::uint8_t>(effect.operation));
+        hash.WriteI32(effect.value);
+    }
+}
+
+std::uint64_t legacyContentHash(
+    const roguelite::RunSimulation& simulation) {
+    foundation::CanonicalHash hash;
+    hash.WriteU64(simulation.rootSeed());
+    hash.WriteU64(legacyTowerConfigurationHash(simulation));
+    hash.WriteU32(1);
+    hash.WriteU32(7);
+    hash.WriteU32(2);
+    hash.WriteU32(1);
+    hash.WriteU32(2);
+    hash.WriteU32(2);
+    const auto* first = simulation.tower().director().definition(1);
+    const auto* second = simulation.tower().director().definition(2);
+    check(first != nullptr && second != nullptr);
+    hashWaveDefinition(hash, *first);
+    hashWaveDefinition(hash, *second);
+    hash.WriteU32(static_cast<std::uint32_t>(
+        simulation.modifiers().definitions().size()));
+    for (const auto& definition : simulation.modifiers().definitions()) {
+        hashLegacyModifier(hash, definition);
+    }
+    return hash.Value();
 }
 
 std::uint64_t legacyNextWaveTick(
@@ -141,9 +273,7 @@ std::uint64_t legacyNextWaveTick(
     case tower_defense::WaveSequencePhase::Failed:
         if (simulation.tower().director().state().phase ==
                 tower_defense::WavePhase::Failed ||
-            value.preparationStartedTick == noTick) {
-            return noTick;
-        }
+            value.preparationStartedTick == noTick) return noTick;
         return value.waveIndex == 0
             ? value.preparationStartedTick
             : value.preparationStartedTick + 1u;
@@ -203,11 +333,11 @@ std::uint64_t legacyWorldHash(
         hash.WriteU32(static_cast<std::uint32_t>(run->waves.size()));
         for (const auto waveId : run->waves) hash.WriteU32(waveId);
     }
-    simulation.modifiers().appendHash(hash);
+    simulation.modifiers().appendHash(hash, false);
     return hash.Value();
 }
 
-bool skipHistory(foundation::BinaryReader& reader) {
+bool skipHistoryV3(foundation::BinaryReader& reader) {
     std::uint32_t value32 = 0;
     std::uint64_t value64 = 0;
     std::int32_t signed32 = 0;
@@ -219,17 +349,14 @@ bool skipHistory(foundation::BinaryReader& reader) {
         !reader.readU64(value64) ||
         !reader.readU8(value8) ||
         !reader.readBool(flag) ||
-        !reader.readU32(waveCount)) {
-        return false;
-    }
+        !reader.readU32(value32) ||
+        !reader.readU32(waveCount)) return false;
     for (std::uint32_t wave = 0; wave < waveCount; ++wave) {
         if (!reader.readU32(value32) ||
             !reader.readU32(value32) ||
             !reader.readU64(value64) ||
             !reader.readU64(value64) ||
-            !reader.readU8(value8)) {
-            return false;
-        }
+            !reader.readU8(value8)) return false;
         for (int index = 0; index < 4; ++index) {
             if (!reader.readU32(value32)) return false;
         }
@@ -243,7 +370,16 @@ bool skipHistory(foundation::BinaryReader& reader) {
                 if (!reader.readU32(value32)) return false;
             }
         }
-        if (!reader.readU32(value32) || !reader.readBool(flag)) return false;
+        if (!reader.readU32(value32) || !reader.readBool(flag) ||
+            !reader.readU32(value32) || !reader.readU32(value32) ||
+            !reader.readU8(value8) || !reader.readU8(value8) ||
+            !reader.readU32(value32) || !reader.readU32(value32) ||
+            !reader.readBool(flag)) return false;
+        std::uint32_t rarityCount = 0;
+        if (!reader.readU32(rarityCount)) return false;
+        for (std::uint32_t index = 0; index < rarityCount; ++index) {
+            if (!reader.readU8(value8)) return false;
+        }
     }
     return true;
 }
@@ -257,20 +393,20 @@ std::vector<std::uint8_t> makeLegacyV1(
 
     std::uint32_t magic = 0;
     std::uint16_t version = 0;
-    std::uint64_t contentHash = 0;
+    std::uint64_t ignoredContentHash = 0;
     std::uint32_t towerCount = 0;
     std::vector<std::uint8_t> towerBytes;
     check(reader.readU32(magic));
     check(reader.readU16(version));
-    check(reader.readU64(contentHash));
-    check(version == 2u);
+    check(reader.readU64(ignoredContentHash));
+    check(version == 3u);
     check(reader.readU32(towerCount));
     check(reader.readBytes(
         towerCount, towerBytes,
         roguelite::RunSimulationArchive::kMaximumTowerBytes));
     writer.writeU32(magic);
     writer.writeU16(1u);
-    writer.writeU64(contentHash);
+    writer.writeU64(legacyContentHash(simulation));
     writer.writeU32(towerCount);
     writer.writeBytes(towerBytes);
 
@@ -343,11 +479,10 @@ std::vector<std::uint8_t> makeLegacyV1(
     writer.writeU32(playerTeamId);
     writer.writeBool(hasStepped);
 
-    check(skipHistory(reader));
-    std::uint64_t currentWorldHash = 0;
-    check(reader.readU64(currentWorldHash));
+    check(skipHistoryV3(reader));
+    std::uint64_t ignoredWorldHash = 0;
+    check(reader.readU64(ignoredWorldHash));
     check(reader.atEnd());
-    (void)currentWorldHash;
     writer.writeU64(legacyWorldHash(
         simulation, nextInternalSequence, playerTeamId));
     return writer.take();
@@ -390,7 +525,6 @@ void testHistoryRoundTripAndCompletion() {
     check(history.phase == roguelite::RunHistoryPhase::Complete);
     check(history.finishedTick >= history.startedTick);
     check(history.waves.size() == 2);
-
     const auto& first = history.waves[0];
     check(first.phase == roguelite::WaveResultPhase::Complete);
     check(first.selectedModifier == 1);
@@ -415,6 +549,7 @@ void testHistoryRoundTripAndCompletion() {
     check(second.resourceDelta == 35);
     check(second.resourceBonus == 5);
     check(second.rewardChoices.empty());
+    check(second.rewardRarities.empty());
     check(second.selectedModifier == 0);
     check(!second.modifierApplied);
     check(original.snapshot().availableResources == 138);
@@ -429,14 +564,6 @@ void testLegacyV1Migration() {
     const auto bytes = makeLegacyV1(source);
     check(!bytes.empty());
 
-    foundation::BinaryReader header(bytes);
-    std::uint32_t magic = 0;
-    std::uint16_t version = 0;
-    check(header.readU32(magic));
-    check(header.readU16(version));
-    check(magic == roguelite::RunSimulationArchive::kMagic);
-    check(version == 1u);
-
     roguelite::RunSimulation first(12, 5, 0x8282u);
     roguelite::RunSimulation second(12, 5, 0x8282u);
     configureHistoryRun(first, false);
@@ -448,10 +575,14 @@ void testLegacyV1Migration() {
           source.tower().snapshot().worldHash);
     check(first.state().phase == roguelite::RunPhase::RewardPending);
     check(first.history().legacyImported);
+    check(first.history().rewardPityMisses == 0);
     check(first.history() == second.history());
     check(first.history().waves.size() == 1);
     check(first.history().waves.front().rewardChoices ==
           std::vector<roguelite::ModifierId>({1}));
+    check(first.history().waves.front().rewardRarities ==
+          std::vector<roguelite::RewardRarity>({
+              roguelite::RewardRarity::Common}));
 
     const roguelite::TickCommand choose{
         rewardTick + 1u, 1, 2,
@@ -477,7 +608,6 @@ void testLegacyV1Migration() {
 
 void testFailedWaveIsSealed() {
     roguelite::RunSimulation simulation(8, 5, 0x9191u);
-
     gameplay::UnitDefinition enemy;
     enemy.id = 1;
     enemy.cellsPerTick = 1;
@@ -493,8 +623,7 @@ void testFailedWaveIsSealed() {
     wave.rewardChoices = 0;
     check(simulation.registerWave(wave));
     check(simulation.registerRun({1, {1}}));
-    simulation.createBaseCore(
-        {6, 2}, 1, {5, 0, 0, 0, 1, 0});
+    simulation.createBaseCore({6, 2}, 1, {5, 0, 0, 0, 1, 0});
 
     check(simulation.submit(
         {0, 1, 1, roguelite::CommandType::StartRun, 1}));
