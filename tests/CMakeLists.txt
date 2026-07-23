@@ -78,6 +78,10 @@ add_executable(rts_roguelite_tests roguelite_tests.cpp)
 target_link_libraries(rts_roguelite_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_tests COMMAND rts_roguelite_tests)
 
+add_executable(rts_roguelite_sequence_tests roguelite_sequence_tests.cpp)
+target_link_libraries(rts_roguelite_sequence_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_sequence_tests COMMAND rts_roguelite_sequence_tests)
+
 add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
 target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_persistence_tests COMMAND rts_roguelite_persistence_tests)
