@@ -17,9 +17,8 @@ namespace rts::roguelite {
 class RunSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x314e5552u; // "RUN1"
-    // Version 1 layout is intentionally retained. RunState and the legacy
-    // next-wave Tick are projected to and from WaveSequenceDirector state.
-    static constexpr std::uint16_t kVersion = 1u;
+    static constexpr std::uint16_t kVersion = 2u;
+    static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumTowerBytes =
         384u * 1024u * 1024u;
 
@@ -29,7 +28,8 @@ public:
             tower_defense::EncodeTowerDefenseSimulation(simulation.tower_);
         if (towerBytes.empty() || towerBytes.size() > kMaximumTowerBytes ||
             simulation.modifiers_.stacks().size() >
-                sim::kMaximumArchiveEntries) {
+                sim::kMaximumArchiveEntries ||
+            !archiveableHistory(simulation.history_)) {
             return {};
         }
         const auto commandState = simulation.commands_.snapshot();
@@ -68,6 +68,7 @@ public:
         writer.writeU32(simulation.nextInternalSequence_);
         writer.writeU32(simulation.playerTeamId_);
         writer.writeBool(simulation.hasStepped_);
+        writeHistory(writer, simulation.history_);
         writer.writeU64(simulation.hasStepped_
             ? simulation.snapshot_.worldHash
             : 0u);
@@ -85,7 +86,7 @@ public:
         std::vector<std::uint8_t> towerBytes;
         if (!reader.readU32(magic) || !reader.readU16(version) ||
             !reader.readU64(storedContentHash) || magic != kMagic ||
-            version != kVersion ||
+            version < kMinimumVersion || version > kVersion ||
             storedContentHash != contentHash(simulation) ||
             !reader.readU32(towerByteCount) ||
             towerByteCount > kMaximumTowerBytes ||
@@ -135,7 +136,6 @@ public:
         std::uint32_t nextInternalSequence = 0;
         std::uint32_t playerTeamId = 0;
         bool hasStepped = false;
-        std::uint64_t storedWorldHash = 0;
         if (!reader.readU32(state.runId) || !reader.readU8(phase) ||
             phase > static_cast<std::uint8_t>(RunPhase::Failed) ||
             !reader.readU32(state.waveIndex) ||
@@ -146,11 +146,17 @@ public:
             !reader.readU64(lastTick) ||
             !reader.readU32(nextInternalSequence) ||
             !reader.readU32(playerTeamId) ||
-            !reader.readBool(hasStepped) ||
-            !reader.readU64(storedWorldHash) || !reader.atEnd()) {
+            !reader.readBool(hasStepped)) {
             return false;
         }
         state.phase = static_cast<RunPhase>(phase);
+
+        RunHistory historyCandidate;
+        if (version >= 2u && !readHistory(reader, historyCandidate)) {
+            return false;
+        }
+        std::uint64_t storedWorldHash = 0;
+        if (!reader.readU64(storedWorldHash) || !reader.atEnd()) return false;
 
         if (rootSeed != simulation.rootSeed_ || nextInternalSequence == 0 ||
             (hasStepped &&
@@ -197,6 +203,8 @@ public:
         const auto backupEvents = simulation.events_;
         const auto backupSnapshot = simulation.snapshot_;
         const auto backupState = simulation.state_;
+        const auto backupHistory = simulation.history_;
+        const auto backupPendingWave = simulation.pendingWave_;
         const auto backupLastTick = simulation.lastTick_;
         const auto backupInternalSequence = simulation.nextInternalSequence_;
         const auto backupPlayerTeam = simulation.playerTeamId_;
@@ -216,6 +224,8 @@ public:
             simulation.events_ = backupEvents;
             simulation.snapshot_ = backupSnapshot;
             simulation.state_ = backupState;
+            simulation.history_ = backupHistory;
+            simulation.pendingWave_ = backupPendingWave;
             simulation.lastTick_ = backupLastTick;
             simulation.nextInternalSequence_ = backupInternalSequence;
             simulation.playerTeamId_ = backupPlayerTeam;
@@ -232,9 +242,21 @@ public:
             return false;
         }
 
+        if (version == 1u) {
+            historyCandidate = migrateLegacyHistory(
+                state, lastTick, simulation.tower_);
+        }
+        if (!validateHistory(
+                historyCandidate, state, simulation, simulation.tower_)) {
+            rollback();
+            return false;
+        }
+
         simulation.sequence_ = std::move(sequenceCandidate);
         simulation.modifiers_ = std::move(modifierCandidate);
         simulation.commands_ = std::move(commandCandidate);
+        simulation.history_ = std::move(historyCandidate);
+        simulation.pendingWave_ = {};
         simulation.synchronizeRunState();
         if (!sameState(simulation.state_, state)) {
             rollback();
@@ -246,9 +268,14 @@ public:
         simulation.hasStepped_ = hasStepped;
         simulation.events_.clear();
         simulation.snapshot_ = {};
-        if (hasStepped) simulation.buildSnapshot(lastTick);
-        if ((hasStepped && simulation.snapshot_.worldHash != storedWorldHash) ||
-            (!hasStepped && simulation.snapshot_.worldHash != 0)) {
+        if (hasStepped) {
+            simulation.buildSnapshot(lastTick, version >= 2u);
+            if (simulation.snapshot_.worldHash != storedWorldHash) {
+                rollback();
+                return false;
+            }
+            if (version == 1u) simulation.buildSnapshot(lastTick, true);
+        } else if (simulation.snapshot_.worldHash != 0) {
             rollback();
             return false;
         }
@@ -263,9 +290,8 @@ private:
                a.currentWave == b.currentWave;
     }
 
-    static void writeCommand(
-        foundation::BinaryWriter& writer,
-        const TickCommand& command) {
+    static void writeCommand(foundation::BinaryWriter& writer,
+                             const TickCommand& command) {
         writer.writeU64(command.targetTick);
         writer.writeU32(command.issuer);
         writer.writeU32(command.sequence);
@@ -273,9 +299,8 @@ private:
         writer.writeU32(command.objectId);
     }
 
-    static bool readCommand(
-        foundation::BinaryReader& reader,
-        TickCommand& command) {
+    static bool readCommand(foundation::BinaryReader& reader,
+                            TickCommand& command) {
         std::uint8_t type = 0;
         if (!reader.readU64(command.targetTick) ||
             !reader.readU32(command.issuer) ||
@@ -289,9 +314,123 @@ private:
         return true;
     }
 
-    static bool restoreStacks(
-        ModifierRuntime& runtime,
-        const std::vector<ModifierStack>& stacks) {
+    static bool archiveableHistory(const RunHistory& history) noexcept {
+        if (history.waves.size() > sim::kMaximumArchiveEntries) return false;
+        for (const auto& wave : history.waves) {
+            if (wave.affixes.size() > sim::kMaximumArchiveEntries ||
+                wave.bosses.size() > sim::kMaximumArchiveEntries ||
+                wave.rewardChoices.size() > sim::kMaximumArchiveEntries) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static void writeHistory(foundation::BinaryWriter& writer,
+                             const RunHistory& history) {
+        writer.writeU32(history.runId);
+        writer.writeU64(history.startedTick);
+        writer.writeU64(history.finishedTick);
+        writer.writeU8(static_cast<std::uint8_t>(history.phase));
+        writer.writeBool(history.legacyImported);
+        writer.writeU32(static_cast<std::uint32_t>(history.waves.size()));
+        for (const auto& wave : history.waves) {
+            writer.writeU32(wave.waveId);
+            writer.writeU32(wave.waveIndex);
+            writer.writeU64(wave.startedTick);
+            writer.writeU64(wave.completedTick);
+            writer.writeU8(static_cast<std::uint8_t>(wave.phase));
+            writer.writeU32(wave.plannedEnemies);
+            writer.writeU32(wave.plannedBosses);
+            writer.writeU32(wave.enemiesDefeated);
+            writer.writeU32(wave.bossesDefeated);
+            writer.writeI32(wave.coreHealthStart);
+            writer.writeI32(wave.coreHealthEnd);
+            writer.writeI32(wave.coreHealthMaximum);
+            writer.writeI32(wave.resourcesStart);
+            writer.writeI32(wave.resourcesEnd);
+            writer.writeI32(wave.resourceDelta);
+            writer.writeI32(wave.resourceBonus);
+            writer.writeU32(static_cast<std::uint32_t>(wave.affixes.size()));
+            for (const auto id : wave.affixes) writer.writeU32(id);
+            writer.writeU32(static_cast<std::uint32_t>(wave.bosses.size()));
+            for (const auto id : wave.bosses) writer.writeU32(id);
+            writer.writeU32(static_cast<std::uint32_t>(
+                wave.rewardChoices.size()));
+            for (const auto id : wave.rewardChoices) writer.writeU32(id);
+            writer.writeU32(wave.selectedModifier);
+            writer.writeBool(wave.modifierApplied);
+        }
+    }
+
+    static bool readHistory(foundation::BinaryReader& reader,
+                            RunHistory& history) {
+        std::uint8_t phase = 0;
+        std::uint32_t waveCount = 0;
+        if (!reader.readU32(history.runId) ||
+            !reader.readU64(history.startedTick) ||
+            !reader.readU64(history.finishedTick) ||
+            !reader.readU8(phase) ||
+            phase > static_cast<std::uint8_t>(RunHistoryPhase::Failed) ||
+            !reader.readBool(history.legacyImported) ||
+            !reader.readU32(waveCount) ||
+            waveCount > sim::kMaximumArchiveEntries) {
+            return false;
+        }
+        history.phase = static_cast<RunHistoryPhase>(phase);
+        history.waves.resize(waveCount);
+        for (auto& wave : history.waves) {
+            std::uint8_t wavePhase = 0;
+            std::uint32_t count = 0;
+            if (!reader.readU32(wave.waveId) ||
+                !reader.readU32(wave.waveIndex) ||
+                !reader.readU64(wave.startedTick) ||
+                !reader.readU64(wave.completedTick) ||
+                !reader.readU8(wavePhase) ||
+                wavePhase > static_cast<std::uint8_t>(
+                    WaveResultPhase::Failed) ||
+                !reader.readU32(wave.plannedEnemies) ||
+                !reader.readU32(wave.plannedBosses) ||
+                !reader.readU32(wave.enemiesDefeated) ||
+                !reader.readU32(wave.bossesDefeated) ||
+                !reader.readI32(wave.coreHealthStart) ||
+                !reader.readI32(wave.coreHealthEnd) ||
+                !reader.readI32(wave.coreHealthMaximum) ||
+                !reader.readI32(wave.resourcesStart) ||
+                !reader.readI32(wave.resourcesEnd) ||
+                !reader.readI32(wave.resourceDelta) ||
+                !reader.readI32(wave.resourceBonus)) {
+                return false;
+            }
+            wave.phase = static_cast<WaveResultPhase>(wavePhase);
+            if (!reader.readU32(count) ||
+                count > sim::kMaximumArchiveEntries) return false;
+            wave.affixes.resize(count);
+            for (auto& id : wave.affixes) {
+                if (!reader.readU32(id) || id == 0) return false;
+            }
+            if (!reader.readU32(count) ||
+                count > sim::kMaximumArchiveEntries) return false;
+            wave.bosses.resize(count);
+            for (auto& id : wave.bosses) {
+                if (!reader.readU32(id) || id == 0) return false;
+            }
+            if (!reader.readU32(count) ||
+                count > sim::kMaximumArchiveEntries) return false;
+            wave.rewardChoices.resize(count);
+            for (auto& id : wave.rewardChoices) {
+                if (!reader.readU32(id) || id == 0) return false;
+            }
+            if (!reader.readU32(wave.selectedModifier) ||
+                !reader.readBool(wave.modifierApplied)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static bool restoreStacks(ModifierRuntime& runtime,
+                              const std::vector<ModifierStack>& stacks) {
         std::vector<std::uint32_t> applied(stacks.size(), 0);
         std::uint64_t remaining = 0;
         for (const auto& stack : stacks) {
@@ -319,10 +458,9 @@ private:
         return runtime.stacks() == stacks;
     }
 
-    static bool validateRunState(
-        const RunSimulation& simulation,
-        const RunState& state,
-        std::uint64_t nextWaveTick) {
+    static bool validateRunState(const RunSimulation& simulation,
+                                 const RunState& state,
+                                 std::uint64_t nextWaveTick) {
         if (state.phase == RunPhase::Idle) {
             return state.runId == 0 && state.waveIndex == 0 &&
                    state.completedWaves == 0 && state.currentWave == 0 &&
@@ -457,6 +595,175 @@ private:
                    phase == tower_defense::WavePhase::Idle;
         }
         return false;
+    }
+
+    static RunHistory migrateLegacyHistory(
+        const RunState& state,
+        std::uint64_t lastTick,
+        const tower_defense::TowerDefenseSimulation& tower) {
+        RunHistory history;
+        if (state.phase == RunPhase::Idle) return history;
+        history.runId = state.runId;
+        history.startedTick = 0;
+        history.legacyImported = true;
+        history.phase = state.phase == RunPhase::Complete
+            ? RunHistoryPhase::Complete
+            : (state.phase == RunPhase::Failed
+                   ? RunHistoryPhase::Failed
+                   : RunHistoryPhase::Active);
+        if (history.phase != RunHistoryPhase::Active) {
+            history.finishedTick = lastTick;
+        }
+
+        if (state.phase != RunPhase::WaveActive &&
+            state.phase != RunPhase::RewardPending &&
+            state.phase != RunPhase::Failed) {
+            return history;
+        }
+        const auto& plan = tower.director().plan();
+        if (state.currentWave == 0 || plan.waveId != state.currentWave) {
+            return history;
+        }
+
+        WaveResult wave;
+        wave.waveId = state.currentWave;
+        wave.waveIndex = state.waveIndex;
+        wave.startedTick = tower.director().state().startedTick;
+        wave.completedTick = state.phase == RunPhase::RewardPending ||
+                                     state.phase == RunPhase::Failed
+            ? lastTick : 0;
+        wave.phase = state.phase == RunPhase::RewardPending
+            ? WaveResultPhase::RewardPending
+            : (state.phase == RunPhase::Failed
+                   ? WaveResultPhase::Failed
+                   : WaveResultPhase::Active);
+        wave.plannedEnemies = static_cast<std::uint32_t>(plan.spawns.size());
+        wave.enemiesDefeated = tower.director().state().resolved;
+        wave.coreHealthStart = tower.snapshot().coreHealthCurrent;
+        wave.coreHealthEnd = tower.snapshot().coreHealthCurrent;
+        wave.coreHealthMaximum = tower.snapshot().coreHealthMaximum;
+        wave.resourcesStart = tower.resources().available;
+        wave.resourcesEnd = tower.resources().available;
+        for (const auto& affix : plan.affixes) wave.affixes.push_back(affix.id);
+        for (const auto& spawn : plan.spawns) {
+            if (spawn.bossId != 0) wave.bosses.push_back(spawn.bossId);
+        }
+        wave.plannedBosses = static_cast<std::uint32_t>(wave.bosses.size());
+        for (const auto& enemy : tower.snapshot().enemies) {
+            if (!enemy.alive && enemy.bossId != 0) ++wave.bossesDefeated;
+        }
+        wave.rewardChoices = tower.director().offer().choices;
+        if (tower.director().offer().chosen) {
+            wave.selectedModifier = tower.director().offer().selected;
+            wave.modifierApplied = true;
+            wave.phase = WaveResultPhase::Complete;
+        }
+        history.waves.push_back(std::move(wave));
+        return history;
+    }
+
+    static bool validateHistory(
+        const RunHistory& history,
+        const RunState& state,
+        const RunSimulation& simulation,
+        const tower_defense::TowerDefenseSimulation& tower) {
+        if (!archiveableHistory(history)) return false;
+        if (state.phase == RunPhase::Idle) {
+            return history.runId == 0 && history.startedTick == 0 &&
+                   history.finishedTick == 0 &&
+                   history.phase == RunHistoryPhase::Idle &&
+                   history.waves.empty();
+        }
+        if (history.runId != state.runId) return false;
+        const auto expectedPhase = state.phase == RunPhase::Complete
+            ? RunHistoryPhase::Complete
+            : (state.phase == RunPhase::Failed
+                   ? RunHistoryPhase::Failed
+                   : RunHistoryPhase::Active);
+        if (history.phase != expectedPhase ||
+            ((expectedPhase == RunHistoryPhase::Active) !=
+             (history.finishedTick == 0))) {
+            return false;
+        }
+        const auto* run = RunSimulation::findById(
+            simulation.runs_, state.runId);
+        if (!run) return false;
+
+        std::uint32_t previousIndex = 0;
+        bool hasPrevious = false;
+        for (const auto& wave : history.waves) {
+            if (wave.waveId == 0 || wave.waveIndex >= run->waves.size() ||
+                run->waves[wave.waveIndex] != wave.waveId ||
+                (hasPrevious && wave.waveIndex <= previousIndex) ||
+                wave.plannedBosses != wave.bosses.size() ||
+                wave.enemiesDefeated > wave.plannedEnemies ||
+                wave.bossesDefeated > wave.plannedBosses ||
+                wave.coreHealthStart < 0 || wave.coreHealthEnd < 0 ||
+                wave.coreHealthMaximum < 0 || wave.resourcesStart < 0 ||
+                wave.resourcesEnd < 0) {
+                return false;
+            }
+            if (wave.phase == WaveResultPhase::Active) {
+                if (wave.completedTick != 0 || wave.resourceDelta != 0 ||
+                    wave.resourcesEnd != wave.resourcesStart) return false;
+            } else {
+                const auto delta = static_cast<std::int64_t>(
+                    wave.resourcesEnd) - wave.resourcesStart;
+                if (wave.completedTick < wave.startedTick ||
+                    delta != wave.resourceDelta) return false;
+            }
+            if (wave.selectedModifier != 0 &&
+                std::find(wave.rewardChoices.begin(),
+                          wave.rewardChoices.end(),
+                          wave.selectedModifier) ==
+                    wave.rewardChoices.end()) {
+                return false;
+            }
+            previousIndex = wave.waveIndex;
+            hasPrevious = true;
+        }
+
+        if (history.waves.empty()) return history.legacyImported ||
+            state.phase == RunPhase::BetweenWaves;
+        const auto& last = history.waves.back();
+        switch (state.phase) {
+        case RunPhase::Idle:
+            return false;
+        case RunPhase::BetweenWaves:
+            return last.phase == WaveResultPhase::Complete &&
+                   last.waveIndex < state.waveIndex;
+        case RunPhase::WaveActive:
+            if (last.phase != WaveResultPhase::Active ||
+                last.waveIndex != state.waveIndex ||
+                last.waveId != state.currentWave) return false;
+            break;
+        case RunPhase::RewardPending:
+            if (last.phase != WaveResultPhase::RewardPending ||
+                last.waveIndex != state.waveIndex ||
+                last.waveId != state.currentWave) return false;
+            break;
+        case RunPhase::Complete:
+            return last.phase == WaveResultPhase::Complete;
+        case RunPhase::Failed:
+            if (last.phase != WaveResultPhase::Failed &&
+                !history.legacyImported) return false;
+            break;
+        }
+
+        if ((state.phase == RunPhase::WaveActive ||
+             state.phase == RunPhase::RewardPending) &&
+            tower.director().plan().waveId == state.currentWave) {
+            const auto& plan = tower.director().plan();
+            if (last.plannedEnemies != plan.spawns.size()) return false;
+            std::vector<tower_defense::WaveAffixId> affixes;
+            for (const auto& affix : plan.affixes) affixes.push_back(affix.id);
+            std::vector<tower_defense::BossId> bosses;
+            for (const auto& spawn : plan.spawns) {
+                if (spawn.bossId != 0) bosses.push_back(spawn.bossId);
+            }
+            if (last.affixes != affixes || last.bosses != bosses) return false;
+        }
+        return true;
     }
 
     static void hashWaveDefinition(
