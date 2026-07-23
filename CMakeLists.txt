@@ -11,6 +11,10 @@ option(RTSENGINE_ENABLE_SANITIZERS
        "Enable AddressSanitizer and UndefinedBehaviorSanitizer" OFF)
 option(RTSENGINE_BUILD_FUZZERS
        "Build Clang libFuzzer persistence targets" OFF)
+option(RTSENGINE_ENABLE_SOKOL_RENDERER
+       "Build the optional Sokol render backend" OFF)
+set(RTSENGINE_SOKOL_INCLUDE_DIR "" CACHE PATH
+    "Directory containing sokol_gfx.h for the optional Sokol backend")
 
 if(RTSENGINE_ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -24,6 +28,8 @@ endif()
 
 add_subdirectory(engine/foundation)
 add_subdirectory(engine/platform)
+add_subdirectory(engine/assets)
+add_subdirectory(engine/audio)
 add_subdirectory(engine/render)
 add_subdirectory(engine/presentation)
 add_subdirectory(engine/sim)
