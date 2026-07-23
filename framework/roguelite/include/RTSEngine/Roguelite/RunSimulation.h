@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Roguelite/GameplayStats.h>
 #include <RTSEngine/Roguelite/ModifierRuntime.h>
+#include <RTSEngine/Roguelite/RunHistory.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
 #include <RTSEngine/TowerDefense/WaveSequence.h>
 #include <rts/foundation/CanonicalHash.h>
@@ -16,8 +17,6 @@
 namespace rts::roguelite {
 
 class RunSimulationArchive;
-
-using RunId = std::uint32_t;
 
 struct RunDefinition {
     RunId id{};
@@ -98,6 +97,7 @@ struct RunSnapshot {
     std::int32_t waveCompletionResourceBonus{};
     gameplay::TeamModifierProfile gameplayProfile{};
     std::vector<ModifierStack> modifiers;
+    RunHistory history{};
 };
 
 class RunSimulation {
@@ -207,6 +207,7 @@ public:
 
     const RunSnapshot& snapshot() const noexcept { return snapshot_; }
     const RunState& state() const noexcept { return state_; }
+    const RunHistory& history() const noexcept { return history_; }
     const std::vector<Event>& events() const noexcept { return events_; }
     const ModifierRuntime& modifiers() const noexcept { return modifiers_; }
     const tower_defense::WaveSequenceDirector& waveSequence() const noexcept {
@@ -223,6 +224,16 @@ public:
 
 private:
     friend class RunSimulationArchive;
+
+    struct PendingWaveBaseline final {
+        tower_defense::WaveId waveId{};
+        std::uint32_t waveIndex{};
+        std::uint64_t startedTick{};
+        std::int32_t coreHealth{};
+        std::int32_t coreMaximum{};
+        std::int32_t resources{};
+        bool valid{};
+    };
 
     template<class T>
     static void replaceById(std::vector<T>& values, T value) {
@@ -352,6 +363,11 @@ private:
             reject(tick, id, RunFailure::InvalidDefinition);
             return;
         }
+        history_ = {};
+        history_.runId = id;
+        history_.startedTick = tick;
+        history_.phase = RunHistoryPhase::Active;
+        pendingWave_ = {};
         synchronizeRunState();
         events_.push_back(
             {tick, EventType::RunStarted, id, state_.currentWave, 0, 0, 0});
@@ -431,6 +447,15 @@ private:
                     tower_defense::WaveSequenceFailure::TowerCommandRejected);
             return;
         }
+
+        pendingWave_ = {};
+        pendingWave_.waveId = waveId;
+        pendingWave_.waveIndex = sequenceState.waveIndex;
+        pendingWave_.startedTick = tick;
+        pendingWave_.coreHealth = tower_.snapshot().coreHealthCurrent;
+        pendingWave_.coreMaximum = tower_.snapshot().coreHealthMaximum;
+        pendingWave_.resources = tower_.resources().available;
+        pendingWave_.valid = true;
         synchronizeRunState();
     }
 
@@ -443,12 +468,17 @@ private:
                             tower_defense::WaveSequenceFailure::WaveRejected);
                     break;
                 }
+                beginWaveHistory(tick, event.waveId);
                 synchronizeRunState();
                 events_.push_back(
                     {tick, EventType::WaveStarted, state_.runId,
                      event.waveId, 0, 0, 0});
                 break;
+            case tower_defense::EventType::EnemyDefeated:
+                recordEnemyDefeated(event.waveId, event.reason != 0);
+                break;
             case tower_defense::EventType::WaveRejected:
+                pendingWave_ = {};
                 failRun(tick, RunFailure::TowerDefenseRejected,
                         tower_defense::WaveSequenceFailure::WaveRejected);
                 break;
@@ -458,6 +488,9 @@ private:
                 break;
             case tower_defense::EventType::WaveCompleted:
                 onWaveCompleted(tick, event.waveId);
+                break;
+            case tower_defense::EventType::RewardOffered:
+                recordRewardOffered(event.waveId, event.objectId);
                 break;
             case tower_defense::EventType::RewardChosen:
                 onModifierChosen(tick, event.objectId);
@@ -471,6 +504,93 @@ private:
                 break;
             }
         }
+    }
+
+    void beginWaveHistory(std::uint64_t tick,
+                          tower_defense::WaveId waveId) {
+        WaveResult result;
+        result.waveId = waveId;
+        result.waveIndex = sequence_.state().waveIndex;
+        result.startedTick = tick;
+        result.resourcesStart = tower_.resources().available;
+        result.resourcesEnd = result.resourcesStart;
+        result.coreHealthStart = tower_.snapshot().coreHealthCurrent;
+        result.coreHealthEnd = result.coreHealthStart;
+        result.coreHealthMaximum = tower_.snapshot().coreHealthMaximum;
+        if (pendingWave_.valid && pendingWave_.waveId == waveId &&
+            pendingWave_.waveIndex == result.waveIndex) {
+            result.startedTick = pendingWave_.startedTick;
+            result.resourcesStart = pendingWave_.resources;
+            result.resourcesEnd = pendingWave_.resources;
+            if (pendingWave_.coreMaximum > 0) {
+                result.coreHealthStart = pendingWave_.coreHealth;
+                result.coreHealthEnd = pendingWave_.coreHealth;
+                result.coreHealthMaximum = pendingWave_.coreMaximum;
+            }
+        }
+
+        const auto& plan = tower_.director().plan();
+        result.plannedEnemies = static_cast<std::uint32_t>(plan.spawns.size());
+        for (const auto& affix : plan.affixes) {
+            result.affixes.push_back(affix.id);
+        }
+        for (const auto& spawn : plan.spawns) {
+            if (spawn.bossId != 0) result.bosses.push_back(spawn.bossId);
+        }
+        result.plannedBosses = static_cast<std::uint32_t>(result.bosses.size());
+        history_.waves.push_back(std::move(result));
+        pendingWave_ = {};
+    }
+
+    WaveResult* currentWaveResult(
+        tower_defense::WaveId waveId = 0) noexcept {
+        if (history_.waves.empty()) return nullptr;
+        auto& result = history_.waves.back();
+        return waveId == 0 || result.waveId == waveId ? &result : nullptr;
+    }
+
+    void recordEnemyDefeated(tower_defense::WaveId waveId, bool boss) {
+        auto* result = currentWaveResult(waveId);
+        if (!result) return;
+        if (result->enemiesDefeated < result->plannedEnemies) {
+            ++result->enemiesDefeated;
+        }
+        if (boss && result->bossesDefeated < result->plannedBosses) {
+            ++result->bossesDefeated;
+        }
+    }
+
+    void recordRewardOffered(tower_defense::WaveId waveId, ModifierId id) {
+        auto* result = currentWaveResult(waveId);
+        if (!result || id == 0) return;
+        if (std::find(result->rewardChoices.begin(),
+                      result->rewardChoices.end(), id) ==
+            result->rewardChoices.end()) {
+            result->rewardChoices.push_back(id);
+        }
+    }
+
+    void finalizeWaveResult(std::uint64_t tick,
+                            WaveResultPhase phase,
+                            std::int32_t resourceBonus) {
+        auto* result = currentWaveResult();
+        if (!result) return;
+        if (result->phase == WaveResultPhase::Failed &&
+            phase != WaveResultPhase::Failed) {
+            return;
+        }
+        result->completedTick = tick;
+        result->phase = phase;
+        result->coreHealthEnd = tower_.snapshot().coreHealthCurrent;
+        result->coreHealthMaximum = tower_.snapshot().coreHealthMaximum;
+        result->resourcesEnd = tower_.resources().available;
+        result->resourceDelta = static_cast<std::int32_t>(
+            std::clamp<std::int64_t>(
+                static_cast<std::int64_t>(result->resourcesEnd) -
+                    result->resourcesStart,
+                std::numeric_limits<std::int32_t>::min(),
+                std::numeric_limits<std::int32_t>::max()));
+        result->resourceBonus = resourceBonus;
     }
 
     void onWaveCompleted(std::uint64_t tick,
@@ -491,6 +611,11 @@ private:
 
         const bool rewardPending = tower_.director().state().phase ==
             tower_defense::WavePhase::RewardPending;
+        finalizeWaveResult(
+            tick,
+            rewardPending ? WaveResultPhase::RewardPending
+                          : WaveResultPhase::Complete,
+            bonus);
         const auto result = sequence_.markWaveCompleted(
             waveId, tick, rewardPending);
         if (!result.accepted) {
@@ -504,6 +629,12 @@ private:
 
     void onModifierChosen(std::uint64_t tick, ModifierId id) {
         const auto result = modifiers_.apply(id);
+        auto* waveResult = currentWaveResult();
+        if (waveResult) {
+            waveResult->selectedModifier = id;
+            waveResult->modifierApplied = result.accepted;
+            waveResult->phase = WaveResultPhase::Complete;
+        }
         if (result.accepted) {
             synchronizeGameplayModifiers();
             events_.push_back(
@@ -529,6 +660,8 @@ private:
 
     void publishAdvance(std::uint64_t tick) {
         if (state_.phase == RunPhase::Complete) {
+            history_.phase = RunHistoryPhase::Complete;
+            history_.finishedTick = tick;
             events_.push_back(
                 {tick, EventType::RunCompleted, state_.runId, 0, 0, 0, 0});
         } else if (state_.phase == RunPhase::BetweenWaves) {
@@ -553,6 +686,12 @@ private:
             state_.phase == RunPhase::Complete) return;
         (void)sequence_.fail(sequenceFailure);
         synchronizeRunState();
+        pendingWave_ = {};
+        finalizeWaveResult(tick, WaveResultPhase::Failed, 0);
+        if (history_.phase != RunHistoryPhase::Idle) {
+            history_.phase = RunHistoryPhase::Failed;
+            history_.finishedTick = tick;
+        }
         events_.push_back(
             {tick, EventType::RunFailed, state_.runId,
              state_.currentWave, 0, 0,
@@ -564,9 +703,8 @@ private:
             playerTeamId_, ResolveGameplayProfile(modifiers_));
     }
 
-    static void hashCommand(
-        foundation::CanonicalHash& hash,
-        const TickCommand& command) {
+    static void hashCommand(foundation::CanonicalHash& hash,
+                            const TickCommand& command) {
         hash.WriteU64(command.targetTick);
         hash.WriteU32(command.issuer);
         hash.WriteU32(command.sequence);
@@ -574,7 +712,43 @@ private:
         hash.WriteU32(command.objectId);
     }
 
-    void buildSnapshot(std::uint64_t tick) {
+    static void appendHistoryHash(foundation::CanonicalHash& hash,
+                                  const RunHistory& history) {
+        hash.WriteU32(history.runId);
+        hash.WriteU64(history.startedTick);
+        hash.WriteU64(history.finishedTick);
+        hash.WriteU8(static_cast<std::uint8_t>(history.phase));
+        hash.WriteBool(history.legacyImported);
+        hash.WriteU32(static_cast<std::uint32_t>(history.waves.size()));
+        for (const auto& wave : history.waves) {
+            hash.WriteU32(wave.waveId);
+            hash.WriteU32(wave.waveIndex);
+            hash.WriteU64(wave.startedTick);
+            hash.WriteU64(wave.completedTick);
+            hash.WriteU8(static_cast<std::uint8_t>(wave.phase));
+            hash.WriteU32(wave.plannedEnemies);
+            hash.WriteU32(wave.plannedBosses);
+            hash.WriteU32(wave.enemiesDefeated);
+            hash.WriteU32(wave.bossesDefeated);
+            hash.WriteI32(wave.coreHealthStart);
+            hash.WriteI32(wave.coreHealthEnd);
+            hash.WriteI32(wave.coreHealthMaximum);
+            hash.WriteI32(wave.resourcesStart);
+            hash.WriteI32(wave.resourcesEnd);
+            hash.WriteI32(wave.resourceDelta);
+            hash.WriteI32(wave.resourceBonus);
+            hash.WriteU32(static_cast<std::uint32_t>(wave.affixes.size()));
+            for (const auto id : wave.affixes) hash.WriteU32(id);
+            hash.WriteU32(static_cast<std::uint32_t>(wave.bosses.size()));
+            for (const auto id : wave.bosses) hash.WriteU32(id);
+            hash.WriteU32(static_cast<std::uint32_t>(wave.rewardChoices.size()));
+            for (const auto id : wave.rewardChoices) hash.WriteU32(id);
+            hash.WriteU32(wave.selectedModifier);
+            hash.WriteBool(wave.modifierApplied);
+        }
+    }
+
+    void buildSnapshot(std::uint64_t tick, bool includeHistory = true) {
         snapshot_.tick = tick;
         snapshot_.towerDefenseWorldHash = tower_.snapshot().worldHash;
         snapshot_.state = state_;
@@ -583,6 +757,7 @@ private:
             modifiers_.resolve(WaveCompletionResourceStat(), 0);
         snapshot_.gameplayProfile = ResolveGameplayProfile(modifiers_);
         snapshot_.modifiers = modifiers_.stacks();
+        snapshot_.history = history_;
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
@@ -622,6 +797,7 @@ private:
             for (const auto waveId : run->waves) hash.WriteU32(waveId);
         }
         modifiers_.appendHash(hash);
+        if (includeHistory) appendHistoryHash(hash, history_);
         snapshot_.worldHash = hash.Value();
     }
 
@@ -638,6 +814,8 @@ private:
     std::vector<Event> events_;
     RunSnapshot snapshot_;
     RunState state_;
+    RunHistory history_;
+    PendingWaveBaseline pendingWave_;
     std::uint64_t rootSeed_{1};
     std::uint64_t lastTick_{};
     std::uint32_t nextInternalSequence_{1};
