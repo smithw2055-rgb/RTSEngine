@@ -87,6 +87,7 @@ void checkProjection(
     check(history.runId == 7);
     check(history.phase == roguelite::RunHistoryPhase::Active);
     check(!history.legacyImported);
+    check(history.rewardPityMisses == 0);
     check(history.waves.size() == 1);
     check(history.waves.front().waveId == 1);
     check(history.waves.front().waveIndex == 0);
@@ -123,7 +124,7 @@ void prepareRoundTrip(RestoredPair& pair) {
     check(reader.readU16(version));
     check(magic == roguelite::RunSimulationArchive::kMagic);
     check(version == roguelite::RunSimulationArchive::kVersion);
-    check(version == 2u);
+    check(version == 3u);
     check(roguelite::RunSimulationArchive::kMinimumVersion == 1u);
 
     configure(pair.restored, false);
