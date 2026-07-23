@@ -1,6 +1,6 @@
 #pragma once
 
-#include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/TowerDefense/LaneGraph.h>
 #include <rts/foundation/CanonicalHash.h>
 #include <rts/foundation/Random.h>
 
@@ -23,6 +23,12 @@ struct SpawnLane {
     gameplay::GridPoint spawn{};
     gameplay::GridPoint goal{};
     std::uint32_t weight{1};
+    LaneNodeId startNodeId{};
+    LaneNodeId goalNodeId{};
+
+    bool usesGraph() const noexcept {
+        return startNodeId != 0 || goalNodeId != 0;
+    }
 };
 
 struct WaveEnemyEntry {
@@ -47,6 +53,21 @@ struct WaveDefinition {
     std::vector<WaveEnemyEntry> enemies;
     std::vector<RewardId> rewardPool;
     std::uint32_t rewardChoices{3};
+};
+
+struct PlannedLaneRoute final {
+    LaneId id{};
+    std::uint32_t totalCost{};
+    std::vector<LaneNodeId> nodeIds;
+    std::vector<gameplay::GridPoint> points;
+
+    friend bool operator==(const PlannedLaneRoute& a,
+                           const PlannedLaneRoute& b) noexcept {
+        return a.id == b.id &&
+               a.totalCost == b.totalCost &&
+               a.nodeIds == b.nodeIds &&
+               a.points == b.points;
+    }
 };
 
 struct PlannedSpawn {
@@ -74,6 +95,7 @@ struct WavePlan {
     std::uint32_t unusedBudget{};
     std::uint32_t rewardChoices{};
     std::vector<RewardDefinition> rewards;
+    std::vector<PlannedLaneRoute> routes;
     std::vector<PlannedSpawn> spawns;
 };
 
@@ -96,7 +118,8 @@ enum class WaveStartFailure : std::uint8_t {
     NoAffordableEnemy,
     UnknownUnitDefinition,
     NoBaseCore,
-    InvalidLane
+    InvalidLane,
+    InvalidLaneRoute
 };
 
 struct WaveStartResult {
@@ -126,8 +149,50 @@ public:
     explicit WaveDirector(std::uint64_t rootSeed = 1) noexcept
         : rootSeed_(rootSeed) {}
 
+    bool upsertLaneNode(LaneNode node) {
+        return laneGraph_.upsertNode(node);
+    }
+
+    bool removeLaneNode(LaneNodeId id) {
+        return laneGraph_.removeNode(id);
+    }
+
+    bool connectLaneNodes(
+        LaneNodeId from,
+        LaneNodeId to,
+        std::uint32_t cost = 1) {
+        return laneGraph_.connect(from, to, cost);
+    }
+
+    bool connectLaneNodesBidirectional(
+        LaneNodeId first,
+        LaneNodeId second,
+        std::uint32_t cost = 1) {
+        return laneGraph_.connectBidirectional(first, second, cost);
+    }
+
+    bool disconnectLaneNodes(LaneNodeId from, LaneNodeId to) {
+        return laneGraph_.disconnect(from, to);
+    }
+
+    bool setLaneConnectionEnabled(
+        LaneNodeId from,
+        LaneNodeId to,
+        bool enabled) {
+        return laneGraph_.setConnectionEnabled(from, to, enabled);
+    }
+
+    void replaceLaneGraph(LaneGraph graph) {
+        laneGraph_ = std::move(graph);
+    }
+
+    const LaneGraph& laneGraph() const noexcept { return laneGraph_; }
+
     bool registerLane(SpawnLane lane) {
-        if (lane.id == 0 || lane.weight == 0) return false;
+        if (lane.id == 0 || lane.weight == 0 ||
+            ((lane.startNodeId == 0) != (lane.goalNodeId == 0))) {
+            return false;
+        }
         replaceById(lanes_, lane);
         return true;
     }
@@ -155,6 +220,17 @@ public:
     const RewardDefinition* reward(RewardId id) const noexcept {
         const auto* planned = findById(plan_.rewards, id);
         return planned ? planned : findById(rewards_, id);
+    }
+
+    const PlannedLaneRoute* plannedRoute(LaneId id) const noexcept {
+        return findById(plan_.routes, id);
+    }
+
+    bool resolveLaneRoute(
+        LaneId id,
+        PlannedLaneRoute& output) const {
+        const auto* value = lane(id);
+        return value && buildLaneRoute(*value, output);
     }
 
     const std::vector<SpawnLane>& lanes() const noexcept {
@@ -239,6 +315,14 @@ public:
         nextPlan.enemyTeamId = wave->enemyTeamId;
         nextPlan.rewardChoices = wave->rewardChoices;
         nextPlan.rewards = resolveRewards(*wave);
+        nextPlan.routes.reserve(activeLanes.size());
+        for (const auto& laneDefinition : activeLanes) {
+            PlannedLaneRoute route;
+            if (!buildLaneRoute(laneDefinition, route)) {
+                return {false, WaveStartFailure::InvalidLaneRoute, id};
+            }
+            nextPlan.routes.push_back(std::move(route));
+        }
 
         std::uint64_t rewardWeight = 0;
         for (const auto& reward : nextPlan.rewards) {
@@ -293,13 +377,14 @@ public:
                 selectWeightedLane(random, activeLanes);
             const auto& entry = pool[selectedIndex];
             const auto& selectedLane = activeLanes[laneIndex];
+            const auto& selectedRoute = nextPlan.routes[laneIndex];
 
             nextPlan.spawns.push_back(
                 {sequence,
                  static_cast<std::uint64_t>(sequence) * interval,
                  selectedLane.id,
-                 selectedLane.spawn,
-                 selectedLane.goal,
+                 selectedRoute.points.front(),
+                 selectedRoute.points.back(),
                  entry.unitDefinitionId});
             remaining -= entry.budgetCost;
             ++counts[selectedIndex];
@@ -394,6 +479,23 @@ public:
         hash.WriteU32(plan_.unusedBudget);
         hash.WriteU32(plan_.rewardChoices);
         hash.WriteU32(
+            static_cast<std::uint32_t>(plan_.routes.size()));
+        for (const auto& route : plan_.routes) {
+            hash.WriteU32(route.id);
+            hash.WriteU32(route.totalCost);
+            hash.WriteU32(
+                static_cast<std::uint32_t>(route.nodeIds.size()));
+            for (const auto nodeId : route.nodeIds) {
+                hash.WriteU32(nodeId);
+            }
+            hash.WriteU32(
+                static_cast<std::uint32_t>(route.points.size()));
+            for (const auto point : route.points) {
+                hash.WriteI32(point.x);
+                hash.WriteI32(point.y);
+            }
+        }
+        hash.WriteU32(
             static_cast<std::uint32_t>(plan_.spawns.size()));
         for (const auto& spawn : plan_.spawns) {
             hash.WriteU32(spawn.sequence);
@@ -464,6 +566,40 @@ private:
         hash.WriteString(name);
         hash.WriteU64(scope);
         return hash.Value();
+    }
+
+    static std::uint64_t coordinateDistance(
+        std::int32_t first,
+        std::int32_t second) noexcept {
+        const auto left = static_cast<std::int64_t>(first);
+        const auto right = static_cast<std::int64_t>(second);
+        return static_cast<std::uint64_t>(
+            left >= right ? left - right : right - left);
+    }
+
+    bool buildLaneRoute(
+        const SpawnLane& lane,
+        PlannedLaneRoute& output) const {
+        output = {};
+        output.id = lane.id;
+        if (lane.usesGraph()) {
+            if (lane.startNodeId == 0 || lane.goalNodeId == 0) return false;
+            const auto route = laneGraph_.findRoute(
+                lane.startNodeId, lane.goalNodeId);
+            if (!route.found || route.points.empty()) return false;
+            output.totalCost = route.totalCost;
+            output.nodeIds = route.nodeIds;
+            output.points = route.points;
+            return true;
+        }
+
+        const auto total = coordinateDistance(lane.spawn.x, lane.goal.x) +
+                           coordinateDistance(lane.spawn.y, lane.goal.y);
+        if (total > std::numeric_limits<std::uint32_t>::max()) return false;
+        output.totalCost = static_cast<std::uint32_t>(total);
+        output.points.push_back(lane.spawn);
+        if (lane.goal != lane.spawn) output.points.push_back(lane.goal);
+        return true;
     }
 
     template<class Entry, class Weight>
@@ -577,6 +713,7 @@ private:
     }
 
     std::uint64_t rootSeed_{1};
+    LaneGraph laneGraph_;
     std::vector<SpawnLane> lanes_;
     std::vector<WaveDefinition> waves_;
     std::vector<RewardDefinition> rewards_;
