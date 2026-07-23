@@ -20,6 +20,32 @@ struct PresentationAssetCacheStats final {
 };
 
 class PresentationAssetCache final : public SpriteResolver {
+private:
+    struct TextureResolution final {
+        render::TextureHandle handle{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+        std::uint32_t assetGeneration{};
+    };
+
+    struct TextureEntry final {
+        assets::AssetKey key{};
+        std::uint32_t assetGeneration{};
+        render::TextureHandle handle{};
+        std::uint32_t width{};
+        std::uint32_t height{};
+    };
+
+    struct SpriteEntry final {
+        LogicalAssetId id{};
+        std::uint32_t assetGeneration{};
+        std::uint32_t textureGeneration{};
+        ResolvedSprite resolved{};
+    };
+
+    using TextureIterator = std::vector<TextureEntry>::iterator;
+    using SpriteIterator = std::vector<SpriteEntry>::iterator;
+
 public:
     PresentationAssetCache(assets::AssetManager& assets,
                            render::RenderDevice& device) noexcept
@@ -95,28 +121,6 @@ public:
     }
 
 private:
-    struct TextureResolution final {
-        render::TextureHandle handle{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-        std::uint32_t assetGeneration{};
-    };
-
-    struct TextureEntry final {
-        assets::AssetKey key{};
-        std::uint32_t assetGeneration{};
-        render::TextureHandle handle{};
-        std::uint32_t width{};
-        std::uint32_t height{};
-    };
-
-    struct SpriteEntry final {
-        LogicalAssetId id{};
-        std::uint32_t assetGeneration{};
-        std::uint32_t textureGeneration{};
-        ResolvedSprite resolved{};
-    };
-
     bool resolveTexture(assets::AssetKey key,
                         TextureResolution& output) {
         if (key.type != assets::AssetType::Texture2D || !key.valid()) {
@@ -218,7 +222,7 @@ private:
         deviceGeneration_ = generation;
     }
 
-    auto lowerTexture(assets::AssetKey key) {
+    TextureIterator lowerTexture(assets::AssetKey key) {
         return std::lower_bound(
             textures_.begin(), textures_.end(), key,
             [](const TextureEntry& value, assets::AssetKey lookup) {
@@ -226,7 +230,7 @@ private:
             });
     }
 
-    auto lowerSprite(LogicalAssetId id) {
+    SpriteIterator lowerSprite(LogicalAssetId id) {
         return std::lower_bound(
             sprites_.begin(), sprites_.end(), id,
             [](const SpriteEntry& value, LogicalAssetId lookup) {
