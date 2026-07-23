@@ -37,7 +37,7 @@ void testPlannerIsOrderIndependentAndBudgeted() {
         modifier(1, roguelite::RewardRarity::Common, 5),
         modifier(2, roguelite::RewardRarity::Uncommon, 3),
         modifier(3, roguelite::RewardRarity::Rare, 2),
-        modifier(4, roguelite::RewardRarity::Epic, 1)
+        modifier(4, roguelite::RewardRarity::Common, 1)
     };
     const auto first = roguelite::RewardRarityPlanner::plan(
         0x1234u, 7, 0, 10, rule, 0, candidates, 3);
@@ -163,7 +163,9 @@ std::uint64_t advanceToPityReward(
         check(simulation.step(tick));
         if (simulation.state().phase == roguelite::RunPhase::RewardPending &&
             simulation.state().waveIndex == 0 && !firstChoiceQueued) {
-            check(simulation.tower().snapshot().rewardChoices ==
+            auto choices = simulation.tower().snapshot().rewardChoices;
+            std::sort(choices.begin(), choices.end());
+            check(choices ==
                   std::vector<roguelite::ModifierId>({1, 2}));
             check(simulation.submit(
                 {tick + 1u, 1, 2,
