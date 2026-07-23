@@ -16,6 +16,9 @@ The repository is being built as small, testable vertical slices rather than imp
 - deterministic multi-wave tower-defense loops with preparation countdowns, early starts, bosses, affixes, victory/failure states, and mid-preparation persistence
 - authoritative roguelite run history with wave results, boss/affix outcomes, resources, core health, reward choices, and legacy save migration
 - deterministic reward rarity budgets, minimum-rarity guarantees, and persisted pity counters
+- immutable presentation scenes extracted from RTS snapshots with logical asset bindings and fog visibility filtering
+- double-buffered snapshot interpolation with spawn, despawn and teleport policies
+- backend-neutral render packets, platform contracts, generational render handles, NullPlatform and NullRenderDevice
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
@@ -29,4 +32,4 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The authoritative simulation layer does not depend on rendering, audio, UI, scripting, networking, or platform services. See `docs/architecture.md`, `docs/roadmap.md`, and `docs/adr/` for the design constraints and phased plan.
+The authoritative simulation layer does not depend on rendering, audio, UI, scripting, networking, or platform services. See `docs/architecture.md`, `docs/roadmap.md`, `docs/phase7-presentation-foundations.md`, and `docs/adr/` for the design constraints and phased plan.
