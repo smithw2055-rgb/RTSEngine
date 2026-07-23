@@ -1,5 +1,4 @@
-#include <RTSEngine/Presentation/RenderPacket.h>
-#include <RTSEngine/RtsPresentation/RtsPresentationExtractor.h>
+#include <RTSEngine/RtsPresentation/RtsPresentationRuntime.h>
 
 #include <cassert>
 #include <cstdint>
@@ -136,11 +135,42 @@ void testMissingVisibilityHidesEnemies() {
     check(shown.entities.front().visible);
 }
 
+void testComposedRuntime() {
+    rts_presentation::RtsPresentationRuntime runtime({1, false, true});
+    check(runtime.registerVisual(
+        {{presentation::SceneEntityKind::Unit, 1},
+         700, 701, presentation::RenderLayer::WorldEntity, 0}));
+
+    gameplay::WorldSnapshot first;
+    first.tick = 1;
+    first.worldHash = 10;
+    first.entities.push_back(makeEntity(
+        1, gameplay::SnapshotKind::Unit, 1, 1, 0, 0));
+    check(runtime.publishSnapshot(first));
+
+    auto second = first;
+    second.tick = 2;
+    second.worldHash = 20;
+    second.entities.front().x = 2;
+    check(runtime.publishSnapshot(second));
+
+    const auto packet = runtime.buildRenderPacket(
+        0.5f, {8.0f, true});
+    check(packet.previousTick == 1);
+    check(packet.currentTick == 2);
+    check(packet.simulationHash == 20);
+    check(packet.sprites.size() == 1);
+    check(packet.sprites.front().spriteAsset == 700);
+    check(packet.sprites.front().animationAsset == 701);
+    check(packet.sprites.front().x == 1.0f);
+}
+
 } // namespace
 
 int main() {
     testSceneExtractionAndVisibility();
     testMissingVisibilityHidesEnemies();
+    testComposedRuntime();
     std::cout << "presentation scene tests passed\n";
     return 0;
 }
