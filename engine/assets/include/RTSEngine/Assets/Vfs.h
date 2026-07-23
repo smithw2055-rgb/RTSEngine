@@ -22,7 +22,7 @@ inline bool NormalizeVirtualPath(std::string_view input,
 
     std::string segment;
     std::vector<std::string> segments;
-    const auto flush = [&]() mutable -> bool {
+    auto flush = [&]() -> bool {
         if (segment.empty()) return true;
         if (segment == "." || segment == "..") return false;
         if (segment.find(':') != std::string::npos) return false;
