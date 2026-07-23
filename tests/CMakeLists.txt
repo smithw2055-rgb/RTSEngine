@@ -18,6 +18,18 @@ add_executable(rts_snapshot_interpolation_tests snapshot_interpolation_tests.cpp
 target_link_libraries(rts_snapshot_interpolation_tests PRIVATE RTSEngine::Presentation)
 add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolation_tests)
 
+add_executable(rts_assets_runtime_tests assets_runtime_tests.cpp)
+target_link_libraries(rts_assets_runtime_tests PRIVATE RTSEngine::Assets)
+add_test(NAME rts_assets_runtime_tests COMMAND rts_assets_runtime_tests)
+
+add_executable(rts_fixed_2d_renderer_tests fixed_2d_renderer_tests.cpp)
+target_link_libraries(rts_fixed_2d_renderer_tests PRIVATE RTSEngine::Presentation)
+add_test(NAME rts_fixed_2d_renderer_tests COMMAND rts_fixed_2d_renderer_tests)
+
+add_executable(rts_presentation_events_tests presentation_events_tests.cpp)
+target_link_libraries(rts_presentation_events_tests PRIVATE RTSEngine::RtsPresentation)
+add_test(NAME rts_presentation_events_tests COMMAND rts_presentation_events_tests)
+
 add_executable(rts_ecs_tests ecs_tests.cpp)
 target_link_libraries(rts_ecs_tests PRIVATE RTSEngine::Ecs)
 add_test(NAME rts_ecs_tests COMMAND rts_ecs_tests)
@@ -58,7 +70,7 @@ add_executable(rts_base_building_tests base_building_tests.cpp)
 target_link_libraries(rts_base_building_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_base_building_tests COMMAND rts_base_building_tests)
 
-add_executable(rts_economy_production_tests rts_economy_production_tests.cpp)
+add_executable(rts_economy_production_tests economy_production_tests.cpp)
 target_link_libraries(rts_economy_production_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_economy_production_tests COMMAND rts_economy_production_tests)
 
@@ -66,7 +78,7 @@ add_executable(rts_combat_tests combat_tests.cpp)
 target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
 
-add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+add_executable(rts_combat_integration_tests combat_integration_tests.cpp)
 target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 
