@@ -46,7 +46,7 @@ add_executable(rts_base_building_tests base_building_tests.cpp)
 target_link_libraries(rts_base_building_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_base_building_tests COMMAND rts_base_building_tests)
 
-add_executable(rts_economy_production_tests rts_economy_production_tests.cpp)
+add_executable(rts_economy_production_tests economy_production_tests.cpp)
 target_link_libraries(rts_economy_production_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_economy_production_tests COMMAND rts_economy_production_tests)
 
@@ -54,7 +54,7 @@ add_executable(rts_combat_tests combat_tests.cpp)
 target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
 
-add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+add_executable(rts_combat_integration_tests combat_integration_tests.cpp)
 target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 
@@ -69,6 +69,10 @@ add_test(NAME rts_tower_defense_tests COMMAND rts_tower_defense_tests)
 add_executable(rts_wave_modifier_tests wave_modifier_tests.cpp)
 target_link_libraries(rts_wave_modifier_tests PRIVATE RTSEngine::TowerDefense)
 add_test(NAME rts_wave_modifier_tests COMMAND rts_wave_modifier_tests)
+
+add_executable(rts_wave_loop_tests wave_loop_tests.cpp)
+target_link_libraries(rts_wave_loop_tests PRIVATE RTSEngine::TowerDefense)
+add_test(NAME rts_wave_loop_tests COMMAND rts_wave_loop_tests)
 
 add_executable(rts_roguelite_tests roguelite_tests.cpp)
 target_link_libraries(rts_roguelite_tests PRIVATE RTSEngine::Roguelite)
