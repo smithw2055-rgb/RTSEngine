@@ -88,6 +88,10 @@ add_executable(rts_roguelite_history_tests roguelite_history_tests.cpp)
 target_link_libraries(rts_roguelite_history_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_history_tests COMMAND rts_roguelite_history_tests)
 
+add_executable(rts_reward_rarity_tests reward_rarity_tests.cpp)
+target_link_libraries(rts_reward_rarity_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_reward_rarity_tests COMMAND rts_reward_rarity_tests)
+
 add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
 target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_roguelite_persistence_tests COMMAND rts_roguelite_persistence_tests)
