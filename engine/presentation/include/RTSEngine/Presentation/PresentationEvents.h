@@ -4,6 +4,7 @@
 #include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
@@ -64,11 +65,18 @@ struct PresentationEventBinding final {
 };
 
 class PresentationEventCatalog final {
+private:
+    using Iterator = std::vector<PresentationEventBinding>::iterator;
+    using ConstIterator =
+        std::vector<PresentationEventBinding>::const_iterator;
+
 public:
     bool upsert(PresentationEventBinding binding) {
         if (binding.key.domain == 0 || binding.key.type == 0 ||
             (binding.animationAsset == 0 && binding.effectAsset == 0 &&
-             binding.audioAsset == 0) || binding.audioVolume < 0.0f) {
+             binding.audioAsset == 0) ||
+            !std::isfinite(binding.audioVolume) ||
+            binding.audioVolume < 0.0f) {
             return false;
         }
         const auto iterator = lower(binding.key);
@@ -99,7 +107,7 @@ public:
     }
 
 private:
-    auto lower(EventBindingKey key) {
+    Iterator lower(EventBindingKey key) {
         return std::lower_bound(
             bindings_.begin(), bindings_.end(), key,
             [](const PresentationEventBinding& value,
@@ -108,7 +116,7 @@ private:
             });
     }
 
-    auto lower(EventBindingKey key) const {
+    ConstIterator lower(EventBindingKey key) const {
         return std::lower_bound(
             bindings_.begin(), bindings_.end(), key,
             [](const PresentationEventBinding& value,
