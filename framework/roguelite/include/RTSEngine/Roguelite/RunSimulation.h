@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Roguelite/GameplayStats.h>
 #include <RTSEngine/Roguelite/ModifierRuntime.h>
+#include <RTSEngine/Roguelite/RewardRarityPlanner.h>
 #include <RTSEngine/Roguelite/RunHistory.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
 #include <RTSEngine/TowerDefense/WaveSequence.h>
@@ -21,6 +22,7 @@ class RunSimulationArchive;
 struct RunDefinition {
     RunId id{};
     std::vector<tower_defense::WaveId> waves;
+    std::vector<RewardOfferRule> rewardRules;
 };
 
 enum class RunPhase : std::uint8_t {
@@ -62,7 +64,8 @@ enum class RunFailure : std::uint8_t {
     InvalidDefinition,
     ModifierNotOffered,
     ModifierIneligible,
-    TowerDefenseRejected
+    TowerDefenseRejected,
+    RewardPolicyUnsatisfied
 };
 
 enum class EventType : std::uint8_t {
@@ -97,6 +100,7 @@ struct RunSnapshot {
     std::int32_t waveCompletionResourceBonus{};
     gameplay::TeamModifierProfile gameplayProfile{};
     std::vector<ModifierStack> modifiers;
+    std::uint32_t rewardPityMisses{};
     RunHistory history{};
 };
 
@@ -262,15 +266,31 @@ private:
     }
 
     static bool validRunDefinition(const RunDefinition& run) noexcept {
-        return run.id != 0 && !run.waves.empty() &&
-               std::all_of(
-                   run.waves.begin(), run.waves.end(),
-                   [](tower_defense::WaveId id) { return id != 0; });
+        if (run.id == 0 || run.waves.empty() ||
+            std::any_of(
+                run.waves.begin(), run.waves.end(),
+                [](tower_defense::WaveId id) { return id == 0; })) {
+            return false;
+        }
+        if (!run.rewardRules.empty() &&
+            run.rewardRules.size() != run.waves.size()) {
+            return false;
+        }
+        return std::all_of(
+            run.rewardRules.begin(), run.rewardRules.end(),
+            [](const RewardOfferRule& rule) { return rule.valid(); });
     }
 
     static tower_defense::WaveSequenceDefinition makeSequenceDefinition(
         const RunDefinition& run) {
         return {run.id, run.waves, 0u, 1u, false};
+    }
+
+    static const RewardOfferRule* rewardRule(
+        const RunDefinition& run,
+        std::uint32_t waveIndex) noexcept {
+        return run.rewardRules.empty() || waveIndex >= run.rewardRules.size()
+            ? nullptr : &run.rewardRules[waveIndex];
     }
 
     static RunState projectSequenceState(
@@ -368,6 +388,7 @@ private:
         history_.startedTick = tick;
         history_.phase = RunHistoryPhase::Active;
         pendingWave_ = {};
+        pendingRewardOffer_ = {};
         synchronizeRunState();
         events_.push_back(
             {tick, EventType::RunStarted, id, state_.currentWave, 0, 0, 0});
@@ -407,6 +428,17 @@ private:
         }
     }
 
+    std::vector<ModifierDefinition> rewardCandidates(
+        const std::vector<ModifierId>& ids) const {
+        std::vector<ModifierDefinition> result;
+        result.reserve(ids.size());
+        for (const auto id : ids) {
+            const auto* value = modifiers_.definition(id);
+            if (value) result.push_back(*value);
+        }
+        return result;
+    }
+
     void beginCurrentWave(std::uint64_t tick) {
         const auto& sequenceState = sequence_.state();
         const auto* run = findById(runs_, sequenceState.sequenceId);
@@ -430,7 +462,26 @@ private:
         wave.rewardPool = modifiers_.eligible(std::move(rewardPool));
         wave.rewardChoices = static_cast<std::uint32_t>(
             std::min<std::size_t>(wave.rewardChoices, wave.rewardPool.size()));
+
+        pendingRewardOffer_ = {};
+        const auto* rule = rewardRule(*run, sequenceState.waveIndex);
+        if (rule && rule->enabled()) {
+            pendingRewardOffer_ = RewardRarityPlanner::plan(
+                rootSeed_, run->id, sequenceState.waveIndex, waveId,
+                *rule, history_.rewardPityMisses,
+                rewardCandidates(wave.rewardPool), wave.rewardChoices);
+            if (!pendingRewardOffer_.accepted) {
+                failRun(tick, RunFailure::RewardPolicyUnsatisfied,
+                        tower_defense::WaveSequenceFailure::InvalidDefinition);
+                return;
+            }
+            wave.rewardPool = pendingRewardOffer_.choices;
+            wave.rewardChoices = static_cast<std::uint32_t>(
+                pendingRewardOffer_.choices.size());
+        }
+
         if (!tower_.registerWave(wave) || !sequence_.markWaveStartQueued()) {
+            pendingRewardOffer_ = {};
             failRun(tick, RunFailure::InvalidDefinition,
                     tower_defense::WaveSequenceFailure::InvalidDefinition);
             return;
@@ -443,6 +494,7 @@ private:
         command.type = tower_defense::CommandType::StartWave;
         command.objectId = waveId;
         if (!tower_.submit(command)) {
+            pendingRewardOffer_ = {};
             failRun(tick, RunFailure::TowerDefenseRejected,
                     tower_defense::WaveSequenceFailure::TowerCommandRejected);
             return;
@@ -479,6 +531,7 @@ private:
                 break;
             case tower_defense::EventType::WaveRejected:
                 pendingWave_ = {};
+                pendingRewardOffer_ = {};
                 failRun(tick, RunFailure::TowerDefenseRejected,
                         tower_defense::WaveSequenceFailure::WaveRejected);
                 break;
@@ -538,8 +591,23 @@ private:
             if (spawn.bossId != 0) result.bosses.push_back(spawn.bossId);
         }
         result.plannedBosses = static_cast<std::uint32_t>(result.bosses.size());
+
+        if (pendingRewardOffer_.accepted) {
+            result.rewardRarityBudget = pendingRewardOffer_.rarityBudget;
+            result.rewardRaritySpent = pendingRewardOffer_.raritySpent;
+            result.guaranteedRarity = pendingRewardOffer_.guaranteedRarity;
+            result.effectiveGuaranteedRarity =
+                pendingRewardOffer_.effectiveGuaranteedRarity;
+            result.pityBefore = pendingRewardOffer_.pityBefore;
+            result.pityAfter = pendingRewardOffer_.pityAfter;
+            result.pityTriggered = pendingRewardOffer_.pityTriggered;
+            result.rewardChoices = pendingRewardOffer_.choices;
+            result.rewardRarities = pendingRewardOffer_.rarities;
+        }
+
         history_.waves.push_back(std::move(result));
         pendingWave_ = {};
+        pendingRewardOffer_ = {};
     }
 
     WaveResult* currentWaveResult(
@@ -564,10 +632,14 @@ private:
         auto* result = currentWaveResult(waveId);
         if (!result || id == 0) return;
         if (std::find(result->rewardChoices.begin(),
-                      result->rewardChoices.end(), id) ==
+                      result->rewardChoices.end(), id) !=
             result->rewardChoices.end()) {
-            result->rewardChoices.push_back(id);
+            return;
         }
+        result->rewardChoices.push_back(id);
+        const auto* definition = modifiers_.definition(id);
+        result->rewardRarities.push_back(
+            definition ? definition->rarity : RewardRarity::Common);
     }
 
     void finalizeWaveResult(std::uint64_t tick,
@@ -616,6 +688,12 @@ private:
             rewardPending ? WaveResultPhase::RewardPending
                           : WaveResultPhase::Complete,
             bonus);
+        auto* waveResult = currentWaveResult(waveId);
+        if (rewardPending && waveResult &&
+            waveResult->rewardRarityBudget != 0) {
+            history_.rewardPityMisses = waveResult->pityAfter;
+        }
+
         const auto result = sequence_.markWaveCompleted(
             waveId, tick, rewardPending);
         if (!result.accepted) {
@@ -687,6 +765,7 @@ private:
         (void)sequence_.fail(sequenceFailure);
         synchronizeRunState();
         pendingWave_ = {};
+        pendingRewardOffer_ = {};
         finalizeWaveResult(tick, WaveResultPhase::Failed, 0);
         if (history_.phase != RunHistoryPhase::Idle) {
             history_.phase = RunHistoryPhase::Failed;
@@ -712,13 +791,24 @@ private:
         hash.WriteU32(command.objectId);
     }
 
+    static void appendRewardRuleHash(
+        foundation::CanonicalHash& hash,
+        const RewardOfferRule& rule) {
+        hash.WriteU32(rule.rarityBudget);
+        hash.WriteU8(static_cast<std::uint8_t>(rule.guaranteedRarity));
+        hash.WriteU32(rule.pityAfterMisses);
+        hash.WriteU8(static_cast<std::uint8_t>(rule.pityRarity));
+    }
+
     static void appendHistoryHash(foundation::CanonicalHash& hash,
-                                  const RunHistory& history) {
+                                  const RunHistory& history,
+                                  std::uint16_t version) {
         hash.WriteU32(history.runId);
         hash.WriteU64(history.startedTick);
         hash.WriteU64(history.finishedTick);
         hash.WriteU8(static_cast<std::uint8_t>(history.phase));
         hash.WriteBool(history.legacyImported);
+        if (version >= 3u) hash.WriteU32(history.rewardPityMisses);
         hash.WriteU32(static_cast<std::uint32_t>(history.waves.size()));
         for (const auto& wave : history.waves) {
             hash.WriteU32(wave.waveId);
@@ -745,10 +835,27 @@ private:
             for (const auto id : wave.rewardChoices) hash.WriteU32(id);
             hash.WriteU32(wave.selectedModifier);
             hash.WriteBool(wave.modifierApplied);
+            if (version >= 3u) {
+                hash.WriteU32(wave.rewardRarityBudget);
+                hash.WriteU32(wave.rewardRaritySpent);
+                hash.WriteU8(static_cast<std::uint8_t>(
+                    wave.guaranteedRarity));
+                hash.WriteU8(static_cast<std::uint8_t>(
+                    wave.effectiveGuaranteedRarity));
+                hash.WriteU32(wave.pityBefore);
+                hash.WriteU32(wave.pityAfter);
+                hash.WriteBool(wave.pityTriggered);
+                hash.WriteU32(static_cast<std::uint32_t>(
+                    wave.rewardRarities.size()));
+                for (const auto rarity : wave.rewardRarities) {
+                    hash.WriteU8(static_cast<std::uint8_t>(rarity));
+                }
+            }
         }
     }
 
-    void buildSnapshot(std::uint64_t tick, bool includeHistory = true) {
+    void buildSnapshot(std::uint64_t tick,
+                       std::uint16_t compatibilityVersion = 3u) {
         snapshot_.tick = tick;
         snapshot_.towerDefenseWorldHash = tower_.snapshot().worldHash;
         snapshot_.state = state_;
@@ -757,6 +864,7 @@ private:
             modifiers_.resolve(WaveCompletionResourceStat(), 0);
         snapshot_.gameplayProfile = ResolveGameplayProfile(modifiers_);
         snapshot_.modifiers = modifiers_.stacks();
+        snapshot_.rewardPityMisses = history_.rewardPityMisses;
         snapshot_.history = history_;
 
         foundation::CanonicalHash hash;
@@ -795,9 +903,18 @@ private:
         if (run) {
             hash.WriteU32(static_cast<std::uint32_t>(run->waves.size()));
             for (const auto waveId : run->waves) hash.WriteU32(waveId);
+            if (compatibilityVersion >= 3u) {
+                hash.WriteU32(static_cast<std::uint32_t>(
+                    run->rewardRules.size()));
+                for (const auto& rule : run->rewardRules) {
+                    appendRewardRuleHash(hash, rule);
+                }
+            }
         }
-        modifiers_.appendHash(hash);
-        if (includeHistory) appendHistoryHash(hash, history_);
+        modifiers_.appendHash(hash, compatibilityVersion >= 3u);
+        if (compatibilityVersion >= 2u) {
+            appendHistoryHash(hash, history_, compatibilityVersion);
+        }
         snapshot_.worldHash = hash.Value();
     }
 
@@ -816,6 +933,7 @@ private:
     RunState state_;
     RunHistory history_;
     PendingWaveBaseline pendingWave_;
+    PlannedModifierOffer pendingRewardOffer_;
     std::uint64_t rootSeed_{1};
     std::uint64_t lastTick_{};
     std::uint32_t nextInternalSequence_{1};
