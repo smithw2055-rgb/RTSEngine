@@ -168,7 +168,7 @@ private:
         const auto top = instance.y - sprite.height * sprite.pivotY;
         const auto right = left + sprite.width;
         const auto bottom = top + sprite.height;
-        appendQuad(output, mapPass(instance.layer), sprite.blend,
+        appendQuad(output, mapPass(instance.layer), instance.blend,
                    sprite.texture,
                    left, top, right, bottom,
                    sprite.u0, sprite.v0, sprite.u1, sprite.v1,
