@@ -46,7 +46,7 @@ void configure(
         simulation.createBaseCore(
             {10, 2}, 1, {500, 0, 0, 0, 1, 0});
         simulation.createDefender(
-            {7, 2}, {0}, 1, {500, 0, 50, 6, 1, 0});
+            {7, 2}, {0}, 1, {500, 0, 50, 4, 1, 0});
     }
 }
 
