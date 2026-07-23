@@ -1,6 +1,7 @@
 #pragma once
 
 #include <RTSEngine/Rts/Navigation.h>
+#include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -150,6 +151,21 @@ public:
     }
 
     std::uint64_t revision() const noexcept { return revision_; }
+
+    void appendHash(foundation::CanonicalHash& hash) const noexcept {
+        hash.WriteU32(static_cast<std::uint32_t>(nodes_.size()));
+        for (const auto& entry : nodes_) {
+            hash.WriteU32(entry.node.id);
+            hash.WriteI32(entry.node.point.x);
+            hash.WriteI32(entry.node.point.y);
+            hash.WriteU32(static_cast<std::uint32_t>(entry.edges.size()));
+            for (const auto& edge : entry.edges) {
+                hash.WriteU32(edge.to);
+                hash.WriteU32(edge.cost);
+                hash.WriteBool(edge.enabled);
+            }
+        }
+    }
 
     LaneRoute findRoute(LaneNodeId start, LaneNodeId goal) const {
         const auto startIndex = indexOf(start);
