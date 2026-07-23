@@ -34,8 +34,8 @@ public:
     bool initialize() {
         const auto generation = device_.deviceGeneration();
         if (initialized_ && generation == deviceGeneration_) return true;
-        if (initialized_ && generation == deviceGeneration_) shutdown();
         clearHandles();
+        initialized_ = false;
         deviceGeneration_ = generation;
 
         whiteTexture_ = device_.createTexture(
