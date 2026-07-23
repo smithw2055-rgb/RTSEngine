@@ -9,7 +9,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -103,44 +102,67 @@ public:
             result.pityTriggered ? rule.pityRarity
                                  : RewardRarity::Common);
 
+        if (!hasGuaranteedCandidate(
+                candidates,
+                rule.rarityBudget,
+                result.effectiveGuaranteedRarity)) {
+            result.failure = RewardOfferPlanFailure::GuaranteeUnavailable;
+            return result;
+        }
+
         foundation::RandomStream random(
             rootSeed,
             streamId(runId, waveIndex, waveId));
         std::uint32_t remaining = rule.rarityBudget;
 
-        const auto guarantee = selectCandidate(
+        auto selected = selectCandidate(
             random,
             candidates,
             remaining,
             result.effectiveGuaranteedRarity,
-            true);
-        if (guarantee == candidates.size()) {
-            result.failure = RewardOfferPlanFailure::GuaranteeUnavailable;
+            true,
+            requestedChoices - 1u);
+        if (selected.invalidWeight) {
+            result.failure = RewardOfferPlanFailure::InvalidWeight;
             return result;
         }
-        appendSelection(result, candidates[guarantee]);
-        remaining -= RewardRarityCost(candidates[guarantee].rarity);
+        if (selected.index == candidates.size()) {
+            result.failure = RewardOfferPlanFailure::BudgetInsufficient;
+            return result;
+        }
+        appendSelection(result, candidates[selected.index]);
+        remaining -= RewardRarityCost(candidates[selected.index].rarity);
         candidates.erase(candidates.begin() +
-                         static_cast<std::ptrdiff_t>(guarantee));
+                         static_cast<std::ptrdiff_t>(selected.index));
 
         while (result.choices.size() < requestedChoices) {
-            const auto selected = selectCandidate(
+            const auto slotsAfter = requestedChoices -
+                static_cast<std::uint32_t>(result.choices.size()) - 1u;
+            selected = selectCandidate(
                 random,
                 candidates,
                 remaining,
                 RewardRarity::Common,
-                false);
-            if (selected == candidates.size()) {
+                false,
+                slotsAfter);
+            if (selected.invalidWeight) {
+                result.failure = RewardOfferPlanFailure::InvalidWeight;
+                result.choices.clear();
+                result.rarities.clear();
+                result.raritySpent = 0;
+                return result;
+            }
+            if (selected.index == candidates.size()) {
                 result.failure = RewardOfferPlanFailure::BudgetInsufficient;
                 result.choices.clear();
                 result.rarities.clear();
                 result.raritySpent = 0;
                 return result;
             }
-            appendSelection(result, candidates[selected]);
-            remaining -= RewardRarityCost(candidates[selected].rarity);
+            appendSelection(result, candidates[selected.index]);
+            remaining -= RewardRarityCost(candidates[selected.index].rarity);
             candidates.erase(candidates.begin() +
-                             static_cast<std::ptrdiff_t>(selected));
+                             static_cast<std::ptrdiff_t>(selected.index));
         }
 
         sortSelections(result);
@@ -164,6 +186,11 @@ public:
     }
 
 private:
+    struct Selection final {
+        std::size_t index{};
+        bool invalidWeight{};
+    };
+
     static foundation::RandomStreamId streamId(
         std::uint32_t runId,
         std::uint32_t waveIndex,
@@ -176,35 +203,78 @@ private:
         return hash.Value();
     }
 
-    static std::size_t selectCandidate(
+    static bool hasGuaranteedCandidate(
+        const std::vector<ModifierDefinition>& candidates,
+        std::uint32_t budget,
+        RewardRarity minimum) noexcept {
+        return std::any_of(
+            candidates.begin(), candidates.end(),
+            [&](const ModifierDefinition& value) {
+                return RewardRarityAtLeast(value.rarity, minimum) &&
+                       RewardRarityCost(value.rarity) <= budget;
+            });
+    }
+
+    static bool canCompleteAfter(
+        const std::vector<ModifierDefinition>& candidates,
+        std::size_t selected,
+        std::uint32_t remainingBudget,
+        std::uint32_t slotsAfter) {
+        const auto selectedCost = RewardRarityCost(
+            candidates[selected].rarity);
+        if (selectedCost > remainingBudget) return false;
+        if (slotsAfter == 0) return true;
+
+        std::vector<std::uint32_t> costs;
+        costs.reserve(candidates.size() - 1u);
+        for (std::size_t index = 0; index < candidates.size(); ++index) {
+            if (index != selected) {
+                costs.push_back(RewardRarityCost(candidates[index].rarity));
+            }
+        }
+        if (costs.size() < slotsAfter) return false;
+        std::sort(costs.begin(), costs.end());
+        std::uint64_t required = selectedCost;
+        for (std::uint32_t index = 0; index < slotsAfter; ++index) {
+            required += costs[index];
+        }
+        return required <= remainingBudget;
+    }
+
+    static Selection selectCandidate(
         foundation::RandomStream& random,
         const std::vector<ModifierDefinition>& candidates,
         std::uint32_t remainingBudget,
         RewardRarity minimum,
-        bool requireMinimum) {
+        bool requireMinimum,
+        std::uint32_t slotsAfter) {
         std::vector<std::size_t> eligible;
         std::uint64_t totalWeight = 0;
         for (std::size_t index = 0; index < candidates.size(); ++index) {
             const auto& candidate = candidates[index];
-            if (RewardRarityCost(candidate.rarity) > remainingBudget) continue;
             if (requireMinimum &&
                 !RewardRarityAtLeast(candidate.rarity, minimum)) {
+                continue;
+            }
+            if (!canCompleteAfter(
+                    candidates, index, remainingBudget, slotsAfter)) {
                 continue;
             }
             eligible.push_back(index);
             totalWeight += candidate.weight;
         }
-        if (eligible.empty() || totalWeight == 0 ||
+        if (eligible.empty()) return {candidates.size(), false};
+        if (totalWeight == 0 ||
             totalWeight > std::numeric_limits<std::uint32_t>::max()) {
-            return candidates.size();
+            return {candidates.size(), true};
         }
         auto roll = random.NextBounded(
             static_cast<std::uint32_t>(totalWeight));
         for (const auto index : eligible) {
-            if (roll < candidates[index].weight) return index;
+            if (roll < candidates[index].weight) return {index, false};
             roll -= candidates[index].weight;
         }
-        return eligible.back();
+        return {eligible.back(), false};
     }
 
     static void appendSelection(
