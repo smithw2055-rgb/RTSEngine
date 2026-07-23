@@ -80,7 +80,9 @@ add_test(NAME rts_roguelite_tests COMMAND rts_roguelite_tests)
 
 add_executable(rts_roguelite_sequence_tests roguelite_sequence_tests.cpp)
 target_link_libraries(rts_roguelite_sequence_tests PRIVATE RTSEngine::Roguelite)
-add_test(NAME rts_roguelite_sequence_tests COMMAND rts_roguelite_sequence_tests)
+add_test(NAME rts_roguelite_sequence_projection COMMAND rts_roguelite_sequence_tests projection)
+add_test(NAME rts_roguelite_sequence_archive COMMAND rts_roguelite_sequence_tests archive)
+add_test(NAME rts_roguelite_sequence_continuation COMMAND rts_roguelite_sequence_tests continuation)
 
 add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
 target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
