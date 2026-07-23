@@ -3,6 +3,7 @@
 #include <RTSEngine/Roguelite/GameplayStats.h>
 #include <RTSEngine/Roguelite/ModifierRuntime.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
+#include <RTSEngine/TowerDefense/WaveSequence.h>
 #include <rts/foundation/CanonicalHash.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
@@ -140,11 +141,9 @@ public:
     }
 
     bool registerRun(RunDefinition run) {
-        if (run.id == 0 || run.waves.empty() ||
-            std::any_of(run.waves.begin(), run.waves.end(),
-                        [](tower_defense::WaveId id) { return id == 0; })) {
-            return false;
-        }
+        if (!validRunDefinition(run)) return false;
+        const auto sequenceDefinition = makeSequenceDefinition(run);
+        if (!sequence_.registerSequence(sequenceDefinition)) return false;
         replaceById(runs_, std::move(run));
         return true;
     }
@@ -198,11 +197,10 @@ public:
         for (const auto& command : commands_.consume(tick)) {
             processCommand(tick, command);
         }
-        if (state_.phase == RunPhase::BetweenWaves && tick >= nextWaveTick_) {
-            beginCurrentWave(tick);
-        }
+        if (sequence_.due(tick)) beginCurrentWave(tick);
         if (!tower_.step(tick)) return false;
         reconcileTowerEvents(tick);
+        synchronizeRunState();
         buildSnapshot(tick);
         return true;
     }
@@ -211,6 +209,9 @@ public:
     const RunState& state() const noexcept { return state_; }
     const std::vector<Event>& events() const noexcept { return events_; }
     const ModifierRuntime& modifiers() const noexcept { return modifiers_; }
+    const tower_defense::WaveSequenceDirector& waveSequence() const noexcept {
+        return sequence_;
+    }
     const tower_defense::TowerDefenseSimulation& tower() const noexcept {
         return tower_;
     }
@@ -249,6 +250,78 @@ private:
             ? &*iterator : nullptr;
     }
 
+    static bool validRunDefinition(const RunDefinition& run) noexcept {
+        return run.id != 0 && !run.waves.empty() &&
+               std::all_of(
+                   run.waves.begin(), run.waves.end(),
+                   [](tower_defense::WaveId id) { return id != 0; });
+    }
+
+    static tower_defense::WaveSequenceDefinition makeSequenceDefinition(
+        const RunDefinition& run) {
+        return {run.id, run.waves, 0u, 1u, false};
+    }
+
+    static RunState projectSequenceState(
+        const tower_defense::WaveSequenceState& sequence) noexcept {
+        RunState result;
+        result.runId = sequence.sequenceId;
+        result.waveIndex = sequence.waveIndex;
+        result.completedWaves = sequence.completedWaves;
+        result.currentWave = sequence.currentWave;
+        switch (sequence.phase) {
+        case tower_defense::WaveSequencePhase::Idle:
+            result = {};
+            break;
+        case tower_defense::WaveSequencePhase::Preparing:
+        case tower_defense::WaveSequencePhase::StartingWave:
+            result.phase = RunPhase::BetweenWaves;
+            break;
+        case tower_defense::WaveSequencePhase::WaveActive:
+            result.phase = RunPhase::WaveActive;
+            break;
+        case tower_defense::WaveSequencePhase::RewardPending:
+            result.phase = RunPhase::RewardPending;
+            break;
+        case tower_defense::WaveSequencePhase::Complete:
+            result.phase = RunPhase::Complete;
+            break;
+        case tower_defense::WaveSequencePhase::Failed:
+            result.phase = RunPhase::Failed;
+            break;
+        }
+        return result;
+    }
+
+    void synchronizeRunState() noexcept {
+        state_ = projectSequenceState(sequence_.state());
+    }
+
+    std::uint64_t legacyNextWaveTick() const noexcept {
+        const auto& value = sequence_.state();
+        switch (value.phase) {
+        case tower_defense::WaveSequencePhase::Idle:
+            return 0;
+        case tower_defense::WaveSequencePhase::Preparing:
+            return value.scheduledStartTick;
+        case tower_defense::WaveSequencePhase::Failed:
+            if (tower_.director().state().phase ==
+                    tower_defense::WavePhase::Failed ||
+                value.preparationStartedTick ==
+                    tower_defense::WaveSequenceDirector::noScheduledTick()) {
+                return tower_defense::WaveSequenceDirector::noScheduledTick();
+            }
+            if (value.waveIndex == 0) return value.preparationStartedTick;
+            if (value.preparationStartedTick ==
+                std::numeric_limits<std::uint64_t>::max()) {
+                return value.preparationStartedTick;
+            }
+            return value.preparationStartedTick + 1u;
+        default:
+            return tower_defense::WaveSequenceDirector::noScheduledTick();
+        }
+    }
+
     void processCommand(std::uint64_t tick, const TickCommand& command) {
         if (command.type == CommandType::StartRun) {
             startRun(tick, command.objectId);
@@ -273,8 +346,13 @@ private:
                 return;
             }
         }
-        state_ = {id, RunPhase::BetweenWaves, 0, 0, run->waves.front()};
-        nextWaveTick_ = tick;
+
+        const auto result = sequence_.start(id, tick);
+        if (!result.accepted) {
+            reject(tick, id, RunFailure::InvalidDefinition);
+            return;
+        }
+        synchronizeRunState();
         events_.push_back(
             {tick, EventType::RunStarted, id, state_.currentWave, 0, 0, 0});
     }
@@ -314,15 +392,19 @@ private:
     }
 
     void beginCurrentWave(std::uint64_t tick) {
-        const auto* run = findById(runs_, state_.runId);
-        if (!run || state_.waveIndex >= run->waves.size()) {
-            failRun(tick, RunFailure::InvalidDefinition);
+        const auto& sequenceState = sequence_.state();
+        const auto* run = findById(runs_, sequenceState.sequenceId);
+        if (!run || sequenceState.waveIndex >= run->waves.size() ||
+            sequenceState.currentWave != run->waves[sequenceState.waveIndex]) {
+            failRun(tick, RunFailure::InvalidDefinition,
+                    tower_defense::WaveSequenceFailure::InvalidDefinition);
             return;
         }
-        const auto waveId = run->waves[state_.waveIndex];
+        const auto waveId = sequenceState.currentWave;
         const auto* baseWave = findById(waves_, waveId);
         if (!baseWave) {
-            failRun(tick, RunFailure::InvalidDefinition);
+            failRun(tick, RunFailure::InvalidDefinition,
+                    tower_defense::WaveSequenceFailure::UnknownWave);
             return;
         }
 
@@ -332,38 +414,47 @@ private:
         wave.rewardPool = modifiers_.eligible(std::move(rewardPool));
         wave.rewardChoices = static_cast<std::uint32_t>(
             std::min<std::size_t>(wave.rewardChoices, wave.rewardPool.size()));
-        if (!tower_.registerWave(wave)) {
-            failRun(tick, RunFailure::InvalidDefinition);
+        if (!tower_.registerWave(wave) || !sequence_.markWaveStartQueued()) {
+            failRun(tick, RunFailure::InvalidDefinition,
+                    tower_defense::WaveSequenceFailure::InvalidDefinition);
             return;
         }
 
         tower_defense::TickCommand command;
         command.targetTick = tick;
-        command.issuer = internalIssuer(state_.runId);
+        command.issuer = internalIssuer(sequenceState.sequenceId);
         command.sequence = nextInternalSequence_++;
         command.type = tower_defense::CommandType::StartWave;
         command.objectId = waveId;
         if (!tower_.submit(command)) {
-            failRun(tick, RunFailure::TowerDefenseRejected);
+            failRun(tick, RunFailure::TowerDefenseRejected,
+                    tower_defense::WaveSequenceFailure::TowerCommandRejected);
             return;
         }
-        state_.currentWave = waveId;
-        nextWaveTick_ = std::numeric_limits<std::uint64_t>::max();
+        synchronizeRunState();
     }
 
     void reconcileTowerEvents(std::uint64_t tick) {
         for (const auto& event : tower_.events()) {
             switch (event.type) {
             case tower_defense::EventType::WaveStarted:
-                state_.phase = RunPhase::WaveActive;
-                state_.currentWave = event.waveId;
+                if (!sequence_.markWaveStarted(event.waveId)) {
+                    failRun(tick, RunFailure::TowerDefenseRejected,
+                            tower_defense::WaveSequenceFailure::WaveRejected);
+                    break;
+                }
+                synchronizeRunState();
                 events_.push_back(
                     {tick, EventType::WaveStarted, state_.runId,
                      event.waveId, 0, 0, 0});
                 break;
             case tower_defense::EventType::WaveRejected:
+                failRun(tick, RunFailure::TowerDefenseRejected,
+                        tower_defense::WaveSequenceFailure::WaveRejected);
+                break;
             case tower_defense::EventType::BaseCoreDestroyed:
-                failRun(tick, RunFailure::TowerDefenseRejected);
+                failRun(tick, RunFailure::TowerDefenseRejected,
+                        tower_defense::WaveSequenceFailure::BaseCoreDestroyed);
                 break;
             case tower_defense::EventType::WaveCompleted:
                 onWaveCompleted(tick, event.waveId);
@@ -397,12 +488,18 @@ private:
         events_.push_back(
             {tick, EventType::WaveCompleted, state_.runId,
              waveId, 0, 0, 0});
-        if (tower_.director().state().phase ==
-            tower_defense::WavePhase::RewardPending) {
-            state_.phase = RunPhase::RewardPending;
-        } else {
-            completeCurrentWave(tick);
+
+        const bool rewardPending = tower_.director().state().phase ==
+            tower_defense::WavePhase::RewardPending;
+        const auto result = sequence_.markWaveCompleted(
+            waveId, tick, rewardPending);
+        if (!result.accepted) {
+            failRun(tick, RunFailure::TowerDefenseRejected,
+                    tower_defense::WaveSequenceFailure::WaveRejected);
+            return;
         }
+        synchronizeRunState();
+        if (!rewardPending) publishAdvance(tick);
     }
 
     void onModifierChosen(std::uint64_t tick, ModifierId id) {
@@ -419,30 +516,26 @@ private:
                  state_.currentWave, id, 0,
                  static_cast<std::uint32_t>(result.failure)});
         }
-        completeCurrentWave(tick);
+
+        const auto advance = sequence_.markRewardChosen(tick);
+        if (!advance.accepted) {
+            failRun(tick, RunFailure::TowerDefenseRejected,
+                    tower_defense::WaveSequenceFailure::RewardNotPending);
+            return;
+        }
+        synchronizeRunState();
+        publishAdvance(tick);
     }
 
-    void completeCurrentWave(std::uint64_t tick) {
-        const auto* run = findById(runs_, state_.runId);
-        if (!run) {
-            failRun(tick, RunFailure::UnknownRun);
-            return;
-        }
-        ++state_.completedWaves;
-        ++state_.waveIndex;
-        if (state_.waveIndex >= run->waves.size()) {
-            state_.phase = RunPhase::Complete;
-            state_.currentWave = 0;
+    void publishAdvance(std::uint64_t tick) {
+        if (state_.phase == RunPhase::Complete) {
             events_.push_back(
                 {tick, EventType::RunCompleted, state_.runId, 0, 0, 0, 0});
-            return;
+        } else if (state_.phase == RunPhase::BetweenWaves) {
+            events_.push_back(
+                {tick, EventType::WaveAdvanced, state_.runId,
+                 state_.currentWave, 0, 0, 0});
         }
-        state_.phase = RunPhase::BetweenWaves;
-        state_.currentWave = run->waves[state_.waveIndex];
-        nextWaveTick_ = tick + 1;
-        events_.push_back(
-            {tick, EventType::WaveAdvanced, state_.runId,
-             state_.currentWave, 0, 0, 0});
     }
 
     void reject(std::uint64_t tick, RunId id, RunFailure failure) {
@@ -451,10 +544,15 @@ private:
              static_cast<std::uint32_t>(failure)});
     }
 
-    void failRun(std::uint64_t tick, RunFailure failure) {
+    void failRun(
+        std::uint64_t tick,
+        RunFailure failure,
+        tower_defense::WaveSequenceFailure sequenceFailure =
+            tower_defense::WaveSequenceFailure::WaveRejected) {
         if (state_.phase == RunPhase::Failed ||
             state_.phase == RunPhase::Complete) return;
-        state_.phase = RunPhase::Failed;
+        (void)sequence_.fail(sequenceFailure);
+        synchronizeRunState();
         events_.push_back(
             {tick, EventType::RunFailed, state_.runId,
              state_.currentWave, 0, 0,
@@ -495,7 +593,7 @@ private:
         hash.WriteU32(state_.waveIndex);
         hash.WriteU32(state_.completedWaves);
         hash.WriteU32(state_.currentWave);
-        hash.WriteU64(nextWaveTick_);
+        hash.WriteU64(legacyNextWaveTick());
         hash.WriteU32(nextInternalSequence_);
         hash.WriteI32(snapshot_.availableResources);
         hash.WriteI32(snapshot_.waveCompletionResourceBonus);
@@ -532,6 +630,7 @@ private:
     }
 
     tower_defense::TowerDefenseSimulation tower_;
+    tower_defense::WaveSequenceDirector sequence_;
     ModifierRuntime modifiers_;
     TickCommandStream commands_;
     std::vector<RunDefinition> runs_;
@@ -540,7 +639,6 @@ private:
     RunSnapshot snapshot_;
     RunState state_;
     std::uint64_t rootSeed_{1};
-    std::uint64_t nextWaveTick_{};
     std::uint64_t lastTick_{};
     std::uint32_t nextInternalSequence_{1};
     std::uint32_t playerTeamId_{1};
