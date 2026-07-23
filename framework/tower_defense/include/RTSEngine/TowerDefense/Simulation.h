@@ -6,6 +6,7 @@
 #include <rts/sim/DeterministicCommandStream.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <utility>
@@ -34,6 +35,7 @@ enum class EventType : std::uint8_t {
     WaveStarted,
     WaveRejected,
     EnemySpawned,
+    EnemyWaypointReached,
     EnemyDefeated,
     BaseCoreDestroyed,
     WaveCompleted,
@@ -57,6 +59,8 @@ struct EnemySnapshot {
     WaveId waveId{};
     LaneId laneId{};
     std::uint32_t unitDefinitionId{};
+    std::uint32_t waypointIndex{};
+    std::uint32_t waypointCount{};
     bool alive{};
 };
 
@@ -241,6 +245,7 @@ private:
         WaveId waveId{};
         LaneId laneId{};
         std::uint32_t unitDefinitionId{};
+        std::uint32_t waypointIndex{};
         bool resolved{};
     };
 
@@ -346,7 +351,9 @@ private:
         for (const auto* lane : lanes) {
             PlannedLaneRoute route;
             if (!director_.resolveLaneRoute(lane->id, route) ||
-                route.points.empty()) {
+                route.points.empty() ||
+                route.points.size() >
+                    std::numeric_limits<std::uint32_t>::max()) {
                 return {false, WaveStartFailure::InvalidLaneRoute, id};
             }
             for (const auto point : route.points) {
@@ -386,17 +393,52 @@ private:
              id, {}, selected->resourceGrant, 0});
     }
 
+    bool reserveInternalSequences(
+        std::size_t count,
+        std::uint32_t& firstSequence) noexcept {
+        firstSequence = 0;
+        if (count == 0) return true;
+        constexpr auto maximum =
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint32_t>::max());
+        if (nextInternalRtsSequence_ > maximum) return false;
+        const auto available = maximum - nextInternalRtsSequence_ + 1u;
+        if (static_cast<std::uint64_t>(count) > available) return false;
+        firstSequence = static_cast<std::uint32_t>(nextInternalRtsSequence_);
+        nextInternalRtsSequence_ += static_cast<std::uint64_t>(count);
+        return true;
+    }
+
     void spawnDueEnemies(std::uint64_t tick) {
         const auto due = director_.dueSpawns(tick);
         for (const auto& spawn : due) {
             const auto* definition = unitDefinition(spawn.unitDefinitionId);
-            if (!definition) {
+            const auto* route = director_.plannedRoute(spawn.laneId);
+            if (!definition || !route || route->points.empty() ||
+                route->points.front() != spawn.spawn ||
+                route->points.back() != spawn.goal ||
+                route->points.size() >
+                    std::numeric_limits<std::uint32_t>::max()) {
                 director_.fail();
                 events_.push_back(
                     {tick, EventType::WaveRejected, director_.state().waveId,
                      spawn.unitDefinitionId, {}, 0,
                      static_cast<std::uint32_t>(
-                         WaveStartFailure::UnknownUnitDefinition)});
+                         definition
+                             ? WaveStartFailure::InvalidLaneRoute
+                             : WaveStartFailure::UnknownUnitDefinition)});
+                return;
+            }
+
+            const auto segmentCount = route->points.size() - 1u;
+            std::uint32_t firstSequence = 0;
+            if (!reserveInternalSequences(segmentCount, firstSequence)) {
+                director_.fail();
+                events_.push_back(
+                    {tick, EventType::WaveRejected, director_.state().waveId,
+                     spawn.unitDefinitionId, {}, 0,
+                     static_cast<std::uint32_t>(
+                         WaveStartFailure::InvalidDefinition)});
                 return;
             }
 
@@ -406,27 +448,37 @@ private:
                 director_.plan().enemyTeamId,
                 definition->combat);
 
-            gameplay::TickCommand attackMove;
-            attackMove.targetTick = tick;
-            attackMove.issuer = internalIssuer(director_.state().waveId);
-            attackMove.sequence = spawn.sequence + 1;
-            attackMove.type = gameplay::CommandType::AttackMove;
-            attackMove.subject = entity;
-            attackMove.targetX = spawn.goal.x;
-            attackMove.targetY = spawn.goal.y;
-            if (!rts_.submit(attackMove)) {
-                director_.fail();
-                events_.push_back(
-                    {tick, EventType::WaveRejected, director_.state().waveId,
-                     spawn.unitDefinitionId, entity, 0,
-                     static_cast<std::uint32_t>(
-                         WaveStartFailure::InvalidDefinition)});
-                return;
+            for (std::size_t waypoint = 1;
+                 waypoint < route->points.size(); ++waypoint) {
+                gameplay::TickCommand attackMove;
+                attackMove.targetTick = tick;
+                attackMove.issuer = internalIssuer(director_.state().waveId);
+                attackMove.sequence = static_cast<std::uint32_t>(
+                    static_cast<std::uint64_t>(firstSequence) + waypoint - 1u);
+                attackMove.type = gameplay::CommandType::AttackMove;
+                attackMove.subject = entity;
+                attackMove.targetX = route->points[waypoint].x;
+                attackMove.targetY = route->points[waypoint].y;
+                attackMove.append = waypoint > 1u;
+                if (!rts_.submit(attackMove)) {
+                    director_.fail();
+                    events_.push_back(
+                        {tick, EventType::WaveRejected,
+                         director_.state().waveId,
+                         spawn.unitDefinitionId, entity, 0,
+                         static_cast<std::uint32_t>(
+                             WaveStartFailure::InvalidDefinition)});
+                    return;
+                }
             }
 
+            const auto waypointIndex = route->points.size() > 1u
+                ? 1u
+                : static_cast<std::uint32_t>(route->points.size());
             trackedEnemies_.push_back(
                 {entity, director_.state().waveId, spawn.laneId,
-                 spawn.unitDefinitionId, false});
+                 spawn.unitDefinitionId,
+                 static_cast<std::uint32_t>(waypointIndex), false});
             events_.push_back(
                 {tick, EventType::EnemySpawned, director_.state().waveId,
                  spawn.unitDefinitionId, entity,
@@ -434,7 +486,32 @@ private:
         }
     }
 
+    void reconcileWaypointProgress(std::uint64_t tick) {
+        for (const auto& event : rts_.events()) {
+            if (event.type != gameplay::DomainEventType::MoveCompleted) continue;
+            const auto found = std::find_if(
+                trackedEnemies_.begin(), trackedEnemies_.end(),
+                [&](const TrackedEnemy& enemy) {
+                    return !enemy.resolved && enemy.entity == event.entity;
+                });
+            if (found == trackedEnemies_.end()) continue;
+            const auto* route = director_.plannedRoute(found->laneId);
+            if (!route || found->waypointIndex >= route->points.size()) continue;
+            ++found->waypointIndex;
+            const auto displayIndex = static_cast<std::int32_t>(
+                std::min<std::uint32_t>(
+                    found->waypointIndex,
+                    static_cast<std::uint32_t>(
+                        std::numeric_limits<std::int32_t>::max())));
+            events_.push_back(
+                {tick, EventType::EnemyWaypointReached, found->waveId,
+                 found->laneId, found->entity, displayIndex, 0});
+        }
+    }
+
     void reconcileAfterTick(std::uint64_t tick) {
+        reconcileWaypointProgress(tick);
+
         if (core_.valid() && !rts_.world().alive(core_)) {
             if (!coreFailureReported_) {
                 coreFailureReported_ = true;
@@ -496,10 +573,14 @@ private:
         snapshot_.selectedReward = director_.offer().selected;
         snapshot_.enemies.clear();
         for (const auto& enemy : trackedEnemies_) {
+            const auto* route = director_.plannedRoute(enemy.laneId);
+            const auto waypointCount = route
+                ? static_cast<std::uint32_t>(route->points.size())
+                : 0u;
             snapshot_.enemies.push_back(
                 {enemy.entity, enemy.waveId, enemy.laneId,
-                 enemy.unitDefinitionId,
-                 rts_.world().alive(enemy.entity)});
+                 enemy.unitDefinitionId, enemy.waypointIndex,
+                 waypointCount, rts_.world().alive(enemy.entity)});
         }
         std::sort(snapshot_.enemies.begin(), snapshot_.enemies.end(),
                   [](const EnemySnapshot& a, const EnemySnapshot& b) {
@@ -514,6 +595,7 @@ private:
         hash.WriteI32(snapshot_.coreHealthCurrent);
         hash.WriteI32(snapshot_.coreHealthMaximum);
         hash.WriteU32(playerTeamId_);
+        hash.WriteU64(nextInternalRtsSequence_);
         director_.appendHash(hash);
         const auto commandState = commands_.snapshot();
         hash.WriteU64(commandState.committedThrough);
@@ -528,6 +610,7 @@ private:
             hash.WriteU32(enemy.waveId);
             hash.WriteU32(enemy.laneId);
             hash.WriteU32(enemy.unitDefinitionId);
+            hash.WriteU32(enemy.waypointIndex);
             hash.WriteBool(enemy.resolved);
         }
         snapshot_.worldHash = hash.Value();
@@ -550,6 +633,7 @@ private:
     ecs::Entity core_{};
     std::uint32_t playerTeamId_{1};
     std::uint64_t rootSeed_{1};
+    std::uint64_t nextInternalRtsSequence_{1};
     std::uint64_t lastTick_{};
     bool hasStepped_{};
     bool coreFailureReported_{};
