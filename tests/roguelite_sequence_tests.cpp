@@ -6,7 +6,6 @@
 #include <cstdlib>
 #include <iostream>
 #include <string_view>
-#include <vector>
 
 namespace {
 
@@ -83,6 +82,18 @@ void checkProjection(
           tower_defense::WaveSequencePhase::Preparing);
     check(simulation.waveSequence().state().scheduledStartTick ==
           transitionTick + 1u);
+
+    const auto& history = simulation.history();
+    check(history.runId == 7);
+    check(history.phase == roguelite::RunHistoryPhase::Active);
+    check(!history.legacyImported);
+    check(history.waves.size() == 1);
+    check(history.waves.front().waveId == 1);
+    check(history.waves.front().waveIndex == 0);
+    check(history.waves.front().phase ==
+          roguelite::WaveResultPhase::Complete);
+    check(history.waves.front().plannedEnemies == 1);
+    check(history.waves.front().enemiesDefeated == 1);
 }
 
 void testProjection() {
@@ -111,13 +122,15 @@ void prepareRoundTrip(RestoredPair& pair) {
     check(reader.readU32(magic));
     check(reader.readU16(version));
     check(magic == roguelite::RunSimulationArchive::kMagic);
-    check(version == 1u);
-    check(roguelite::RunSimulationArchive::kVersion == 1u);
+    check(version == roguelite::RunSimulationArchive::kVersion);
+    check(version == 2u);
+    check(roguelite::RunSimulationArchive::kMinimumVersion == 1u);
 
     configure(pair.restored, false);
     check(roguelite::DecodeRunSimulation(bytes, pair.restored));
     check(pair.restored.snapshot().worldHash ==
           pair.original.snapshot().worldHash);
+    check(pair.restored.history() == pair.original.history());
     checkProjection(pair.restored, pair.transitionTick);
 }
 
@@ -157,6 +170,10 @@ void testContinuation() {
         }
     }
     check(completed);
+    check(pair.original.history() == pair.restored.history());
+    check(pair.original.history().phase ==
+          roguelite::RunHistoryPhase::Complete);
+    check(pair.original.history().waves.size() == 2);
     check(roguelite::EncodeRunSimulation(pair.original) ==
           roguelite::EncodeRunSimulation(pair.restored));
 }
