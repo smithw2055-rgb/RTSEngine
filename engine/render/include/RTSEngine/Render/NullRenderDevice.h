@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -24,18 +26,37 @@ public:
     BufferHandle createBuffer(
         const BufferDescription& description) override {
         if (description.sizeBytes == 0) return {};
-        return buffers_.create(description);
+        return buffers_.create(description, description.sizeBytes);
     }
 
     TextureHandle createTexture(
         const TextureDescription& description) override {
-        if (description.width == 0 || description.height == 0) return {};
-        return textures_.create(description);
+        const auto size = textureByteSize(description);
+        if (size == 0) return {};
+        return textures_.create(description, size);
     }
 
     PipelineHandle createPipeline(
         const PipelineDescription& description) override {
-        return pipelines_.create(description);
+        if (!validPipeline(description)) return {};
+        return pipelines_.create(description, 0);
+    }
+
+    bool updateBuffer(BufferHandle handle,
+                      std::size_t offsetBytes,
+                      const void* data,
+                      std::size_t sizeBytes) override {
+        return buffers_.update(handle, offsetBytes, data, sizeBytes);
+    }
+
+    bool updateTexture(TextureHandle handle,
+                       const void* data,
+                       std::size_t sizeBytes) override {
+        const auto* description = textures_.description(handle);
+        if (!description || sizeBytes != textureByteSize(*description)) {
+            return false;
+        }
+        return textures_.update(handle, 0, data, sizeBytes);
     }
 
     bool destroyBuffer(BufferHandle handle) override {
@@ -63,13 +84,15 @@ public:
     }
 
     bool submit(const DrawCommand& command) override {
-        if (!frameActive_ || !pipelines_.valid(command.pipeline) ||
+        const auto* pipeline = pipelines_.description(command.pipeline);
+        if (!frameActive_ || !pipeline ||
             !buffers_.valid(command.vertexBuffer) ||
             command.elementCount == 0 || command.instanceCount == 0 ||
             (command.indexBuffer.valid() &&
              !buffers_.valid(command.indexBuffer)) ||
             (command.texture.valid() &&
-             !textures_.valid(command.texture))) {
+             !textures_.valid(command.texture)) ||
+            !drawWithinBuffers(command, *pipeline)) {
             return false;
         }
         current_.draws.push_back(command);
@@ -79,6 +102,15 @@ public:
     bool endFrame() override {
         if (!frameActive_) return false;
         frameActive_ = false;
+        std::stable_sort(
+            current_.draws.begin(), current_.draws.end(),
+            [](const DrawCommand& a, const DrawCommand& b) {
+                if (a.pass != b.pass) {
+                    return static_cast<std::uint8_t>(a.pass) <
+                           static_cast<std::uint8_t>(b.pass);
+                }
+                return a.sortKey < b.sortKey;
+            });
         lastFrame_ = std::move(current_);
         current_ = {};
         ++submittedFrames_;
@@ -108,6 +140,16 @@ public:
         return pipelines_.valid(handle);
     }
 
+    const std::vector<std::uint8_t>* bufferBytes(
+        BufferHandle handle) const noexcept {
+        return buffers_.bytes(handle);
+    }
+
+    const std::vector<std::uint8_t>* textureBytes(
+        TextureHandle handle) const noexcept {
+        return textures_.bytes(handle);
+    }
+
     std::size_t liveBufferCount() const noexcept {
         return buffers_.liveCount();
     }
@@ -128,7 +170,8 @@ private:
     template<class Handle, class Description>
     class ResourcePool final {
     public:
-        Handle create(const Description& description) {
+        Handle create(const Description& description,
+                      std::size_t byteCount) {
             std::size_t index = 0;
             for (; index < slots_.size(); ++index) {
                 if (!slots_[index].alive) break;
@@ -138,6 +181,7 @@ private:
             if (slot.generation == 0) slot.generation = 1;
             slot.alive = true;
             slot.description = description;
+            slot.bytes.assign(byteCount, 0u);
             return {static_cast<std::uint32_t>(index + 1u), slot.generation};
         }
 
@@ -146,7 +190,24 @@ private:
             if (!slot) return false;
             slot->alive = false;
             slot->description = {};
+            slot->bytes.clear();
             slot->generation = nextGeneration(slot->generation);
+            return true;
+        }
+
+        bool update(Handle handle,
+                    std::size_t offset,
+                    const void* data,
+                    std::size_t size) {
+            auto* slot = find(handle);
+            if (!slot || (size != 0 && data == nullptr) ||
+                offset > slot->bytes.size() ||
+                size > slot->bytes.size() - offset) {
+                return false;
+            }
+            if (size != 0) {
+                std::memcpy(slot->bytes.data() + offset, data, size);
+            }
             return true;
         }
 
@@ -154,10 +215,21 @@ private:
             return find(handle) != nullptr;
         }
 
+        const Description* description(Handle handle) const noexcept {
+            const auto* slot = find(handle);
+            return slot ? &slot->description : nullptr;
+        }
+
+        const std::vector<std::uint8_t>* bytes(Handle handle) const noexcept {
+            const auto* slot = find(handle);
+            return slot ? &slot->bytes : nullptr;
+        }
+
         void invalidateAll() noexcept {
             for (auto& slot : slots_) {
                 slot.alive = false;
                 slot.description = {};
+                slot.bytes.clear();
                 slot.generation = nextGeneration(slot.generation);
             }
         }
@@ -173,6 +245,7 @@ private:
             std::uint32_t generation{1};
             bool alive{};
             Description description{};
+            std::vector<std::uint8_t> bytes;
         };
 
         static std::uint32_t nextGeneration(std::uint32_t value) noexcept {
@@ -196,6 +269,64 @@ private:
 
         std::vector<Slot> slots_;
     };
+
+    static std::size_t textureByteSize(
+        const TextureDescription& description) noexcept {
+        const auto bytesPerPixel = TextureBytesPerPixel(description.format);
+        if (description.width == 0 || description.height == 0 ||
+            bytesPerPixel == 0) {
+            return 0;
+        }
+        const auto pixels = static_cast<std::uint64_t>(description.width) *
+                            static_cast<std::uint64_t>(description.height);
+        const auto bytes = pixels * bytesPerPixel;
+        return bytes <= std::numeric_limits<std::size_t>::max()
+            ? static_cast<std::size_t>(bytes) : 0u;
+    }
+
+    static bool validPipeline(
+        const PipelineDescription& description) noexcept {
+        if (description.vertexStride == 0 && !description.attributes.empty()) {
+            return false;
+        }
+        for (const auto& attribute : description.attributes) {
+            const auto bytes = VertexFormatComponents(attribute.format) *
+                               sizeof(float);
+            if (bytes == 0 ||
+                attribute.offsetBytes > description.vertexStride ||
+                bytes > description.vertexStride - attribute.offsetBytes) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    bool drawWithinBuffers(const DrawCommand& command,
+                           const PipelineDescription& pipeline) const noexcept {
+        const auto* vertices = buffers_.bytes(command.vertexBuffer);
+        if (!vertices || command.vertexOffsetBytes > vertices->size()) {
+            return false;
+        }
+
+        if (command.indexBuffer.valid()) {
+            const auto* indices = buffers_.bytes(command.indexBuffer);
+            if (!indices || pipeline.indexType == IndexType::None ||
+                command.indexOffsetBytes > indices->size()) {
+                return false;
+            }
+            const auto indexSize = pipeline.indexType == IndexType::UInt16
+                ? 2u : 4u;
+            const auto required = static_cast<std::uint64_t>(
+                command.firstElement + command.elementCount) * indexSize;
+            return required <= indices->size() - command.indexOffsetBytes;
+        }
+
+        if (pipeline.vertexStride == 0) return true;
+        const auto required = static_cast<std::uint64_t>(
+            command.firstElement + command.elementCount) *
+            pipeline.vertexStride;
+        return required <= vertices->size() - command.vertexOffsetBytes;
+    }
 
     ResourcePool<BufferHandle, BufferDescription> buffers_;
     ResourcePool<TextureHandle, TextureDescription> textures_;
