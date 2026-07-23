@@ -14,6 +14,8 @@ The repository is being built as small, testable vertical slices rather than imp
 - deterministic grid A* with dynamic blockers and stable tie-breaking
 - deterministic tower-defense lane graphs with registration-order-independent route selection
 - deterministic multi-wave tower-defense loops with preparation countdowns, early starts, bosses, affixes, victory/failure states, and mid-preparation persistence
+- authoritative roguelite run history with wave results, boss/affix outcomes, resources, core health, reward choices, and legacy save migration
+- deterministic reward rarity budgets, minimum-rarity guarantees, and persisted pity counters
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
