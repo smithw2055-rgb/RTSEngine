@@ -1,6 +1,7 @@
 #pragma once
 
 #include <RTSEngine/Presentation/SnapshotInterpolation.h>
+#include <RTSEngine/Render/RenderDevice.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -23,6 +24,7 @@ struct SpriteInstance final {
     float opacity{1.0f};
     std::int32_t sortBias{};
     ViewLifecycle lifecycle{ViewLifecycle::Stable};
+    render::BlendMode blend{render::BlendMode::Alpha};
 };
 
 struct WorldUiElement final {
@@ -72,11 +74,17 @@ public:
                  interpolated.y,
                  std::clamp(interpolated.opacity, 0.0f, 1.0f),
                  entity.sortBias,
-                 interpolated.lifecycle});
+                 interpolated.lifecycle,
+                 render::BlendMode::Alpha});
 
             appendWorldUi(packet.worldUi, interpolated);
         }
 
+        sort(packet);
+        return packet;
+    }
+
+    static void sort(RenderPacket& packet) {
         std::stable_sort(
             packet.sprites.begin(), packet.sprites.end(),
             [](const SpriteInstance& a, const SpriteInstance& b) {
@@ -96,7 +104,6 @@ public:
                 return static_cast<std::uint8_t>(a.type) <
                        static_cast<std::uint8_t>(b.type);
             });
-        return packet;
     }
 
 private:
