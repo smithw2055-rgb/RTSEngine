@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -10,6 +11,11 @@ namespace {
 
 using namespace rts;
 using namespace rts::tower_defense;
+
+void check(bool condition) {
+    assert(condition);
+    if (!condition) std::abort();
+}
 
 bool hasEvent(const TowerDefenseSimulation& simulation,
               EventType type) {
@@ -84,15 +90,15 @@ ScenarioResult runSuccessfulWave() {
     brute.combat = {14, 1, 3, 1, 2, 4};
     simulation.registerUnit(brute);
 
-    assert(simulation.registerLane(
+    check(simulation.registerLane(
         {1, {0, 2}, {14, 3}, 3}));
-    assert(simulation.registerLane(
+    check(simulation.registerLane(
         {2, {0, 4}, {14, 3}, 1}));
 
-    assert(simulation.registerReward({101, 4, 20}));
-    assert(simulation.registerReward({102, 3, 30}));
-    assert(simulation.registerReward({103, 2, 40}));
-    assert(simulation.registerReward({104, 1, 50}));
+    check(simulation.registerReward({101, 4, 20}));
+    check(simulation.registerReward({102, 3, 30}));
+    check(simulation.registerReward({103, 2, 40}));
+    check(simulation.registerReward({104, 1, 50}));
 
     WaveDefinition wave;
     wave.id = 1;
@@ -106,7 +112,7 @@ ScenarioResult runSuccessfulWave() {
     };
     wave.rewardPool = {101, 102, 103, 104};
     wave.rewardChoices = 3;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
 
     simulation.createBaseCore(
         {14, 3}, 1, {60, 1, 0, 0, 1, 0});
@@ -119,14 +125,14 @@ ScenarioResult runSuccessfulWave() {
     start.sequence = 1;
     start.type = CommandType::StartWave;
     start.objectId = 1;
-    assert(simulation.submit(start));
-    assert(simulation.submit(start));
+    check(simulation.submit(start));
+    check(simulation.submit(start));
 
     ScenarioResult result;
     bool rewardQueued = false;
 
     for (std::uint64_t tick = 0; tick < 120; ++tick) {
-        assert(simulation.step(tick));
+        check(simulation.step(tick));
         result.hashes.push_back(
             simulation.snapshot().worldHash);
         result.waveStartedEvents +=
@@ -134,7 +140,7 @@ ScenarioResult runSuccessfulWave() {
 
         if (tick == 0) {
             result.plan = simulation.director().plan().spawns;
-            assert(!result.plan.empty());
+            check(!result.plan.empty());
         }
 
         if (!rewardQueued &&
@@ -142,12 +148,12 @@ ScenarioResult runSuccessfulWave() {
                 WavePhase::RewardPending) {
             result.offer =
                 simulation.snapshot().rewardChoices;
-            assert(result.offer.size() == 3);
+            check(result.offer.size() == 3);
             auto unique = result.offer;
             std::sort(unique.begin(), unique.end());
-            assert(std::adjacent_find(
-                       unique.begin(), unique.end()) ==
-                   unique.end());
+            check(std::adjacent_find(
+                      unique.begin(), unique.end()) ==
+                  unique.end());
 
             result.selected = result.offer.front();
             result.resourcesBeforeReward =
@@ -159,7 +165,7 @@ ScenarioResult runSuccessfulWave() {
             choose.sequence = 2;
             choose.type = CommandType::ChooseReward;
             choose.objectId = result.selected;
-            assert(simulation.submit(choose));
+            check(simulation.submit(choose));
             rewardQueued = true;
         }
 
@@ -176,15 +182,15 @@ ScenarioResult runSuccessfulWave() {
         }
     }
 
-    assert(result.phase == WavePhase::Complete);
-    assert(result.waveStartedEvents == 1);
-    assert(result.resourcesAfterReward ==
-           result.resourcesBeforeReward +
-               rewardGrant(result.selected));
-    assert(result.coreHealth > 0);
-    assert(simulation.snapshot().activeEnemies == 0);
-    assert(simulation.snapshot().wave.spawned ==
-           simulation.snapshot().wave.resolved);
+    check(result.phase == WavePhase::Complete);
+    check(result.waveStartedEvents == 1);
+    check(result.resourcesAfterReward ==
+          result.resourcesBeforeReward +
+              rewardGrant(result.selected));
+    check(result.coreHealth > 0);
+    check(simulation.snapshot().activeEnemies == 0);
+    check(simulation.snapshot().wave.spawned ==
+          simulation.snapshot().wave.resolved);
     return result;
 }
 
@@ -192,15 +198,15 @@ void testDeterministicSuccessfulWave() {
     const auto first = runSuccessfulWave();
     const auto second = runSuccessfulWave();
 
-    assert(first.hashes == second.hashes);
-    assert(first.plan == second.plan);
-    assert(first.offer == second.offer);
-    assert(first.selected == second.selected);
-    assert(first.resourcesBeforeReward ==
-           second.resourcesBeforeReward);
-    assert(first.resourcesAfterReward ==
-           second.resourcesAfterReward);
-    assert(first.coreHealth == second.coreHealth);
+    check(first.hashes == second.hashes);
+    check(first.plan == second.plan);
+    check(first.offer == second.offer);
+    check(first.selected == second.selected);
+    check(first.resourcesBeforeReward ==
+          second.resourcesBeforeReward);
+    check(first.resourcesAfterReward ==
+          second.resourcesAfterReward);
+    check(first.coreHealth == second.coreHealth);
 }
 
 void testBaseCoreFailure() {
@@ -212,7 +218,7 @@ void testBaseCoreFailure() {
     raider.combat = {20, 0, 10, 1, 1, 0};
     simulation.registerUnit(raider);
 
-    assert(simulation.registerLane(
+    check(simulation.registerLane(
         {1, {0, 2}, {8, 2}, 1}));
 
     WaveDefinition wave;
@@ -223,7 +229,7 @@ void testBaseCoreFailure() {
     wave.laneIds = {1};
     wave.enemies = {{20, 1, 1, 1}};
     wave.rewardChoices = 0;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
 
     simulation.createBaseCore(
         {8, 2}, 1, {5, 0, 0, 0, 1, 0});
@@ -234,11 +240,11 @@ void testBaseCoreFailure() {
     start.sequence = 1;
     start.type = CommandType::StartWave;
     start.objectId = 2;
-    assert(simulation.submit(start));
+    check(simulation.submit(start));
 
     bool coreDestroyed = false;
     for (std::uint64_t tick = 0; tick < 40; ++tick) {
-        assert(simulation.step(tick));
+        check(simulation.step(tick));
         coreDestroyed = coreDestroyed ||
             hasEvent(simulation, EventType::BaseCoreDestroyed);
         if (simulation.snapshot().wave.phase ==
@@ -247,9 +253,9 @@ void testBaseCoreFailure() {
         }
     }
 
-    assert(coreDestroyed);
-    assert(simulation.snapshot().wave.phase ==
-           WavePhase::Failed);
+    check(coreDestroyed);
+    check(simulation.snapshot().wave.phase ==
+          WavePhase::Failed);
 }
 
 void testBlockedLaneRejectsWave() {
@@ -261,7 +267,7 @@ void testBlockedLaneRejectsWave() {
     enemy.combat = {10, 0, 2, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.registerLane(
+    check(simulation.registerLane(
         {1, {0, 2}, {6, 2}, 1}));
 
     WaveDefinition wave;
@@ -270,11 +276,11 @@ void testBlockedLaneRejectsWave() {
     wave.laneIds = {1};
     wave.enemies = {{30, 1, 1, 1}};
     wave.rewardChoices = 0;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
 
     simulation.createBaseCore(
         {6, 2}, 1, {20, 0, 0, 0, 1, 0});
-    assert(simulation.setBlocked({0, 2}, true));
+    check(simulation.setBlocked({0, 2}, true));
 
     TickCommand start;
     start.targetTick = 0;
@@ -282,12 +288,12 @@ void testBlockedLaneRejectsWave() {
     start.sequence = 1;
     start.type = CommandType::StartWave;
     start.objectId = 3;
-    assert(simulation.submit(start));
-    assert(simulation.step(0));
+    check(simulation.submit(start));
+    check(simulation.step(0));
 
-    assert(hasEvent(simulation, EventType::WaveRejected));
-    assert(simulation.snapshot().wave.phase ==
-           WavePhase::Idle);
+    check(hasEvent(simulation, EventType::WaveRejected));
+    check(simulation.snapshot().wave.phase ==
+          WavePhase::Idle);
 }
 
 void testGraphLaneRouteIsFrozenAtWaveStart() {
@@ -299,21 +305,21 @@ void testGraphLaneRouteIsFrozenAtWaveStart() {
     enemy.combat = {10, 0, 2, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.upsertLaneNode({10, {0, 2}}));
-    assert(simulation.upsertLaneNode({20, {4, 2}}));
-    assert(simulation.upsertLaneNode({30, {4, 4}}));
-    assert(simulation.upsertLaneNode({40, {10, 3}}));
-    assert(simulation.connectLaneNodes(10, 20, 1));
-    assert(simulation.connectLaneNodes(20, 40, 1));
-    assert(simulation.connectLaneNodes(10, 30, 3));
-    assert(simulation.connectLaneNodes(30, 40, 3));
+    check(simulation.upsertLaneNode({10, {0, 2}}));
+    check(simulation.upsertLaneNode({20, {4, 2}}));
+    check(simulation.upsertLaneNode({30, {4, 4}}));
+    check(simulation.upsertLaneNode({40, {10, 3}}));
+    check(simulation.connectLaneNodes(10, 20, 1));
+    check(simulation.connectLaneNodes(20, 40, 1));
+    check(simulation.connectLaneNodes(10, 30, 3));
+    check(simulation.connectLaneNodes(30, 40, 3));
 
     SpawnLane lane;
     lane.id = 4;
     lane.weight = 1;
     lane.startNodeId = 10;
     lane.goalNodeId = 40;
-    assert(simulation.registerLane(lane));
+    check(simulation.registerLane(lane));
 
     WaveDefinition wave;
     wave.id = 4;
@@ -321,28 +327,28 @@ void testGraphLaneRouteIsFrozenAtWaveStart() {
     wave.laneIds = {4};
     wave.enemies = {{40, 1, 1, 1}};
     wave.rewardChoices = 0;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
     simulation.createBaseCore(
         {10, 3}, 1, {50, 0, 0, 0, 1, 0});
 
-    assert(simulation.submit(
+    check(simulation.submit(
         {0, 1, 1, CommandType::StartWave, 4}));
-    assert(simulation.step(0));
-    assert(simulation.director().plan().routes.size() == 1);
+    check(simulation.step(0));
+    check(simulation.director().plan().routes.size() == 1);
 
     const auto frozen = simulation.director().plan().routes.front();
     const std::vector<gameplay::GridPoint> expected = {
         {0, 2}, {4, 2}, {10, 3}
     };
-    assert(frozen.id == 4);
-    assert(frozen.nodeIds == std::vector<LaneNodeId>({10, 20, 40}));
-    assert(frozen.points == expected);
+    check(frozen.id == 4);
+    check(frozen.nodeIds == std::vector<LaneNodeId>({10, 20, 40}));
+    check(frozen.points == expected);
 
-    assert(simulation.setLaneConnectionEnabled(20, 40, false));
+    check(simulation.setLaneConnectionEnabled(20, 40, false));
     const auto live = simulation.director().laneGraph().findRoute(10, 40);
-    assert(live.found);
-    assert(live.nodeIds == std::vector<LaneNodeId>({10, 30, 40}));
-    assert(simulation.director().plan().routes.front() == frozen);
+    check(live.found);
+    check(live.nodeIds == std::vector<LaneNodeId>({10, 30, 40}));
+    check(simulation.director().plan().routes.front() == frozen);
 }
 
 void testDisconnectedGraphLaneRejectsWave() {
@@ -354,13 +360,13 @@ void testDisconnectedGraphLaneRejectsWave() {
     enemy.combat = {10, 0, 2, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.upsertLaneNode({1, {0, 2}}));
-    assert(simulation.upsertLaneNode({2, {6, 2}}));
+    check(simulation.upsertLaneNode({1, {0, 2}}));
+    check(simulation.upsertLaneNode({2, {6, 2}}));
     SpawnLane lane;
     lane.id = 5;
     lane.startNodeId = 1;
     lane.goalNodeId = 2;
-    assert(simulation.registerLane(lane));
+    check(simulation.registerLane(lane));
 
     WaveDefinition wave;
     wave.id = 5;
@@ -368,15 +374,15 @@ void testDisconnectedGraphLaneRejectsWave() {
     wave.laneIds = {5};
     wave.enemies = {{50, 1, 1, 1}};
     wave.rewardChoices = 0;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
     simulation.createBaseCore(
         {6, 2}, 1, {20, 0, 0, 0, 1, 0});
 
-    assert(simulation.submit(
+    check(simulation.submit(
         {0, 1, 1, CommandType::StartWave, 5}));
-    assert(simulation.step(0));
-    assert(hasRejection(simulation, WaveStartFailure::InvalidLaneRoute));
-    assert(simulation.snapshot().wave.phase == WavePhase::Idle);
+    check(simulation.step(0));
+    check(hasRejection(simulation, WaveStartFailure::InvalidLaneRoute));
+    check(simulation.snapshot().wave.phase == WavePhase::Idle);
 }
 
 } // namespace
