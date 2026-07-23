@@ -13,6 +13,7 @@ The repository is being built as small, testable vertical slices rather than imp
 - queued move, stop, attack, attack-move, and hold-position commands
 - deterministic grid A* with dynamic blockers and stable tie-breaking
 - deterministic tower-defense lane graphs with registration-order-independent route selection
+- deterministic multi-wave tower-defense loops with preparation countdowns, early starts, bosses, affixes, victory/failure states, and mid-preparation persistence
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
