@@ -5,6 +5,8 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <string_view>
+#include <vector>
 
 namespace {
 
@@ -40,13 +42,6 @@ void configure(
     check(simulation.registerWave(second));
     check(simulation.registerRun({7, {1, 2}}));
 
-    const auto* sequence = simulation.waveSequence().definition(7);
-    check(sequence != nullptr);
-    check(sequence->waves == std::vector<tower_defense::WaveId>({1, 2}));
-    check(sequence->initialPreparationTicks == 0);
-    check(sequence->interWavePreparationTicks == 1);
-    check(!sequence->allowEarlyStart);
-
     if (createActors) {
         simulation.createBaseCore(
             {10, 2}, 1, {500, 0, 0, 0, 1, 0});
@@ -55,32 +50,60 @@ void configure(
     }
 }
 
-void testBetweenWaveV1ProjectionRoundTrip() {
-    roguelite::RunSimulation original(12, 5, 0x7171u);
-    configure(original, true);
-    check(original.submit(
+std::uint64_t advanceToSecondPreparation(
+    roguelite::RunSimulation& simulation) {
+    check(simulation.submit(
         {0, 1, 1, roguelite::CommandType::StartRun, 7}));
-
-    std::uint64_t transitionTick = 0;
-    bool reachedPreparation = false;
     for (std::uint64_t tick = 0; tick < 80; ++tick) {
-        check(original.step(tick));
-        if (original.state().phase == roguelite::RunPhase::BetweenWaves &&
-            original.state().waveIndex == 1) {
-            transitionTick = tick;
-            reachedPreparation = true;
-            break;
+        check(simulation.step(tick));
+        if (simulation.state().phase == roguelite::RunPhase::BetweenWaves &&
+            simulation.state().waveIndex == 1) {
+            return tick;
         }
     }
-    check(reachedPreparation);
-    check(original.state().completedWaves == 1);
-    check(original.state().currentWave == 2);
-    check(original.waveSequence().state().phase ==
-          tower_defense::WaveSequencePhase::Preparing);
-    check(original.waveSequence().state().scheduledStartTick ==
-          transitionTick + 1u);
+    std::abort();
+}
 
-    const auto bytes = roguelite::EncodeRunSimulation(original);
+void checkProjection(
+    const roguelite::RunSimulation& simulation,
+    std::uint64_t transitionTick) {
+    const auto* definition = simulation.waveSequence().definition(7);
+    check(definition != nullptr);
+    check(definition->waves ==
+          std::vector<tower_defense::WaveId>({1, 2}));
+    check(definition->initialPreparationTicks == 0);
+    check(definition->interWavePreparationTicks == 1);
+    check(!definition->allowEarlyStart);
+
+    check(simulation.state().phase == roguelite::RunPhase::BetweenWaves);
+    check(simulation.state().waveIndex == 1);
+    check(simulation.state().completedWaves == 1);
+    check(simulation.state().currentWave == 2);
+    check(simulation.waveSequence().state().phase ==
+          tower_defense::WaveSequencePhase::Preparing);
+    check(simulation.waveSequence().state().scheduledStartTick ==
+          transitionTick + 1u);
+}
+
+void testProjection() {
+    roguelite::RunSimulation simulation(12, 5, 0x7171u);
+    configure(simulation, true);
+    const auto transitionTick = advanceToSecondPreparation(simulation);
+    checkProjection(simulation, transitionTick);
+}
+
+struct RestoredPair {
+    roguelite::RunSimulation original{12, 5, 0x7171u};
+    roguelite::RunSimulation restored{12, 5, 0x7171u};
+    std::uint64_t transitionTick{};
+};
+
+void prepareRoundTrip(RestoredPair& pair) {
+    configure(pair.original, true);
+    pair.transitionTick = advanceToSecondPreparation(pair.original);
+    checkProjection(pair.original, pair.transitionTick);
+
+    const auto bytes = roguelite::EncodeRunSimulation(pair.original);
     check(!bytes.empty());
     foundation::BinaryReader reader(bytes);
     std::uint32_t magic = 0;
@@ -91,50 +114,60 @@ void testBetweenWaveV1ProjectionRoundTrip() {
     check(version == 1u);
     check(roguelite::RunSimulationArchive::kVersion == 1u);
 
-    roguelite::RunSimulation restored(12, 5, 0x7171u);
-    configure(restored, false);
-    check(roguelite::DecodeRunSimulation(bytes, restored));
-    check(restored.snapshot().worldHash == original.snapshot().worldHash);
-    check(restored.state().phase == roguelite::RunPhase::BetweenWaves);
-    check(restored.state().waveIndex == 1);
-    check(restored.waveSequence().state().phase ==
-          tower_defense::WaveSequencePhase::Preparing);
-    check(restored.waveSequence().state().scheduledStartTick ==
-          transitionTick + 1u);
+    configure(pair.restored, false);
+    check(roguelite::DecodeRunSimulation(bytes, pair.restored));
+    check(pair.restored.snapshot().worldHash ==
+          pair.original.snapshot().worldHash);
+    checkProjection(pair.restored, pair.transitionTick);
+}
 
-    const auto nextTick = transitionTick + 1u;
-    check(original.step(nextTick));
-    check(restored.step(nextTick));
-    check(original.state().phase == roguelite::RunPhase::WaveActive);
-    check(restored.state().phase == roguelite::RunPhase::WaveActive);
-    check(original.waveSequence().state().phase ==
+void testArchiveProjection() {
+    RestoredPair pair;
+    prepareRoundTrip(pair);
+}
+
+void testContinuation() {
+    RestoredPair pair;
+    prepareRoundTrip(pair);
+
+    const auto nextTick = pair.transitionTick + 1u;
+    check(pair.original.step(nextTick));
+    check(pair.restored.step(nextTick));
+    check(pair.original.state().phase == roguelite::RunPhase::WaveActive);
+    check(pair.restored.state().phase == roguelite::RunPhase::WaveActive);
+    check(pair.original.waveSequence().state().phase ==
           tower_defense::WaveSequencePhase::WaveActive);
-    check(restored.waveSequence().state().phase ==
+    check(pair.restored.waveSequence().state().phase ==
           tower_defense::WaveSequencePhase::WaveActive);
-    check(original.snapshot().worldHash == restored.snapshot().worldHash);
+    check(pair.original.snapshot().worldHash ==
+          pair.restored.snapshot().worldHash);
 
     bool completed = false;
     for (std::uint64_t tick = nextTick + 1u; tick < 160; ++tick) {
-        check(original.step(tick));
-        check(restored.step(tick));
-        check(original.snapshot().worldHash == restored.snapshot().worldHash);
-        if (original.state().phase == roguelite::RunPhase::Complete) {
-            check(restored.state().phase == roguelite::RunPhase::Complete);
-            check(original.waveSequence().state().phase ==
+        check(pair.original.step(tick));
+        check(pair.restored.step(tick));
+        check(pair.original.snapshot().worldHash ==
+              pair.restored.snapshot().worldHash);
+        if (pair.original.state().phase == roguelite::RunPhase::Complete) {
+            check(pair.restored.state().phase == roguelite::RunPhase::Complete);
+            check(pair.original.waveSequence().state().phase ==
                   tower_defense::WaveSequencePhase::Complete);
             completed = true;
             break;
         }
     }
     check(completed);
-    check(roguelite::EncodeRunSimulation(original) ==
-          roguelite::EncodeRunSimulation(restored));
+    check(roguelite::EncodeRunSimulation(pair.original) ==
+          roguelite::EncodeRunSimulation(pair.restored));
 }
 
 } // namespace
 
-int main() {
-    testBetweenWaveV1ProjectionRoundTrip();
-    std::cout << "roguelite sequence tests passed\n";
+int main(int argc, char** argv) {
+    const std::string_view mode = argc > 1 ? argv[1] : "all";
+    if (mode == "projection" || mode == "all") testProjection();
+    if (mode == "archive" || mode == "all") testArchiveProjection();
+    if (mode == "continuation" || mode == "all") testContinuation();
+    std::cout << "roguelite sequence " << mode << " tests passed\n";
     return 0;
 }
