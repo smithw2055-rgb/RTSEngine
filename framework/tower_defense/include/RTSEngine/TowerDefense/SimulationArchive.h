@@ -17,7 +17,7 @@ namespace rts::tower_defense {
 class TowerDefenseSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31564454u; // "TDV1"
-    static constexpr std::uint16_t kVersion = 3u;
+    static constexpr std::uint16_t kVersion = 4u;
     static constexpr std::uint32_t kMaximumRtsBytes = 256u * 1024u * 1024u;
 
     static std::vector<std::uint8_t> encode(
@@ -41,8 +41,7 @@ public:
 
         const auto& state = simulation.director_.state();
         const auto* activeDefinition = state.waveId == 0
-            ? nullptr
-            : simulation.director_.definition(state.waveId);
+            ? nullptr : simulation.director_.definition(state.waveId);
         writer.writeBool(activeDefinition != nullptr);
         if (activeDefinition) writeWaveDefinition(writer, *activeDefinition);
         writeWavePlan(writer, simulation.director_.plan());
@@ -62,6 +61,8 @@ public:
             writer.writeU32(enemy.waveId);
             writer.writeU32(enemy.laneId);
             writer.writeU32(enemy.unitDefinitionId);
+            writer.writeU32(enemy.spawnSequence);
+            writer.writeU32(enemy.bossId);
             writer.writeU32(enemy.waypointIndex);
             writer.writeBool(enemy.resolved);
         }
@@ -73,8 +74,7 @@ public:
         writer.writeBool(simulation.hasStepped_);
         writer.writeBool(simulation.coreFailureReported_);
         writer.writeU64(simulation.hasStepped_
-            ? simulation.snapshot_.worldHash
-            : 0u);
+            ? simulation.snapshot_.worldHash : 0u);
         return writer.take();
     }
 
@@ -142,6 +142,8 @@ public:
                 !reader.readU32(enemy.waveId) ||
                 !reader.readU32(enemy.laneId) ||
                 !reader.readU32(enemy.unitDefinitionId) ||
+                !reader.readU32(enemy.spawnSequence) ||
+                !reader.readU32(enemy.bossId) ||
                 !reader.readU32(enemy.waypointIndex) ||
                 !reader.readBool(enemy.resolved) ||
                 !enemy.entity.valid() || enemy.waveId == 0 ||
@@ -185,6 +187,12 @@ public:
         }
         for (const auto& reward : simulation.rewardDefinitions_) {
             if (!directorCandidate.registerReward(reward)) return false;
+        }
+        for (const auto& affix : simulation.affixDefinitions_) {
+            if (!directorCandidate.registerAffix(affix)) return false;
+        }
+        for (const auto& boss : simulation.bossDefinitions_) {
+            if (!directorCandidate.registerBoss(boss)) return false;
         }
         if (hasActiveDefinition &&
             !directorCandidate.registerWave(activeDefinition)) {
@@ -290,12 +298,29 @@ public:
             hash.WriteU32(lane.startNodeId);
             hash.WriteU32(lane.goalNodeId);
         }
+        hash.WriteU32(static_cast<std::uint32_t>(
+            simulation.affixDefinitions_.size()));
+        for (const auto& affix : simulation.affixDefinitions_) {
+            hash.WriteU32(affix.id);
+            hash.WriteU32(affix.weight);
+            hashModifier(hash, affix.modifier);
+        }
+        hash.WriteU32(static_cast<std::uint32_t>(
+            simulation.bossDefinitions_.size()));
+        for (const auto& boss : simulation.bossDefinitions_) {
+            hash.WriteU32(boss.id);
+            hash.WriteU32(boss.unitDefinitionId);
+            hash.WriteU32(boss.budgetCost);
+            hash.WriteU32(boss.weight);
+            hashModifier(hash, boss.modifier);
+        }
         return hash.Value();
     }
 
 private:
     static bool archiveableWavePlan(const WavePlan& plan) noexcept {
         if (plan.rewards.size() > sim::kMaximumArchiveEntries ||
+            plan.affixes.size() > sim::kMaximumArchiveEntries ||
             plan.routes.size() > sim::kMaximumArchiveEntries ||
             plan.spawns.size() > sim::kMaximumArchiveEntries) {
             return false;
@@ -309,7 +334,17 @@ private:
                 return false;
             }
         }
-        return true;
+        return std::all_of(
+            plan.affixes.begin(), plan.affixes.end(),
+            [](const WaveAffixDefinition& affix) {
+                return affix.id != 0 && affix.weight != 0 &&
+                       affix.modifier.valid();
+            }) &&
+            std::all_of(
+                plan.spawns.begin(), plan.spawns.end(),
+                [](const PlannedSpawn& spawn) {
+                    return spawn.modifier.valid();
+                });
     }
 
     static void writeEntity(
@@ -341,6 +376,54 @@ private:
         foundation::BinaryReader& reader,
         gameplay::GridPoint& value) {
         return reader.readI32(value.x) && reader.readI32(value.y);
+    }
+
+    static void writeModifier(
+        foundation::BinaryWriter& writer,
+        const EnemyStatModifier& value) {
+        writer.writeI32(value.healthPermille);
+        writer.writeI32(value.armorAdd);
+        writer.writeI32(value.damagePermille);
+        writer.writeI32(value.speedPermille);
+        writer.writeI32(value.bountyPermille);
+    }
+
+    static bool readModifier(
+        foundation::BinaryReader& reader,
+        EnemyStatModifier& value) {
+        return reader.readI32(value.healthPermille) &&
+               reader.readI32(value.armorAdd) &&
+               reader.readI32(value.damagePermille) &&
+               reader.readI32(value.speedPermille) &&
+               reader.readI32(value.bountyPermille) &&
+               value.valid();
+    }
+
+    static void hashModifier(
+        foundation::CanonicalHash& hash,
+        const EnemyStatModifier& value) {
+        hash.WriteI32(value.healthPermille);
+        hash.WriteI32(value.armorAdd);
+        hash.WriteI32(value.damagePermille);
+        hash.WriteI32(value.speedPermille);
+        hash.WriteI32(value.bountyPermille);
+    }
+
+    static void writeAffix(
+        foundation::BinaryWriter& writer,
+        const WaveAffixDefinition& value) {
+        writer.writeU32(value.id);
+        writer.writeU32(value.weight);
+        writeModifier(writer, value.modifier);
+    }
+
+    static bool readAffix(
+        foundation::BinaryReader& reader,
+        WaveAffixDefinition& value) {
+        return reader.readU32(value.id) &&
+               reader.readU32(value.weight) &&
+               value.id != 0 && value.weight != 0 &&
+               readModifier(reader, value.modifier);
     }
 
     static void writeCommand(
@@ -385,9 +468,29 @@ private:
             writer.writeU32(enemy.weight);
             writer.writeU32(enemy.maxPerWave);
         }
+        writer.writeU32(static_cast<std::uint32_t>(value.bossPool.size()));
+        for (const auto id : value.bossPool) writer.writeU32(id);
+        writer.writeU32(value.bossCount);
+        writer.writeU32(static_cast<std::uint32_t>(value.affixPool.size()));
+        for (const auto id : value.affixPool) writer.writeU32(id);
+        writer.writeU32(value.affixChoices);
         writer.writeU32(static_cast<std::uint32_t>(value.rewardPool.size()));
         for (const auto id : value.rewardPool) writer.writeU32(id);
         writer.writeU32(value.rewardChoices);
+    }
+
+    static bool readIdVector(
+        foundation::BinaryReader& reader,
+        std::vector<std::uint32_t>& values) {
+        std::uint32_t count = 0;
+        if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
+            return false;
+        }
+        values.resize(count);
+        for (auto& id : values) {
+            if (!reader.readU32(id) || id == 0) return false;
+        }
+        return true;
     }
 
     static bool readWaveDefinition(
@@ -397,14 +500,8 @@ private:
         if (!reader.readU32(value.id) || !reader.readU32(value.budget) ||
             !reader.readU32(value.spawnIntervalTicks) ||
             !reader.readU32(value.enemyTeamId) || value.id == 0 ||
+            !readIdVector(reader, value.laneIds) ||
             !reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
-            return false;
-        }
-        value.laneIds.resize(count);
-        for (auto& id : value.laneIds) {
-            if (!reader.readU32(id) || id == 0) return false;
-        }
-        if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
             return false;
         }
         value.enemies.resize(count);
@@ -418,14 +515,12 @@ private:
                 return false;
             }
         }
-        if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
-            return false;
-        }
-        value.rewardPool.resize(count);
-        for (auto& id : value.rewardPool) {
-            if (!reader.readU32(id) || id == 0) return false;
-        }
-        return reader.readU32(value.rewardChoices);
+        return readIdVector(reader, value.bossPool) &&
+               reader.readU32(value.bossCount) &&
+               readIdVector(reader, value.affixPool) &&
+               reader.readU32(value.affixChoices) &&
+               readIdVector(reader, value.rewardPool) &&
+               reader.readU32(value.rewardChoices);
     }
 
     static void writeWavePlan(
@@ -441,6 +536,8 @@ private:
             writer.writeU32(reward.weight);
             writer.writeI32(reward.resourceGrant);
         }
+        writer.writeU32(static_cast<std::uint32_t>(value.affixes.size()));
+        for (const auto& affix : value.affixes) writeAffix(writer, affix);
         writer.writeU32(static_cast<std::uint32_t>(value.routes.size()));
         for (const auto& route : value.routes) {
             writer.writeU32(route.id);
@@ -458,6 +555,8 @@ private:
             writeGridPoint(writer, spawn.spawn);
             writeGridPoint(writer, spawn.goal);
             writer.writeU32(spawn.unitDefinitionId);
+            writer.writeU32(spawn.bossId);
+            writeModifier(writer, spawn.modifier);
         }
     }
 
@@ -482,6 +581,21 @@ private:
                 return false;
             }
             previousReward = reward.id;
+        }
+
+        if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
+            return false;
+        }
+        value.affixes.resize(count);
+        std::vector<WaveAffixId> affixIds;
+        affixIds.reserve(count);
+        for (auto& affix : value.affixes) {
+            if (!readAffix(reader, affix) ||
+                std::find(affixIds.begin(), affixIds.end(), affix.id) !=
+                    affixIds.end()) {
+                return false;
+            }
+            affixIds.push_back(affix.id);
         }
 
         if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
@@ -530,6 +644,8 @@ private:
                 !readGridPoint(reader, spawn.spawn) ||
                 !readGridPoint(reader, spawn.goal) ||
                 !reader.readU32(spawn.unitDefinitionId) ||
+                !reader.readU32(spawn.bossId) ||
+                !readModifier(reader, spawn.modifier) ||
                 spawn.sequence != index || spawn.laneId == 0 ||
                 spawn.unitDefinitionId == 0 ||
                 (index > 0 &&
@@ -621,6 +737,7 @@ private:
             a.unusedBudget != b.unusedBudget ||
             a.rewardChoices != b.rewardChoices ||
             a.rewards.size() != b.rewards.size() ||
+            a.affixes != b.affixes ||
             a.routes != b.routes || a.spawns != b.spawns) {
             return false;
         }
@@ -654,17 +771,16 @@ private:
         const RewardOffer& offer) {
         if (state.phase == WavePhase::Idle) {
             return state.waveId == 0 && plan.waveId == 0 &&
-                   plan.routes.empty() && plan.spawns.empty() &&
-                   offer.waveId == 0 && offer.choices.empty() && !offer.chosen;
+                   plan.affixes.empty() && plan.routes.empty() &&
+                   plan.spawns.empty() && offer.waveId == 0 &&
+                   offer.choices.empty() && !offer.chosen;
         }
         if (state.waveId == 0 || plan.waveId != state.waveId ||
             state.nextSpawn > plan.spawns.size()) {
             return false;
         }
         const auto result = director.begin(state.waveId, state.startedTick);
-        if (!result.accepted || !samePlan(director.plan(), plan)) {
-            return false;
-        }
+        if (!result.accepted || !samePlan(director.plan(), plan)) return false;
         if (state.nextSpawn > 0) {
             const auto tick = state.startedTick +
                 plan.spawns[state.nextSpawn - 1].tickOffset;
@@ -730,11 +846,26 @@ private:
                 }) != ordered.end()) {
             return false;
         }
+        auto bySequence = tracked;
+        std::sort(bySequence.begin(), bySequence.end(),
+                  [](const auto& a, const auto& b) {
+                      return a.spawnSequence < b.spawnSequence;
+                  });
+        for (std::size_t index = 0; index < bySequence.size(); ++index) {
+            if (bySequence[index].spawnSequence != index) return false;
+        }
 
         std::uint32_t resolved = 0;
         for (const auto& enemy : tracked) {
+            if (enemy.spawnSequence >= director.plan().spawns.size()) {
+                return false;
+            }
+            const auto& spawn = director.plan().spawns[enemy.spawnSequence];
             const auto* route = director.plannedRoute(enemy.laneId);
             if (!route || route->points.empty() ||
+                spawn.laneId != enemy.laneId ||
+                spawn.unitDefinitionId != enemy.unitDefinitionId ||
+                spawn.bossId != enemy.bossId ||
                 enemy.waypointIndex == 0 ||
                 enemy.waypointIndex > route->points.size()) {
                 return false;
