@@ -4,12 +4,18 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
 namespace {
 
 using namespace rts;
+
+void check(bool condition) {
+    assert(condition);
+    if (!condition) std::abort();
+}
 
 void configureTower(
     tower_defense::TowerDefenseSimulation& simulation,
@@ -23,18 +29,18 @@ void configureTower(
     enemy.combat = {15, 0, 1, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.upsertLaneNode({1, {0, 3}}));
-    assert(simulation.upsertLaneNode({2, {7, 2}}));
-    assert(simulation.upsertLaneNode({3, {14, 3}}));
-    assert(simulation.connectLaneNodes(1, 2, 2));
-    assert(simulation.connectLaneNodes(2, 3, 2));
+    check(simulation.upsertLaneNode({1, {0, 3}}));
+    check(simulation.upsertLaneNode({2, {7, 2}}));
+    check(simulation.upsertLaneNode({3, {14, 3}}));
+    check(simulation.connectLaneNodes(1, 2, 2));
+    check(simulation.connectLaneNodes(2, 3, 2));
     tower_defense::SpawnLane lane;
     lane.id = 1;
     lane.weight = 1;
     lane.startNodeId = 1;
     lane.goalNodeId = 3;
-    assert(simulation.registerLane(lane));
-    assert(simulation.registerReward({101, 1, 25}));
+    check(simulation.registerLane(lane));
+    check(simulation.registerReward({101, 1, 25}));
 
     tower_defense::WaveDefinition wave;
     wave.id = 1;
@@ -45,7 +51,7 @@ void configureTower(
     wave.enemies = {{1, 1, 1, 3}};
     wave.rewardPool = {101};
     wave.rewardChoices = 1;
-    assert(simulation.registerWave(wave));
+    check(simulation.registerWave(wave));
 
     if (createActors) {
         simulation.createBaseCore(
@@ -65,7 +71,7 @@ void testTowerDefenseRoundTrip() {
     start.sequence = 1;
     start.type = tower_defense::CommandType::StartWave;
     start.objectId = 1;
-    assert(original.submit(start));
+    check(original.submit(start));
 
     tower_defense::TickCommand choose;
     choose.targetTick = 50;
@@ -73,50 +79,50 @@ void testTowerDefenseRoundTrip() {
     choose.sequence = 2;
     choose.type = tower_defense::CommandType::ChooseReward;
     choose.objectId = 101;
-    assert(original.submit(choose));
+    check(original.submit(choose));
 
     for (std::uint64_t tick = 0; tick <= 5; ++tick) {
-        assert(original.step(tick));
+        check(original.step(tick));
     }
-    assert(original.snapshot().wave.phase ==
-           tower_defense::WavePhase::Spawning);
-    assert(original.snapshot().wave.spawned == 2);
-    assert(original.snapshot().wave.resolved == 2);
-    assert(original.director().plan().routes.size() == 1);
-    assert(original.director().plan().routes.front().nodeIds ==
-           std::vector<tower_defense::LaneNodeId>({1, 2, 3}));
+    check(original.snapshot().wave.phase ==
+          tower_defense::WavePhase::Spawning);
+    check(original.snapshot().wave.spawned == 2);
+    check(original.snapshot().wave.resolved == 2);
+    check(original.director().plan().routes.size() == 1);
+    check(original.director().plan().routes.front().nodeIds ==
+          std::vector<tower_defense::LaneNodeId>({1, 2, 3}));
     const auto frozenRoutes = original.director().plan().routes;
 
     const auto bytes =
         tower_defense::EncodeTowerDefenseSimulation(original);
-    assert(!bytes.empty());
+    check(!bytes.empty());
 
     tower_defense::TowerDefenseSimulation restored(16, 8, 0xabcdu);
     configureTower(restored, false);
-    assert(tower_defense::DecodeTowerDefenseSimulation(bytes, restored));
-    assert(restored.snapshot().worldHash == original.snapshot().worldHash);
-    assert(restored.commandStreamState().pending.size() == 1);
-    assert(restored.director().plan().routes == frozenRoutes);
+    check(tower_defense::DecodeTowerDefenseSimulation(bytes, restored));
+    check(restored.snapshot().worldHash == original.snapshot().worldHash);
+    check(restored.commandStreamState().pending.size() == 1);
+    check(restored.director().plan().routes == frozenRoutes);
 
     for (std::uint64_t tick = 6; tick <= 52; ++tick) {
-        assert(original.step(tick));
-        assert(restored.step(tick));
-        assert(original.snapshot().worldHash == restored.snapshot().worldHash);
-        assert(original.snapshot().rtsWorldHash ==
-               restored.snapshot().rtsWorldHash);
+        check(original.step(tick));
+        check(restored.step(tick));
+        check(original.snapshot().worldHash == restored.snapshot().worldHash);
+        check(original.snapshot().rtsWorldHash ==
+              restored.snapshot().rtsWorldHash);
     }
-    assert(original.snapshot().wave.phase ==
-           tower_defense::WavePhase::Complete);
-    assert(tower_defense::EncodeTowerDefenseSimulation(original) ==
-           tower_defense::EncodeTowerDefenseSimulation(restored));
+    check(original.snapshot().wave.phase ==
+          tower_defense::WavePhase::Complete);
+    check(tower_defense::EncodeTowerDefenseSimulation(original) ==
+          tower_defense::EncodeTowerDefenseSimulation(restored));
 
     tower_defense::TowerDefenseSimulation wrongSeed(16, 8, 0xabceu);
     configureTower(wrongSeed, false);
     const auto beforeWrongSeed =
         tower_defense::EncodeTowerDefenseSimulation(wrongSeed);
-    assert(!tower_defense::DecodeTowerDefenseSimulation(bytes, wrongSeed));
-    assert(tower_defense::EncodeTowerDefenseSimulation(wrongSeed) ==
-           beforeWrongSeed);
+    check(!tower_defense::DecodeTowerDefenseSimulation(bytes, wrongSeed));
+    check(tower_defense::EncodeTowerDefenseSimulation(wrongSeed) ==
+          beforeWrongSeed);
 
     auto truncated = bytes;
     truncated.pop_back();
@@ -124,10 +130,10 @@ void testTowerDefenseRoundTrip() {
     configureTower(preserved, false);
     const auto beforeTruncated =
         tower_defense::EncodeTowerDefenseSimulation(preserved);
-    assert(!tower_defense::DecodeTowerDefenseSimulation(
+    check(!tower_defense::DecodeTowerDefenseSimulation(
         truncated, preserved));
-    assert(tower_defense::EncodeTowerDefenseSimulation(preserved) ==
-           beforeTruncated);
+    check(tower_defense::EncodeTowerDefenseSimulation(preserved) ==
+          beforeTruncated);
 }
 
 void configureRun(
@@ -143,7 +149,7 @@ void configureRun(
     enemy.combat = {15, 0, 1, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.registerLane({1, {0, 3}, {14, 3}, 1}));
+    check(simulation.registerLane({1, {0, 3}, {14, 3}, 1}));
 
     roguelite::ModifierDefinition modifier;
     modifier.id = 1;
@@ -157,7 +163,7 @@ void configureRun(
          roguelite::ModifierOperation::Multiply,
          1250}
     };
-    assert(simulation.registerModifier(modifier));
+    check(simulation.registerModifier(modifier));
 
     tower_defense::WaveDefinition first;
     first.id = 1;
@@ -168,14 +174,14 @@ void configureRun(
     first.enemies = {{1, 1, 1, 3}};
     first.rewardPool = {1};
     first.rewardChoices = 1;
-    assert(simulation.registerWave(first));
+    check(simulation.registerWave(first));
 
     tower_defense::WaveDefinition second = first;
     second.id = 2;
     second.budget = 2;
     second.enemies.front().maxPerWave = 2;
-    assert(simulation.registerWave(second));
-    assert(simulation.registerRun({1, {1, 2}}));
+    check(simulation.registerWave(second));
+    check(simulation.registerRun({1, {1, 2}}));
 
     if (createActors) {
         simulation.createBaseCore(
@@ -189,9 +195,9 @@ void testRunSaveMidWaveContinuation() {
     roguelite::RunSimulation original(16, 8, 0x123456u);
     configureRun(original, true);
 
-    assert(original.submit(
+    check(original.submit(
         {0, 1, 1, roguelite::CommandType::StartRun, 1}));
-    assert(original.submit(
+    check(original.submit(
         {40, 1, 2, roguelite::CommandType::ChooseModifier, 999}));
 
     gameplay::TickCommand move;
@@ -202,42 +208,42 @@ void testRunSaveMidWaveContinuation() {
     move.subject = {2, 1};
     move.targetX = 10;
     move.targetY = 3;
-    assert(original.submitRts(move));
+    check(original.submitRts(move));
 
-    assert(original.step(0));
-    assert(original.step(1));
-    assert(original.state().phase == roguelite::RunPhase::WaveActive);
+    check(original.step(0));
+    check(original.step(1));
+    check(original.state().phase == roguelite::RunPhase::WaveActive);
 
     auto save = roguelite::CaptureRunSave(
         original,
         {},
         {{1, original.snapshot().worldHash}});
-    assert(!save.authoritativeState.empty());
+    check(!save.authoritativeState.empty());
     const auto saveBytes = roguelite::EncodeRunSave(save);
-    assert(!saveBytes.empty());
+    check(!saveBytes.empty());
 
     roguelite::RunSaveSchema decoded;
-    assert(roguelite::DecodeRunSave(saveBytes, decoded));
-    assert(decoded.authoritativeState == save.authoritativeState);
-    assert(decoded.runCommands.pending.size() == 1);
-    assert(decoded.rtsCommands.pending.size() == 1);
+    check(roguelite::DecodeRunSave(saveBytes, decoded));
+    check(decoded.authoritativeState == save.authoritativeState);
+    check(decoded.runCommands.pending.size() == 1);
+    check(decoded.rtsCommands.pending.size() == 1);
 
     roguelite::RunSimulation restored(16, 8, 0x123456u);
     configureRun(restored, false);
-    assert(roguelite::RestoreRunSave(decoded, restored));
-    assert(restored.snapshot().worldHash == original.snapshot().worldHash);
+    check(roguelite::RestoreRunSave(decoded, restored));
+    check(restored.snapshot().worldHash == original.snapshot().worldHash);
 
     std::uint32_t externalSequence = 100;
     std::uint32_t choicesQueued = 0;
     bool completed = false;
     for (std::uint64_t tick = 2; tick < 180; ++tick) {
-        assert(original.step(tick));
-        assert(restored.step(tick));
-        assert(original.snapshot().worldHash == restored.snapshot().worldHash);
-        assert(original.snapshot().towerDefenseWorldHash ==
-               restored.snapshot().towerDefenseWorldHash);
-        assert(original.tower().snapshot().rtsWorldHash ==
-               restored.tower().snapshot().rtsWorldHash);
+        check(original.step(tick));
+        check(restored.step(tick));
+        check(original.snapshot().worldHash == restored.snapshot().worldHash);
+        check(original.snapshot().towerDefenseWorldHash ==
+              restored.snapshot().towerDefenseWorldHash);
+        check(original.tower().snapshot().rtsWorldHash ==
+              restored.tower().snapshot().rtsWorldHash);
 
         if (original.state().phase == roguelite::RunPhase::RewardPending &&
             choicesQueued < original.state().completedWaves + 1u) {
@@ -249,38 +255,38 @@ void testRunSaveMidWaveContinuation() {
             chooseModifier.sequence = externalSequence++;
             chooseModifier.type = roguelite::CommandType::ChooseModifier;
             chooseModifier.objectId = modifierId;
-            assert(original.submit(chooseModifier));
-            assert(restored.submit(chooseModifier));
+            check(original.submit(chooseModifier));
+            check(restored.submit(chooseModifier));
             ++choicesQueued;
         }
 
         if (original.state().phase == roguelite::RunPhase::Complete) {
-            assert(restored.state().phase == roguelite::RunPhase::Complete);
+            check(restored.state().phase == roguelite::RunPhase::Complete);
             completed = true;
             break;
         }
     }
-    assert(completed);
+    check(completed);
     const auto originalFinal = roguelite::CaptureRunSave(original);
     const auto restoredFinal = roguelite::CaptureRunSave(restored);
-    assert(originalFinal.authoritativeState ==
-           restoredFinal.authoritativeState);
+    check(originalFinal.authoritativeState ==
+          restoredFinal.authoritativeState);
 
     roguelite::RunSimulation incompatible(16, 8, 0x123456u);
     configureRun(incompatible, false, 6);
     const auto incompatibleBefore =
         roguelite::EncodeRunSimulation(incompatible);
-    assert(!roguelite::RestoreRunSave(decoded, incompatible));
-    assert(roguelite::EncodeRunSimulation(incompatible) ==
-           incompatibleBefore);
+    check(!roguelite::RestoreRunSave(decoded, incompatible));
+    check(roguelite::EncodeRunSimulation(incompatible) ==
+          incompatibleBefore);
 
     auto corrupted = decoded;
     corrupted.authoritativeState.pop_back();
     roguelite::RunSimulation preserved(16, 8, 0x123456u);
     configureRun(preserved, false);
     const auto preservedBefore = roguelite::EncodeRunSimulation(preserved);
-    assert(!roguelite::RestoreRunSave(corrupted, preserved));
-    assert(roguelite::EncodeRunSimulation(preserved) == preservedBefore);
+    check(!roguelite::RestoreRunSave(corrupted, preserved));
+    check(roguelite::EncodeRunSimulation(preserved) == preservedBefore);
 }
 
 } // namespace
