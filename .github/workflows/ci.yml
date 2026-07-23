@@ -28,6 +28,12 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      - name: Test platform and null render
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_platform_render_tests$"
+      - name: Test presentation scene extraction
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_presentation_scene_tests$"
+      - name: Test snapshot interpolation
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_snapshot_interpolation_tests$"
       - name: Test sequence projection
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_projection$"
       - name: Test sequence archive projection
@@ -45,4 +51,4 @@ jobs:
       - name: Test rarity integration
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_integration$"
       - name: Test remaining suite
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_(platform_render|presentation_scene|snapshot_interpolation)_tests|rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
