@@ -12,6 +12,7 @@ The repository is being built as small, testable vertical slices rather than imp
 - tick command stream, domain events, immutable snapshots, and replay-ready ordering
 - queued move, stop, attack, attack-move, and hold-position commands
 - deterministic grid A* with dynamic blockers and stable tie-breaking
+- deterministic tower-defense lane graphs with registration-order-independent route selection
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
