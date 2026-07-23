@@ -28,5 +28,9 @@ jobs:
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
-      - name: Test
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+      - name: Test shared roguelite sequence
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_tests$"
+      - name: Test roguelite persistence
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_persistence_tests$"
+      - name: Test remaining suite
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^rts_roguelite_(sequence|persistence)_tests$"
