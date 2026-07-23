@@ -37,6 +37,12 @@ struct WaveAffixDefinition final {
     WaveAffixId id{};
     std::uint32_t weight{1};
     EnemyStatModifier modifier{};
+
+    friend bool operator==(const WaveAffixDefinition& a,
+                           const WaveAffixDefinition& b) noexcept {
+        return a.id == b.id && a.weight == b.weight &&
+               a.modifier == b.modifier;
+    }
 };
 
 struct BossDefinition final {
@@ -45,6 +51,15 @@ struct BossDefinition final {
     std::uint32_t budgetCost{1};
     std::uint32_t weight{1};
     EnemyStatModifier modifier{};
+
+    friend bool operator==(const BossDefinition& a,
+                           const BossDefinition& b) noexcept {
+        return a.id == b.id &&
+               a.unitDefinitionId == b.unitDefinitionId &&
+               a.budgetCost == b.budgetCost &&
+               a.weight == b.weight &&
+               a.modifier == b.modifier;
+    }
 };
 
 inline std::int32_t ClampI32(std::int64_t value) noexcept {
