@@ -34,7 +34,9 @@ using TickCommandStream = sim::DeterministicCommandStream<TickCommand>;
 enum class EventType : std::uint8_t {
     WaveStarted,
     WaveRejected,
+    WaveAffixSelected,
     EnemySpawned,
+    BossSpawned,
     EnemyWaypointReached,
     EnemyDefeated,
     BaseCoreDestroyed,
@@ -59,8 +61,15 @@ struct EnemySnapshot {
     WaveId waveId{};
     LaneId laneId{};
     std::uint32_t unitDefinitionId{};
+    std::uint32_t spawnSequence{};
+    BossId bossId{};
     std::uint32_t waypointIndex{};
     std::uint32_t waypointCount{};
+    std::int32_t healthCurrent{};
+    std::int32_t healthMaximum{};
+    std::int32_t armor{};
+    std::int32_t weaponDamage{};
+    std::int32_t cellsPerTick{};
     bool alive{};
 };
 
@@ -73,7 +82,9 @@ struct TowerDefenseSnapshot {
     std::int32_t coreHealthMaximum{};
     WaveState wave{};
     std::uint32_t plannedSpawns{};
+    std::uint32_t plannedBosses{};
     std::uint32_t activeEnemies{};
+    std::vector<WaveAffixId> waveAffixes;
     std::vector<RewardId> rewardChoices;
     RewardId selectedReward{};
     std::vector<EnemySnapshot> enemies;
@@ -93,6 +104,20 @@ public:
 
     void registerBuilding(gameplay::BuildingDefinition definition) {
         rts_.registerBuilding(std::move(definition));
+    }
+
+    bool registerAffix(WaveAffixDefinition affix) {
+        const auto copy = affix;
+        if (!director_.registerAffix(std::move(affix))) return false;
+        replaceById(affixDefinitions_, copy);
+        return true;
+    }
+
+    bool registerBoss(BossDefinition boss) {
+        const auto copy = boss;
+        if (!director_.registerBoss(std::move(boss))) return false;
+        replaceById(bossDefinitions_, copy);
+        return true;
     }
 
     bool upsertLaneNode(LaneNode node) {
@@ -245,6 +270,8 @@ private:
         WaveId waveId{};
         LaneId laneId{};
         std::uint32_t unitDefinitionId{};
+        std::uint32_t spawnSequence{};
+        BossId bossId{};
         std::uint32_t waypointIndex{};
         bool resolved{};
     };
@@ -271,8 +298,7 @@ private:
                 return value.id < key;
             });
         return iterator != unitDefinitions_.end() && iterator->id == id
-            ? &*iterator
-            : nullptr;
+            ? &*iterator : nullptr;
     }
 
     bool resolveLaneEndpoints(
@@ -324,6 +350,11 @@ private:
         trackedEnemies_.clear();
         coreFailureReported_ = false;
         events_.push_back({tick, EventType::WaveStarted, id, 0, {}, 0, 0});
+        for (const auto& affix : director_.plan().affixes) {
+            events_.push_back(
+                {tick, EventType::WaveAffixSelected, id,
+                 affix.id, {}, 0, 0});
+        }
     }
 
     WaveStartResult validateWaveContent(WaveId id) const {
@@ -333,6 +364,27 @@ private:
             const auto* definition = unitDefinition(enemy.unitDefinitionId);
             if (!definition || !definition->combat.attackCapable()) {
                 return {false, WaveStartFailure::UnknownUnitDefinition, id};
+            }
+        }
+
+        if (wave->bossCount > 0) {
+            std::vector<const BossDefinition*> bosses;
+            if (wave->bossPool.empty()) {
+                for (const auto& boss : director_.bosses()) {
+                    bosses.push_back(&boss);
+                }
+            } else {
+                for (const auto bossId : wave->bossPool) {
+                    const auto* boss = director_.boss(bossId);
+                    if (!boss) return {false, WaveStartFailure::UnknownBoss, id};
+                    bosses.push_back(boss);
+                }
+            }
+            for (const auto* boss : bosses) {
+                const auto* definition = unitDefinition(boss->unitDefinitionId);
+                if (!definition || !definition->combat.attackCapable()) {
+                    return {false, WaveStartFailure::UnknownUnitDefinition, id};
+                }
             }
         }
 
@@ -382,7 +434,6 @@ private:
                  id, {}, 0, 0});
             return;
         }
-
         const auto next = std::clamp<std::int64_t>(
             static_cast<std::int64_t>(rts_.resources().available) +
                 selected->resourceGrant,
@@ -398,9 +449,8 @@ private:
         std::uint32_t& firstSequence) noexcept {
         firstSequence = 0;
         if (count == 0) return true;
-        constexpr auto maximum =
-            static_cast<std::uint64_t>(
-                std::numeric_limits<std::uint32_t>::max());
+        constexpr auto maximum = static_cast<std::uint64_t>(
+            std::numeric_limits<std::uint32_t>::max());
         if (nextInternalRtsSequence_ > maximum) return false;
         const auto available = maximum - nextInternalRtsSequence_ + 1u;
         if (static_cast<std::uint64_t>(count) > available) return false;
@@ -415,6 +465,7 @@ private:
             const auto* definition = unitDefinition(spawn.unitDefinitionId);
             const auto* route = director_.plannedRoute(spawn.laneId);
             if (!definition || !route || route->points.empty() ||
+                !spawn.modifier.valid() ||
                 route->points.front() != spawn.spawn ||
                 route->points.back() != spawn.goal ||
                 route->points.size() >
@@ -442,11 +493,16 @@ private:
                 return;
             }
 
+            const auto combat = ApplyEnemyStatModifier(
+                definition->combat, spawn.modifier);
+            const auto speed = ApplySpeedModifier(
+                definition->cellsPerTick, spawn.modifier);
             const auto entity = rts_.createUnit(
                 {spawn.spawn.x, spawn.spawn.y},
-                {definition->cellsPerTick},
+                {speed},
                 director_.plan().enemyTeamId,
-                definition->combat);
+                combat,
+                definition->visionRange);
 
             for (std::size_t waypoint = 1;
                  waypoint < route->points.size(); ++waypoint) {
@@ -473,16 +529,21 @@ private:
             }
 
             const auto waypointIndex = route->points.size() > 1u
-                ? 1u
-                : static_cast<std::uint32_t>(route->points.size());
+                ? 1u : static_cast<std::uint32_t>(route->points.size());
             trackedEnemies_.push_back(
                 {entity, director_.state().waveId, spawn.laneId,
-                 spawn.unitDefinitionId,
+                 spawn.unitDefinitionId, spawn.sequence, spawn.bossId,
                  static_cast<std::uint32_t>(waypointIndex), false});
             events_.push_back(
                 {tick, EventType::EnemySpawned, director_.state().waveId,
                  spawn.unitDefinitionId, entity,
                  static_cast<std::int32_t>(spawn.laneId), 0});
+            if (spawn.bossId != 0) {
+                events_.push_back(
+                    {tick, EventType::BossSpawned, director_.state().waveId,
+                     spawn.bossId, entity,
+                     static_cast<std::int32_t>(spawn.unitDefinitionId), 0});
+            }
         }
     }
 
@@ -511,7 +572,6 @@ private:
 
     void reconcileAfterTick(std::uint64_t tick) {
         reconcileWaypointProgress(tick);
-
         if (core_.valid() && !rts_.world().alive(core_)) {
             if (!coreFailureReported_) {
                 coreFailureReported_ = true;
@@ -527,7 +587,7 @@ private:
             enemy.resolved = true;
             events_.push_back(
                 {tick, EventType::EnemyDefeated, enemy.waveId,
-                 enemy.unitDefinitionId, enemy.entity, 0, 0});
+                 enemy.unitDefinitionId, enemy.entity, 0, enemy.bossId});
             if (director_.markEnemyResolved()) publishWaveCompletion(tick);
         }
     }
@@ -568,19 +628,41 @@ private:
         snapshot_.wave = director_.state();
         snapshot_.plannedSpawns = static_cast<std::uint32_t>(
             director_.plan().spawns.size());
+        snapshot_.plannedBosses = static_cast<std::uint32_t>(
+            std::count_if(
+                director_.plan().spawns.begin(),
+                director_.plan().spawns.end(),
+                [](const PlannedSpawn& spawn) { return spawn.bossId != 0; }));
         snapshot_.activeEnemies = director_.activeEnemies();
+        snapshot_.waveAffixes.clear();
+        for (const auto& affix : director_.plan().affixes) {
+            snapshot_.waveAffixes.push_back(affix.id);
+        }
         snapshot_.rewardChoices = director_.offer().choices;
         snapshot_.selectedReward = director_.offer().selected;
         snapshot_.enemies.clear();
         for (const auto& enemy : trackedEnemies_) {
             const auto* route = director_.plannedRoute(enemy.laneId);
             const auto waypointCount = route
-                ? static_cast<std::uint32_t>(route->points.size())
-                : 0u;
+                ? static_cast<std::uint32_t>(route->points.size()) : 0u;
+            const auto* health =
+                rts_.world().try_get<gameplay::Health>(enemy.entity);
+            const auto* armor =
+                rts_.world().try_get<gameplay::Armor>(enemy.entity);
+            const auto* weapon =
+                rts_.world().try_get<gameplay::Weapon>(enemy.entity);
+            const auto* speed =
+                rts_.world().try_get<gameplay::MoveSpeed>(enemy.entity);
             snapshot_.enemies.push_back(
                 {enemy.entity, enemy.waveId, enemy.laneId,
-                 enemy.unitDefinitionId, enemy.waypointIndex,
-                 waypointCount, rts_.world().alive(enemy.entity)});
+                 enemy.unitDefinitionId, enemy.spawnSequence, enemy.bossId,
+                 enemy.waypointIndex, waypointCount,
+                 health ? health->current : 0,
+                 health ? health->maximum : 0,
+                 armor ? armor->value : 0,
+                 weapon ? weapon->damage : 0,
+                 speed ? speed->cellsPerTick : 0,
+                 rts_.world().alive(enemy.entity)});
         }
         std::sort(snapshot_.enemies.begin(), snapshot_.enemies.end(),
                   [](const EnemySnapshot& a, const EnemySnapshot& b) {
@@ -610,6 +692,8 @@ private:
             hash.WriteU32(enemy.waveId);
             hash.WriteU32(enemy.laneId);
             hash.WriteU32(enemy.unitDefinitionId);
+            hash.WriteU32(enemy.spawnSequence);
+            hash.WriteU32(enemy.bossId);
             hash.WriteU32(enemy.waypointIndex);
             hash.WriteBool(enemy.resolved);
         }
@@ -627,6 +711,8 @@ private:
     std::vector<SpawnLane> laneDefinitions_;
     std::vector<WaveDefinition> waveDefinitions_;
     std::vector<RewardDefinition> rewardDefinitions_;
+    std::vector<WaveAffixDefinition> affixDefinitions_;
+    std::vector<BossDefinition> bossDefinitions_;
     std::vector<TrackedEnemy> trackedEnemies_;
     std::vector<Event> events_;
     TowerDefenseSnapshot snapshot_;
