@@ -6,6 +6,18 @@ add_executable(rts_foundation_tests foundation_tests.cpp)
 target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
 
+add_executable(rts_platform_render_tests platform_render_tests.cpp)
+target_link_libraries(rts_platform_render_tests PRIVATE RTSEngine::Render)
+add_test(NAME rts_platform_render_tests COMMAND rts_platform_render_tests)
+
+add_executable(rts_presentation_scene_tests presentation_scene_tests.cpp)
+target_link_libraries(rts_presentation_scene_tests PRIVATE RTSEngine::RtsPresentation)
+add_test(NAME rts_presentation_scene_tests COMMAND rts_presentation_scene_tests)
+
+add_executable(rts_snapshot_interpolation_tests snapshot_interpolation_tests.cpp)
+target_link_libraries(rts_snapshot_interpolation_tests PRIVATE RTSEngine::Presentation)
+add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolation_tests)
+
 add_executable(rts_ecs_tests ecs_tests.cpp)
 target_link_libraries(rts_ecs_tests PRIVATE RTSEngine::Ecs)
 add_test(NAME rts_ecs_tests COMMAND rts_ecs_tests)
