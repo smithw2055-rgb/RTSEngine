@@ -17,7 +17,7 @@ namespace rts::tower_defense {
 class TowerDefenseSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31564454u; // "TDV1"
-    static constexpr std::uint16_t kVersion = 2u;
+    static constexpr std::uint16_t kVersion = 3u;
     static constexpr std::uint32_t kMaximumRtsBytes = 256u * 1024u * 1024u;
 
     static std::vector<std::uint8_t> encode(
@@ -62,11 +62,13 @@ public:
             writer.writeU32(enemy.waveId);
             writer.writeU32(enemy.laneId);
             writer.writeU32(enemy.unitDefinitionId);
+            writer.writeU32(enemy.waypointIndex);
             writer.writeBool(enemy.resolved);
         }
 
         writeEntity(writer, simulation.core_);
         writer.writeU32(simulation.playerTeamId_);
+        writer.writeU64(simulation.nextInternalRtsSequence_);
         writer.writeU64(simulation.lastTick_);
         writer.writeBool(simulation.hasStepped_);
         writer.writeBool(simulation.coreFailureReported_);
@@ -140,25 +142,36 @@ public:
                 !reader.readU32(enemy.waveId) ||
                 !reader.readU32(enemy.laneId) ||
                 !reader.readU32(enemy.unitDefinitionId) ||
+                !reader.readU32(enemy.waypointIndex) ||
                 !reader.readBool(enemy.resolved) ||
                 !enemy.entity.valid() || enemy.waveId == 0 ||
-                enemy.laneId == 0 || enemy.unitDefinitionId == 0) {
+                enemy.laneId == 0 || enemy.unitDefinitionId == 0 ||
+                enemy.waypointIndex == 0) {
                 return false;
             }
         }
 
         ecs::Entity core;
         std::uint32_t playerTeamId = 0;
+        std::uint64_t nextInternalRtsSequence = 0;
         std::uint64_t lastTick = 0;
         bool hasStepped = false;
         bool coreFailureReported = false;
         std::uint64_t storedWorldHash = 0;
         if (!readEntity(reader, core) ||
             !reader.readU32(playerTeamId) ||
+            !reader.readU64(nextInternalRtsSequence) ||
             !reader.readU64(lastTick) ||
             !reader.readBool(hasStepped) ||
             !reader.readBool(coreFailureReported) ||
             !reader.readU64(storedWorldHash) || !reader.atEnd()) {
+            return false;
+        }
+        constexpr auto maximumNextSequence =
+            static_cast<std::uint64_t>(
+                std::numeric_limits<std::uint32_t>::max()) + 1u;
+        if (nextInternalRtsSequence == 0 ||
+            nextInternalRtsSequence > maximumNextSequence) {
             return false;
         }
 
@@ -200,6 +213,8 @@ public:
         const auto backupSnapshot = simulation.snapshot_;
         const auto backupCore = simulation.core_;
         const auto backupPlayerTeam = simulation.playerTeamId_;
+        const auto backupNextInternalRtsSequence =
+            simulation.nextInternalRtsSequence_;
         const auto backupLastTick = simulation.lastTick_;
         const auto backupHasStepped = simulation.hasStepped_;
         const auto backupCoreFailure = simulation.coreFailureReported_;
@@ -218,6 +233,8 @@ public:
             simulation.snapshot_ = backupSnapshot;
             simulation.core_ = backupCore;
             simulation.playerTeamId_ = backupPlayerTeam;
+            simulation.nextInternalRtsSequence_ =
+                backupNextInternalRtsSequence;
             simulation.lastTick_ = backupLastTick;
             simulation.hasStepped_ = backupHasStepped;
             simulation.coreFailureReported_ = backupCoreFailure;
@@ -237,6 +254,7 @@ public:
         simulation.trackedEnemies_ = std::move(trackedCandidate);
         simulation.core_ = core;
         simulation.playerTeamId_ = playerTeamId;
+        simulation.nextInternalRtsSequence_ = nextInternalRtsSequence;
         simulation.lastTick_ = lastTick;
         simulation.hasStepped_ = hasStepped;
         simulation.coreFailureReported_ = coreFailureReported;
@@ -715,13 +733,37 @@ private:
 
         std::uint32_t resolved = 0;
         for (const auto& enemy : tracked) {
+            const auto* route = director.plannedRoute(enemy.laneId);
+            if (!route || route->points.empty() ||
+                enemy.waypointIndex == 0 ||
+                enemy.waypointIndex > route->points.size()) {
+                return false;
+            }
             if (!enemy.resolved && !rts.world().alive(enemy.entity)) {
                 return false;
             }
             if (enemy.resolved && rts.world().alive(enemy.entity)) {
                 return false;
             }
-            if (enemy.resolved) ++resolved;
+            if (enemy.resolved) {
+                ++resolved;
+                continue;
+            }
+
+            const auto* queue =
+                rts.world().try_get<gameplay::OrderQueue>(enemy.entity);
+            if (!queue) return false;
+            const auto expectedCount =
+                route->points.size() - enemy.waypointIndex;
+            if (queue->pending.size() != expectedCount) return false;
+            for (std::size_t index = 0; index < expectedCount; ++index) {
+                const auto& order = queue->pending[index];
+                const auto target = route->points[enemy.waypointIndex + index];
+                if (order.type != gameplay::OrderType::AttackMove ||
+                    order.target != target) {
+                    return false;
+                }
+            }
         }
         if (director.state().phase != WavePhase::Failed &&
             (tracked.size() != director.state().spawned ||
