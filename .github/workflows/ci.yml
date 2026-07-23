@@ -32,6 +32,22 @@ jobs:
         run: cmake --build build --config ${{ matrix.build_type }} --target rts_fixed_2d_renderer_tests --parallel
       - name: Build presentation events
         run: cmake --build build --config ${{ matrix.build_type }} --target rts_presentation_events_tests --parallel
+      - name: Compile optional Sokol adapter
+        if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'Debug'
+        shell: bash
+        run: |
+          mkdir -p .ci/sokol
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/sokol_gfx.h \
+            --output .ci/sokol/sokol_gfx.h
+          cmake -S . -B build-sokol \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=OFF \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+            -DRTSENGINE_SOKOL_INCLUDE_DIR="$PWD/.ci/sokol"
+          cmake --build build-sokol --config Debug \
+            --target rts_render_sokol --parallel
       - name: Build remaining targets
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
       - name: Test asset runtime
