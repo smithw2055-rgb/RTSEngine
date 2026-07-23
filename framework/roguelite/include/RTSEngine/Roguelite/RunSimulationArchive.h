@@ -337,17 +337,6 @@ private:
         return false;
     }
 
-    static void hashCombatStats(
-        foundation::CanonicalHash& hash,
-        const gameplay::CombatStats& value) {
-        hash.WriteI32(value.maximumHealth);
-        hash.WriteI32(value.armor);
-        hash.WriteI32(value.weaponDamage);
-        hash.WriteI32(value.weaponRange);
-        hash.WriteU32(value.cooldownTicks);
-        hash.WriteI32(value.bounty);
-    }
-
     static void hashWaveDefinition(
         foundation::CanonicalHash& hash,
         const tower_defense::WaveDefinition& value) {
@@ -364,6 +353,12 @@ private:
             hash.WriteU32(enemy.weight);
             hash.WriteU32(enemy.maxPerWave);
         }
+        hash.WriteU32(static_cast<std::uint32_t>(value.bossPool.size()));
+        for (const auto id : value.bossPool) hash.WriteU32(id);
+        hash.WriteU32(value.bossCount);
+        hash.WriteU32(static_cast<std::uint32_t>(value.affixPool.size()));
+        for (const auto id : value.affixPool) hash.WriteU32(id);
+        hash.WriteU32(value.affixChoices);
         hash.WriteU32(static_cast<std::uint32_t>(value.rewardPool.size()));
         for (const auto id : value.rewardPool) hash.WriteU32(id);
         hash.WriteU32(value.rewardChoices);
