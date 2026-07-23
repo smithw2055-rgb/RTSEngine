@@ -1,5 +1,6 @@
 #pragma once
 
+#include <RTSEngine/Roguelite/RewardRarity.h>
 #include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
@@ -49,6 +50,7 @@ struct ModifierDefinition {
     std::vector<ModifierId> excludedModifiers;
     std::vector<TagId> excludedTags;
     std::vector<ModifierEffect> effects;
+    RewardRarity rarity{RewardRarity::Common};
 };
 
 struct ModifierStack {
@@ -246,12 +248,16 @@ public:
         return static_cast<std::int32_t>(clamp(current));
     }
 
-    void appendHash(foundation::CanonicalHash& hash) const noexcept {
+    void appendHash(foundation::CanonicalHash& hash,
+                    bool includeRarity = true) const noexcept {
         hash.WriteU32(static_cast<std::uint32_t>(definitions_.size()));
         for (const auto& value : definitions_) {
             hash.WriteU32(value.id);
             hash.WriteU32(value.weight);
             hash.WriteU32(value.maxStacks);
+            if (includeRarity) {
+                hash.WriteU8(static_cast<std::uint8_t>(value.rarity));
+            }
             hashVector(hash, value.tags);
             hashVector(hash, value.requiredModifiers);
             hashVector(hash, value.requiredTags);
@@ -290,7 +296,7 @@ private:
 
     static bool valid(const ModifierDefinition& value) noexcept {
         if (value.id == 0 || value.weight == 0 ||
-            value.maxStacks == 0) {
+            value.maxStacks == 0 || !ValidRewardRarity(value.rarity)) {
             return false;
         }
         if (std::find(value.requiredModifiers.begin(),
