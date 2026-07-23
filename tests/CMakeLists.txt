@@ -90,7 +90,10 @@ add_test(NAME rts_roguelite_history_tests COMMAND rts_roguelite_history_tests)
 
 add_executable(rts_reward_rarity_tests reward_rarity_tests.cpp)
 target_link_libraries(rts_reward_rarity_tests PRIVATE RTSEngine::Roguelite)
-add_test(NAME rts_reward_rarity_tests COMMAND rts_reward_rarity_tests)
+add_test(NAME rts_reward_rarity_planner COMMAND rts_reward_rarity_tests planner)
+add_test(NAME rts_reward_rarity_pity COMMAND rts_reward_rarity_tests pity)
+add_test(NAME rts_reward_rarity_failures COMMAND rts_reward_rarity_tests failures)
+add_test(NAME rts_reward_rarity_integration COMMAND rts_reward_rarity_tests integration)
 
 add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
 target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
