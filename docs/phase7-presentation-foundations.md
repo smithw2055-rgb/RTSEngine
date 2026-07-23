@@ -64,7 +64,7 @@ cmake -S . -B build \
 
 The application supplies callbacks for `sg_environment`, the `sg_swapchain` associated with an engine `WindowHandle`, and shader descriptors generated for known engine `ShaderKey` values. Sokol types remain confined to the optional backend target; no Sokol handle crosses the engine render interface.
 
-The default CI matrix intentionally builds the backend-neutral and Null implementations without downloading a graphics dependency.
+The core matrix has no linked Sokol dependency. Ubuntu Debug additionally downloads a pinned official `sokol_gfx.h` revision and compiles only `RTSEngine::RenderSokol` as an API-contract smoke test.
 
 ## Fixed 2D passes and sprite batching
 
