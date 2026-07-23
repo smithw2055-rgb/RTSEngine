@@ -23,9 +23,13 @@ if(RTSENGINE_ENABLE_SANITIZERS)
 endif()
 
 add_subdirectory(engine/foundation)
+add_subdirectory(engine/platform)
+add_subdirectory(engine/render)
+add_subdirectory(engine/presentation)
 add_subdirectory(engine/sim)
 add_subdirectory(engine/ecs)
 add_subdirectory(framework/rts)
+add_subdirectory(framework/rts_presentation)
 add_subdirectory(framework/tower_defense)
 add_subdirectory(framework/roguelite)
 
