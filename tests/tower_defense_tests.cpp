@@ -335,6 +335,7 @@ void testGraphLaneRouteIsFrozenAtWaveStart() {
         {0, 1, 1, CommandType::StartWave, 4}));
     check(simulation.step(0));
     check(simulation.director().plan().routes.size() == 1);
+    check(simulation.snapshot().enemies.size() == 1);
 
     const auto frozen = simulation.director().plan().routes.front();
     const std::vector<gameplay::GridPoint> expected = {
@@ -344,11 +345,37 @@ void testGraphLaneRouteIsFrozenAtWaveStart() {
     check(frozen.nodeIds == std::vector<LaneNodeId>({10, 20, 40}));
     check(frozen.points == expected);
 
+    const auto entity = simulation.snapshot().enemies.front().entity;
+    const auto* queue =
+        simulation.rts().world().try_get<gameplay::OrderQueue>(entity);
+    check(queue != nullptr);
+    check(queue->pending.size() == 2);
+    check(queue->pending[0].type == gameplay::OrderType::AttackMove);
+    check(queue->pending[0].target == gameplay::GridPoint{4, 2});
+    check(queue->pending[1].type == gameplay::OrderType::AttackMove);
+    check(queue->pending[1].target == gameplay::GridPoint{10, 3});
+    check(simulation.snapshot().enemies.front().waypointIndex == 1);
+    check(simulation.snapshot().enemies.front().waypointCount == 3);
+
     check(simulation.setLaneConnectionEnabled(20, 40, false));
     const auto live = simulation.director().laneGraph().findRoute(10, 40);
     check(live.found);
     check(live.nodeIds == std::vector<LaneNodeId>({10, 30, 40}));
     check(simulation.director().plan().routes.front() == frozen);
+
+    bool reachedFirstWaypoint = false;
+    for (std::uint64_t tick = 1; tick < 10; ++tick) {
+        check(simulation.step(tick));
+        reachedFirstWaypoint = reachedFirstWaypoint ||
+            hasEvent(simulation, EventType::EnemyWaypointReached);
+        if (reachedFirstWaypoint) break;
+    }
+    check(reachedFirstWaypoint);
+    check(simulation.snapshot().enemies.front().waypointIndex == 2);
+    queue = simulation.rts().world().try_get<gameplay::OrderQueue>(entity);
+    check(queue != nullptr);
+    check(queue->pending.size() == 1);
+    check(queue->pending.front().target == gameplay::GridPoint{10, 3});
 }
 
 void testDisconnectedGraphLaneRejectsWave() {
