@@ -15,6 +15,25 @@
 namespace rts::assets {
 
 class AssetManager final {
+private:
+    struct Record final {
+        AssetManifestEntry manifest{};
+        AssetState state{AssetState::Unloaded};
+        AssetFailure failure{AssetFailure::None};
+        LoadedAsset loaded{};
+        std::uint32_t generation{};
+        std::uint32_t internalDependents{};
+    };
+
+    struct RequestSlot final {
+        std::uint32_t generation{1};
+        bool alive{};
+        AssetRequestStatus status{};
+    };
+
+    using RecordIterator = std::vector<Record>::iterator;
+    using ConstRecordIterator = std::vector<Record>::const_iterator;
+
 public:
     explicit AssetManager(VirtualFileSystem& fileSystem,
                           std::size_t cpuBudgetBytes = 0) noexcept
@@ -101,6 +120,10 @@ public:
                                             : AssetState::Failed;
                 slot->status.failure = AssetFailure::Cancelled;
                 slot->status.completed = true;
+                if (record && record->state == AssetState::Queued &&
+                    !hasPendingRequest(record->manifest.key)) {
+                    record->state = AssetState::Unloaded;
+                }
                 ++cancelledRequests_;
                 ++processed;
                 continue;
@@ -218,7 +241,10 @@ public:
             if (!loadRecursive(*dependencyRecord, stack) ||
                 dependencyRecord->loaded.cooked.schemaVersion <
                     dependency.minimumSchemaVersion) {
-                record->failure = AssetFailure::DependencyFailed;
+                record->failure = dependencyRecord->failure ==
+                        AssetFailure::DependencyCycle
+                    ? AssetFailure::DependencyCycle
+                    : AssetFailure::DependencyFailed;
                 return false;
             }
         }
@@ -236,7 +262,7 @@ public:
         }
 
         unpinDependencies(record->loaded.cooked.dependencies);
-        cpuBytes_ -= oldBytes;
+        cpuBytes_ = oldBytes <= cpuBytes_ ? cpuBytes_ - oldBytes : 0;
         record->loaded.cooked = std::move(candidate);
         record->generation = nextGeneration(record->generation);
         record->loaded.generation = record->generation;
@@ -249,8 +275,11 @@ public:
     }
 
     bool setCpuBudget(std::size_t bytes) {
+        const auto previous = cpuBudget_;
         cpuBudget_ = bytes;
-        return ensureCapacity(0, {});
+        if (ensureCapacity(0, {})) return true;
+        cpuBudget_ = previous;
+        return false;
     }
 
     AssetManagerStats stats() const noexcept {
@@ -276,22 +305,7 @@ public:
     }
 
 private:
-    struct Record final {
-        AssetManifestEntry manifest{};
-        AssetState state{AssetState::Unloaded};
-        AssetFailure failure{AssetFailure::None};
-        LoadedAsset loaded{};
-        std::uint32_t generation{};
-        std::uint32_t internalDependents{};
-    };
-
-    struct RequestSlot final {
-        std::uint32_t generation{1};
-        bool alive{};
-        AssetRequestStatus status{};
-    };
-
-    auto lowerRecord(AssetKey key) {
+    RecordIterator lowerRecord(AssetKey key) {
         return std::lower_bound(
             records_.begin(), records_.end(), key,
             [](const Record& value, AssetKey lookup) {
@@ -299,7 +313,7 @@ private:
             });
     }
 
-    auto lowerRecord(AssetKey key) const {
+    ConstRecordIterator lowerRecord(AssetKey key) const {
         return std::lower_bound(
             records_.begin(), records_.end(), key,
             [](const Record& value, AssetKey lookup) {
@@ -345,6 +359,16 @@ private:
         const auto& slot = requests_[handle.index - 1u];
         return slot.alive && slot.generation == handle.generation
             ? &slot : nullptr;
+    }
+
+    bool hasPendingRequest(AssetKey key) const noexcept {
+        return std::any_of(
+            pending_.begin(), pending_.end(),
+            [&](AssetRequestHandle handle) {
+                const auto* slot = findRequest(handle);
+                return slot && !slot->status.completed &&
+                       !slot->status.cancelled && slot->status.key == key;
+            });
     }
 
     bool loadRecursive(Record& record, std::vector<AssetKey>& stack) {
