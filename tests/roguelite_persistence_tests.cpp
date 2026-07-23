@@ -57,7 +57,41 @@ void configureTower(
         simulation.createBaseCore(
             {14, 3}, 1, {100, 0, 0, 0, 1, 0});
         simulation.createDefender(
-            {8, 3}, {0}, 1, {50, 0, 10, 20, 1, 0});
+            {13, 3}, {0}, 1, {50, 0, 50, 3, 1, 0});
+    }
+}
+
+void checkEnemyProgressEqual(
+    const tower_defense::TowerDefenseSimulation& left,
+    const tower_defense::TowerDefenseSimulation& right) {
+    const auto& leftEnemies = left.snapshot().enemies;
+    const auto& rightEnemies = right.snapshot().enemies;
+    check(leftEnemies.size() == rightEnemies.size());
+    for (std::size_t index = 0; index < leftEnemies.size(); ++index) {
+        const auto& a = leftEnemies[index];
+        const auto& b = rightEnemies[index];
+        check(a.entity == b.entity);
+        check(a.waveId == b.waveId);
+        check(a.laneId == b.laneId);
+        check(a.unitDefinitionId == b.unitDefinitionId);
+        check(a.waypointIndex == b.waypointIndex);
+        check(a.waypointCount == b.waypointCount);
+        check(a.alive == b.alive);
+
+        if (!a.alive) continue;
+        const auto* leftQueue =
+            left.rts().world().try_get<gameplay::OrderQueue>(a.entity);
+        const auto* rightQueue =
+            right.rts().world().try_get<gameplay::OrderQueue>(b.entity);
+        check(leftQueue != nullptr && rightQueue != nullptr);
+        check(leftQueue->pending.size() == rightQueue->pending.size());
+        for (std::size_t orderIndex = 0;
+             orderIndex < leftQueue->pending.size(); ++orderIndex) {
+            check(leftQueue->pending[orderIndex].type ==
+                  rightQueue->pending[orderIndex].type);
+            check(leftQueue->pending[orderIndex].target ==
+                  rightQueue->pending[orderIndex].target);
+        }
     }
 }
 
@@ -87,10 +121,20 @@ void testTowerDefenseRoundTrip() {
     check(original.snapshot().wave.phase ==
           tower_defense::WavePhase::Spawning);
     check(original.snapshot().wave.spawned == 2);
-    check(original.snapshot().wave.resolved == 2);
+    check(original.snapshot().wave.resolved == 0);
     check(original.director().plan().routes.size() == 1);
     check(original.director().plan().routes.front().nodeIds ==
           std::vector<tower_defense::LaneNodeId>({1, 2, 3}));
+    check(original.snapshot().enemies.size() == 2);
+    for (const auto& enemySnapshot : original.snapshot().enemies) {
+        check(enemySnapshot.alive);
+        check(enemySnapshot.waypointIndex == 1);
+        check(enemySnapshot.waypointCount == 3);
+        const auto* queue = original.rts().world().try_get<gameplay::OrderQueue>(
+            enemySnapshot.entity);
+        check(queue != nullptr);
+        check(queue->pending.size() == 2);
+    }
     const auto frozenRoutes = original.director().plan().routes;
 
     const auto bytes =
@@ -103,6 +147,7 @@ void testTowerDefenseRoundTrip() {
     check(restored.snapshot().worldHash == original.snapshot().worldHash);
     check(restored.commandStreamState().pending.size() == 1);
     check(restored.director().plan().routes == frozenRoutes);
+    checkEnemyProgressEqual(original, restored);
 
     for (std::uint64_t tick = 6; tick <= 52; ++tick) {
         check(original.step(tick));
@@ -110,6 +155,7 @@ void testTowerDefenseRoundTrip() {
         check(original.snapshot().worldHash == restored.snapshot().worldHash);
         check(original.snapshot().rtsWorldHash ==
               restored.snapshot().rtsWorldHash);
+        checkEnemyProgressEqual(original, restored);
     }
     check(original.snapshot().wave.phase ==
           tower_defense::WavePhase::Complete);
