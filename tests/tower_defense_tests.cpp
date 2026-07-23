@@ -21,6 +21,18 @@ bool hasEvent(const TowerDefenseSimulation& simulation,
         });
 }
 
+bool hasRejection(
+    const TowerDefenseSimulation& simulation,
+    WaveStartFailure failure) {
+    return std::any_of(
+        simulation.events().begin(),
+        simulation.events().end(),
+        [failure](const Event& event) {
+            return event.type == EventType::WaveRejected &&
+                   event.reason == static_cast<std::uint32_t>(failure);
+        });
+}
+
 std::uint32_t countEvents(
     const TowerDefenseSimulation& simulation,
     EventType type) {
@@ -278,12 +290,103 @@ void testBlockedLaneRejectsWave() {
            WavePhase::Idle);
 }
 
+void testGraphLaneRouteIsFrozenAtWaveStart() {
+    TowerDefenseSimulation simulation(12, 7, 0x51cedu);
+
+    gameplay::UnitDefinition enemy;
+    enemy.id = 40;
+    enemy.cellsPerTick = 1;
+    enemy.combat = {10, 0, 2, 1, 1, 0};
+    simulation.registerUnit(enemy);
+
+    assert(simulation.upsertLaneNode({10, {0, 2}}));
+    assert(simulation.upsertLaneNode({20, {4, 2}}));
+    assert(simulation.upsertLaneNode({30, {4, 4}}));
+    assert(simulation.upsertLaneNode({40, {10, 3}}));
+    assert(simulation.connectLaneNodes(10, 20, 1));
+    assert(simulation.connectLaneNodes(20, 40, 1));
+    assert(simulation.connectLaneNodes(10, 30, 3));
+    assert(simulation.connectLaneNodes(30, 40, 3));
+
+    SpawnLane lane;
+    lane.id = 4;
+    lane.weight = 1;
+    lane.startNodeId = 10;
+    lane.goalNodeId = 40;
+    assert(simulation.registerLane(lane));
+
+    WaveDefinition wave;
+    wave.id = 4;
+    wave.budget = 1;
+    wave.laneIds = {4};
+    wave.enemies = {{40, 1, 1, 1}};
+    wave.rewardChoices = 0;
+    assert(simulation.registerWave(wave));
+    simulation.createBaseCore(
+        {10, 3}, 1, {50, 0, 0, 0, 1, 0});
+
+    assert(simulation.submit(
+        {0, 1, 1, CommandType::StartWave, 4}));
+    assert(simulation.step(0));
+    assert(simulation.director().plan().routes.size() == 1);
+
+    const auto frozen = simulation.director().plan().routes.front();
+    const std::vector<gameplay::GridPoint> expected = {
+        {0, 2}, {4, 2}, {10, 3}
+    };
+    assert(frozen.id == 4);
+    assert(frozen.nodeIds == std::vector<LaneNodeId>({10, 20, 40}));
+    assert(frozen.points == expected);
+
+    assert(simulation.setLaneConnectionEnabled(20, 40, false));
+    const auto live = simulation.director().laneGraph().findRoute(10, 40);
+    assert(live.found);
+    assert(live.nodeIds == std::vector<LaneNodeId>({10, 30, 40}));
+    assert(simulation.director().plan().routes.front() == frozen);
+}
+
+void testDisconnectedGraphLaneRejectsWave() {
+    TowerDefenseSimulation simulation(8, 5, 0xdeadbeefu);
+
+    gameplay::UnitDefinition enemy;
+    enemy.id = 50;
+    enemy.cellsPerTick = 1;
+    enemy.combat = {10, 0, 2, 1, 1, 0};
+    simulation.registerUnit(enemy);
+
+    assert(simulation.upsertLaneNode({1, {0, 2}}));
+    assert(simulation.upsertLaneNode({2, {6, 2}}));
+    SpawnLane lane;
+    lane.id = 5;
+    lane.startNodeId = 1;
+    lane.goalNodeId = 2;
+    assert(simulation.registerLane(lane));
+
+    WaveDefinition wave;
+    wave.id = 5;
+    wave.budget = 1;
+    wave.laneIds = {5};
+    wave.enemies = {{50, 1, 1, 1}};
+    wave.rewardChoices = 0;
+    assert(simulation.registerWave(wave));
+    simulation.createBaseCore(
+        {6, 2}, 1, {20, 0, 0, 0, 1, 0});
+
+    assert(simulation.submit(
+        {0, 1, 1, CommandType::StartWave, 5}));
+    assert(simulation.step(0));
+    assert(hasRejection(simulation, WaveStartFailure::InvalidLaneRoute));
+    assert(simulation.snapshot().wave.phase == WavePhase::Idle);
+}
+
 } // namespace
 
 int main() {
     testDeterministicSuccessfulWave();
     testBaseCoreFailure();
     testBlockedLaneRejectsWave();
+    testGraphLaneRouteIsFrozenAtWaveStart();
+    testDisconnectedGraphLaneRejectsWave();
     std::cout << "tower defense tests passed\n";
     return 0;
 }
