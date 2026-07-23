@@ -23,7 +23,17 @@ void configureTower(
     enemy.combat = {15, 0, 1, 1, 1, 0};
     simulation.registerUnit(enemy);
 
-    assert(simulation.registerLane({1, {0, 3}, {14, 3}, 1}));
+    assert(simulation.upsertLaneNode({1, {0, 3}}));
+    assert(simulation.upsertLaneNode({2, {7, 2}}));
+    assert(simulation.upsertLaneNode({3, {14, 3}}));
+    assert(simulation.connectLaneNodes(1, 2, 2));
+    assert(simulation.connectLaneNodes(2, 3, 2));
+    tower_defense::SpawnLane lane;
+    lane.id = 1;
+    lane.weight = 1;
+    lane.startNodeId = 1;
+    lane.goalNodeId = 3;
+    assert(simulation.registerLane(lane));
     assert(simulation.registerReward({101, 1, 25}));
 
     tower_defense::WaveDefinition wave;
@@ -72,6 +82,10 @@ void testTowerDefenseRoundTrip() {
            tower_defense::WavePhase::Spawning);
     assert(original.snapshot().wave.spawned == 2);
     assert(original.snapshot().wave.resolved == 2);
+    assert(original.director().plan().routes.size() == 1);
+    assert(original.director().plan().routes.front().nodeIds ==
+           std::vector<tower_defense::LaneNodeId>({1, 2, 3}));
+    const auto frozenRoutes = original.director().plan().routes;
 
     const auto bytes =
         tower_defense::EncodeTowerDefenseSimulation(original);
@@ -82,6 +96,7 @@ void testTowerDefenseRoundTrip() {
     assert(tower_defense::DecodeTowerDefenseSimulation(bytes, restored));
     assert(restored.snapshot().worldHash == original.snapshot().worldHash);
     assert(restored.commandStreamState().pending.size() == 1);
+    assert(restored.director().plan().routes == frozenRoutes);
 
     for (std::uint64_t tick = 6; tick <= 52; ++tick) {
         assert(original.step(tick));
