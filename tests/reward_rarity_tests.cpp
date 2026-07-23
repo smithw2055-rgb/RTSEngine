@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -267,11 +268,20 @@ void testIntegratedPityRoundTrip() {
 
 } // namespace
 
-int main() {
-    testPlannerIsOrderIndependentAndBudgeted();
-    testPityRaisesTheEffectiveGuarantee();
-    testUnsatisfiedPoliciesAreExplicit();
-    testIntegratedPityRoundTrip();
-    std::cout << "reward rarity tests passed\n";
+int main(int argc, char** argv) {
+    const std::string_view mode = argc > 1 ? argv[1] : "all";
+    if (mode == "planner" || mode == "all") {
+        testPlannerIsOrderIndependentAndBudgeted();
+    }
+    if (mode == "pity" || mode == "all") {
+        testPityRaisesTheEffectiveGuarantee();
+    }
+    if (mode == "failures" || mode == "all") {
+        testUnsatisfiedPoliciesAreExplicit();
+    }
+    if (mode == "integration" || mode == "all") {
+        testIntegratedPityRoundTrip();
+    }
+    std::cout << "reward rarity " << mode << " tests passed\n";
     return 0;
 }
