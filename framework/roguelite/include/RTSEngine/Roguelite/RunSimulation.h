@@ -114,6 +114,14 @@ public:
         tower_.registerBuilding(std::move(definition));
     }
 
+    bool registerAffix(tower_defense::WaveAffixDefinition affix) {
+        return tower_.registerAffix(std::move(affix));
+    }
+
+    bool registerBoss(tower_defense::BossDefinition boss) {
+        return tower_.registerBoss(std::move(boss));
+    }
+
     bool registerLane(tower_defense::SpawnLane lane) {
         return tower_.registerLane(std::move(lane));
     }
@@ -238,8 +246,7 @@ private:
                 return current.id < key;
             });
         return iterator != values.end() && iterator->id == id
-            ? &*iterator
-            : nullptr;
+            ? &*iterator : nullptr;
     }
 
     void processCommand(std::uint64_t tick, const TickCommand& command) {
@@ -321,8 +328,7 @@ private:
 
         auto wave = *baseWave;
         auto rewardPool = wave.rewardPool.empty()
-            ? modifiers_.definitionIds()
-            : wave.rewardPool;
+            ? modifiers_.definitionIds() : wave.rewardPool;
         wave.rewardPool = modifiers_.eligible(std::move(rewardPool));
         wave.rewardChoices = static_cast<std::uint32_t>(
             std::min<std::size_t>(wave.rewardChoices, wave.rewardPool.size()));
