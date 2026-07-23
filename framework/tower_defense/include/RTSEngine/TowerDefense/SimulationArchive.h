@@ -17,7 +17,7 @@ namespace rts::tower_defense {
 class TowerDefenseSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31564454u; // "TDV1"
-    static constexpr std::uint16_t kVersion = 1u;
+    static constexpr std::uint16_t kVersion = 2u;
     static constexpr std::uint32_t kMaximumRtsBytes = 256u * 1024u * 1024u;
 
     static std::vector<std::uint8_t> encode(
@@ -27,7 +27,8 @@ public:
 
         const auto commandState = simulation.commands_.snapshot();
         if (commandState.pending.size() > sim::kMaximumArchiveEntries ||
-            simulation.trackedEnemies_.size() > sim::kMaximumArchiveEntries) {
+            simulation.trackedEnemies_.size() > sim::kMaximumArchiveEntries ||
+            !archiveableWavePlan(simulation.director_.plan())) {
             return {};
         }
 
@@ -162,6 +163,7 @@ public:
         }
 
         WaveDirector directorCandidate(rootSeed);
+        directorCandidate.replaceLaneGraph(simulation.director_.laneGraph());
         for (const auto& lane : simulation.laneDefinitions_) {
             if (!directorCandidate.registerLane(lane)) return false;
         }
@@ -257,6 +259,7 @@ public:
         const TowerDefenseSimulation& simulation) {
         foundation::CanonicalHash hash;
         hash.WriteU64(simulation.rootSeed_);
+        simulation.director_.laneGraph().appendHash(hash);
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.laneDefinitions_.size()));
         for (const auto& lane : simulation.laneDefinitions_) {
@@ -266,11 +269,31 @@ public:
             hash.WriteI32(lane.goal.x);
             hash.WriteI32(lane.goal.y);
             hash.WriteU32(lane.weight);
+            hash.WriteU32(lane.startNodeId);
+            hash.WriteU32(lane.goalNodeId);
         }
         return hash.Value();
     }
 
 private:
+    static bool archiveableWavePlan(const WavePlan& plan) noexcept {
+        if (plan.rewards.size() > sim::kMaximumArchiveEntries ||
+            plan.routes.size() > sim::kMaximumArchiveEntries ||
+            plan.spawns.size() > sim::kMaximumArchiveEntries) {
+            return false;
+        }
+        for (const auto& route : plan.routes) {
+            if (route.nodeIds.size() > sim::kMaximumArchiveEntries ||
+                route.points.empty() ||
+                route.points.size() > sim::kMaximumArchiveEntries ||
+                (!route.nodeIds.empty() &&
+                 route.nodeIds.size() != route.points.size())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     static void writeEntity(
         foundation::BinaryWriter& writer,
         ecs::Entity entity) {
@@ -400,6 +423,15 @@ private:
             writer.writeU32(reward.weight);
             writer.writeI32(reward.resourceGrant);
         }
+        writer.writeU32(static_cast<std::uint32_t>(value.routes.size()));
+        for (const auto& route : value.routes) {
+            writer.writeU32(route.id);
+            writer.writeU32(route.totalCost);
+            writer.writeU32(static_cast<std::uint32_t>(route.nodeIds.size()));
+            for (const auto nodeId : route.nodeIds) writer.writeU32(nodeId);
+            writer.writeU32(static_cast<std::uint32_t>(route.points.size()));
+            for (const auto point : route.points) writeGridPoint(writer, point);
+        }
         writer.writeU32(static_cast<std::uint32_t>(value.spawns.size()));
         for (const auto& spawn : value.spawns) {
             writer.writeU32(spawn.sequence);
@@ -433,6 +465,41 @@ private:
             }
             previousReward = reward.id;
         }
+
+        if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
+            return false;
+        }
+        value.routes.resize(count);
+        LaneId previousLane = 0;
+        for (auto& route : value.routes) {
+            std::uint32_t nodeCount = 0;
+            std::uint32_t pointCount = 0;
+            if (!reader.readU32(route.id) ||
+                !reader.readU32(route.totalCost) ||
+                route.id == 0 || route.id <= previousLane ||
+                !reader.readU32(nodeCount) ||
+                nodeCount > sim::kMaximumArchiveEntries) {
+                return false;
+            }
+            previousLane = route.id;
+            route.nodeIds.resize(nodeCount);
+            for (auto& nodeId : route.nodeIds) {
+                if (!reader.readU32(nodeId) || nodeId == 0) return false;
+            }
+            if (!reader.readU32(pointCount) || pointCount == 0 ||
+                pointCount > sim::kMaximumArchiveEntries) {
+                return false;
+            }
+            route.points.resize(pointCount);
+            for (auto& point : route.points) {
+                if (!readGridPoint(reader, point)) return false;
+            }
+            if (!route.nodeIds.empty() &&
+                route.nodeIds.size() != route.points.size()) {
+                return false;
+            }
+        }
+
         if (!reader.readU32(count) || count > sim::kMaximumArchiveEntries) {
             return false;
         }
@@ -449,6 +516,17 @@ private:
                 spawn.unitDefinitionId == 0 ||
                 (index > 0 &&
                  spawn.tickOffset <= value.spawns[index - 1].tickOffset)) {
+                return false;
+            }
+            const auto route = std::lower_bound(
+                value.routes.begin(), value.routes.end(), spawn.laneId,
+                [](const PlannedLaneRoute& current, LaneId id) {
+                    return current.id < id;
+                });
+            if (route == value.routes.end() || route->id != spawn.laneId ||
+                route->points.empty() ||
+                route->points.front() != spawn.spawn ||
+                route->points.back() != spawn.goal) {
                 return false;
             }
         }
@@ -525,7 +603,7 @@ private:
             a.unusedBudget != b.unusedBudget ||
             a.rewardChoices != b.rewardChoices ||
             a.rewards.size() != b.rewards.size() ||
-            a.spawns != b.spawns) {
+            a.routes != b.routes || a.spawns != b.spawns) {
             return false;
         }
         for (std::size_t index = 0; index < a.rewards.size(); ++index) {
@@ -558,8 +636,8 @@ private:
         const RewardOffer& offer) {
         if (state.phase == WavePhase::Idle) {
             return state.waveId == 0 && plan.waveId == 0 &&
-                   plan.spawns.empty() && offer.waveId == 0 &&
-                   offer.choices.empty() && !offer.chosen;
+                   plan.routes.empty() && plan.spawns.empty() &&
+                   offer.waveId == 0 && offer.choices.empty() && !offer.chosen;
         }
         if (state.waveId == 0 || plan.waveId != state.waveId ||
             state.nextSpawn > plan.spawns.size()) {
