@@ -10,3 +10,7 @@ target_link_libraries(rts_render INTERFACE
     RTSEngine::Platform
 )
 target_compile_features(rts_render INTERFACE cxx_std_17)
+
+if(RTSENGINE_ENABLE_SOKOL_RENDERER)
+    add_subdirectory(sokol)
+endif()
