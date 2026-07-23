@@ -133,6 +133,7 @@ public:
                     next.currentWave};
         }
         state_ = next;
+        lastFailure_ = WaveSequenceFailure::None;
         return {true, WaveSequenceFailure::None, id, next.currentWave};
     }
 
@@ -187,6 +188,7 @@ public:
         }
         if (rewardPending) {
             state_.phase = WaveSequencePhase::RewardPending;
+            lastFailure_ = WaveSequenceFailure::None;
             return {true, WaveSequenceFailure::None,
                     state_.sequenceId, id};
         }
@@ -217,7 +219,11 @@ public:
 
     bool restore(WaveSequenceState state,
                  WaveSequenceFailure failure = WaveSequenceFailure::None) {
-        if (!validState(state)) return false;
+        if (!validState(state) ||
+            ((state.phase == WaveSequencePhase::Failed) !=
+             (failure != WaveSequenceFailure::None))) {
+            return false;
+        }
         state_ = state;
         lastFailure_ = failure;
         return true;
