@@ -17,19 +17,25 @@ namespace rts::roguelite {
 class RunSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x314e5552u; // "RUN1"
+    // Version 1 layout is intentionally retained. RunState and the legacy
+    // next-wave Tick are projected to and from WaveSequenceDirector state.
     static constexpr std::uint16_t kVersion = 1u;
-    static constexpr std::uint32_t kMaximumTowerBytes = 384u * 1024u * 1024u;
+    static constexpr std::uint32_t kMaximumTowerBytes =
+        384u * 1024u * 1024u;
 
     static std::vector<std::uint8_t> encode(
         const RunSimulation& simulation) {
         const auto towerBytes =
             tower_defense::EncodeTowerDefenseSimulation(simulation.tower_);
         if (towerBytes.empty() || towerBytes.size() > kMaximumTowerBytes ||
-            simulation.modifiers_.stacks().size() > sim::kMaximumArchiveEntries) {
+            simulation.modifiers_.stacks().size() >
+                sim::kMaximumArchiveEntries) {
             return {};
         }
         const auto commandState = simulation.commands_.snapshot();
-        if (commandState.pending.size() > sim::kMaximumArchiveEntries) return {};
+        if (commandState.pending.size() > sim::kMaximumArchiveEntries) {
+            return {};
+        }
 
         foundation::BinaryWriter writer;
         writer.writeU32(kMagic);
@@ -57,7 +63,7 @@ public:
         writer.writeU32(simulation.state_.completedWaves);
         writer.writeU32(simulation.state_.currentWave);
         writer.writeU64(simulation.rootSeed_);
-        writer.writeU64(simulation.nextWaveTick_);
+        writer.writeU64(simulation.legacyNextWaveTick());
         writer.writeU64(simulation.lastTick_);
         writer.writeU32(simulation.nextInternalSequence_);
         writer.writeU32(simulation.playerTeamId_);
@@ -79,7 +85,8 @@ public:
         std::vector<std::uint8_t> towerBytes;
         if (!reader.readU32(magic) || !reader.readU16(version) ||
             !reader.readU64(storedContentHash) || magic != kMagic ||
-            version != kVersion || storedContentHash != contentHash(simulation) ||
+            version != kVersion ||
+            storedContentHash != contentHash(simulation) ||
             !reader.readU32(towerByteCount) ||
             towerByteCount > kMaximumTowerBytes ||
             !reader.readBytes(
@@ -162,17 +169,36 @@ public:
         }
         if (!restoreStacks(modifierCandidate, stacks)) return false;
 
+        tower_defense::WaveSequenceDirector sequenceCandidate;
+        for (const auto& run : simulation.runs_) {
+            if (!sequenceCandidate.registerSequence(
+                    RunSimulation::makeSequenceDefinition(run))) {
+                return false;
+            }
+        }
+        tower_defense::WaveSequenceState sequenceState;
+        tower_defense::WaveSequenceFailure sequenceFailure =
+            tower_defense::WaveSequenceFailure::None;
+        if (!legacySequenceState(
+                state, nextWaveTick, sequenceState, sequenceFailure) ||
+            !sequenceCandidate.restore(sequenceState, sequenceFailure) ||
+            !sameState(
+                RunSimulation::projectSequenceState(sequenceCandidate.state()),
+                state)) {
+            return false;
+        }
+
         const auto backupTower =
             tower_defense::EncodeTowerDefenseSimulation(simulation.tower_);
         if (backupTower.empty()) return false;
+        const auto backupSequenceDirector = simulation.sequence_;
         const auto backupModifiers = simulation.modifiers_;
         const auto backupCommands = simulation.commands_;
         const auto backupEvents = simulation.events_;
         const auto backupSnapshot = simulation.snapshot_;
         const auto backupState = simulation.state_;
-        const auto backupNextWaveTick = simulation.nextWaveTick_;
         const auto backupLastTick = simulation.lastTick_;
-        const auto backupSequence = simulation.nextInternalSequence_;
+        const auto backupInternalSequence = simulation.nextInternalSequence_;
         const auto backupPlayerTeam = simulation.playerTeamId_;
         const auto backupHasStepped = simulation.hasStepped_;
 
@@ -184,14 +210,14 @@ public:
         auto rollback = [&]() {
             (void)tower_defense::DecodeTowerDefenseSimulation(
                 backupTower, simulation.tower_);
+            simulation.sequence_ = backupSequenceDirector;
             simulation.modifiers_ = backupModifiers;
             simulation.commands_ = backupCommands;
             simulation.events_ = backupEvents;
             simulation.snapshot_ = backupSnapshot;
             simulation.state_ = backupState;
-            simulation.nextWaveTick_ = backupNextWaveTick;
             simulation.lastTick_ = backupLastTick;
-            simulation.nextInternalSequence_ = backupSequence;
+            simulation.nextInternalSequence_ = backupInternalSequence;
             simulation.playerTeamId_ = backupPlayerTeam;
             simulation.hasStepped_ = backupHasStepped;
         };
@@ -199,15 +225,21 @@ public:
         if ((hasStepped && simulation.tower_.lastTick() != lastTick) ||
             ResolveGameplayProfile(modifierCandidate) !=
                 simulation.tower_.rts().teamModifierProfile(playerTeamId) ||
-            !validateTowerAlignment(state, simulation.tower_.director())) {
+            !validateTowerAlignment(state, simulation.tower_.director()) ||
+            legacyNextWaveTick(sequenceCandidate, simulation.tower_) !=
+                nextWaveTick) {
             rollback();
             return false;
         }
 
+        simulation.sequence_ = std::move(sequenceCandidate);
         simulation.modifiers_ = std::move(modifierCandidate);
         simulation.commands_ = std::move(commandCandidate);
-        simulation.state_ = state;
-        simulation.nextWaveTick_ = nextWaveTick;
+        simulation.synchronizeRunState();
+        if (!sameState(simulation.state_, state)) {
+            rollback();
+            return false;
+        }
         simulation.lastTick_ = lastTick;
         simulation.nextInternalSequence_ = nextInternalSequence;
         simulation.playerTeamId_ = playerTeamId;
@@ -224,6 +256,13 @@ public:
     }
 
 private:
+    static bool sameState(const RunState& a, const RunState& b) noexcept {
+        return a.runId == b.runId && a.phase == b.phase &&
+               a.waveIndex == b.waveIndex &&
+               a.completedWaves == b.completedWaves &&
+               a.currentWave == b.currentWave;
+    }
+
     static void writeCommand(
         foundation::BinaryWriter& writer,
         const TickCommand& command) {
@@ -286,29 +325,112 @@ private:
         std::uint64_t nextWaveTick) {
         if (state.phase == RunPhase::Idle) {
             return state.runId == 0 && state.waveIndex == 0 &&
-                   state.completedWaves == 0 && state.currentWave == 0;
+                   state.completedWaves == 0 && state.currentWave == 0 &&
+                   nextWaveTick == 0;
         }
-        const auto* run = RunSimulation::findById(simulation.runs_, state.runId);
+        const auto* run = RunSimulation::findById(
+            simulation.runs_, state.runId);
         if (!run || state.completedWaves != state.waveIndex ||
             state.waveIndex > run->waves.size()) {
             return false;
         }
         if (state.phase == RunPhase::Complete) {
             return state.waveIndex == run->waves.size() &&
-                   state.currentWave == 0;
+                   state.currentWave == 0 &&
+                   nextWaveTick ==
+                       tower_defense::WaveSequenceDirector::noScheduledTick();
         }
         if (state.waveIndex >= run->waves.size() ||
             state.currentWave != run->waves[state.waveIndex]) {
             return false;
         }
         if (state.phase == RunPhase::BetweenWaves) {
-            return nextWaveTick != std::numeric_limits<std::uint64_t>::max();
+            return nextWaveTick !=
+                tower_defense::WaveSequenceDirector::noScheduledTick();
         }
         if (state.phase == RunPhase::WaveActive ||
             state.phase == RunPhase::RewardPending) {
-            return nextWaveTick == std::numeric_limits<std::uint64_t>::max();
+            return nextWaveTick ==
+                tower_defense::WaveSequenceDirector::noScheduledTick();
         }
         return true;
+    }
+
+    static bool legacySequenceState(
+        const RunState& legacy,
+        std::uint64_t nextWaveTick,
+        tower_defense::WaveSequenceState& state,
+        tower_defense::WaveSequenceFailure& failure) noexcept {
+        state = {};
+        failure = tower_defense::WaveSequenceFailure::None;
+        if (legacy.phase == RunPhase::Idle) return nextWaveTick == 0;
+
+        state.sequenceId = legacy.runId;
+        state.waveIndex = legacy.waveIndex;
+        state.completedWaves = legacy.completedWaves;
+        state.currentWave = legacy.currentWave;
+        const auto noTick =
+            tower_defense::WaveSequenceDirector::noScheduledTick();
+        switch (legacy.phase) {
+        case RunPhase::Idle:
+            return false;
+        case RunPhase::BetweenWaves:
+            if (nextWaveTick == noTick) return false;
+            state.phase = tower_defense::WaveSequencePhase::Preparing;
+            state.scheduledStartTick = nextWaveTick;
+            state.preparationStartedTick = legacy.waveIndex == 0
+                ? nextWaveTick
+                : (nextWaveTick == 0 ? 0 : nextWaveTick - 1u);
+            break;
+        case RunPhase::WaveActive:
+            state.phase = tower_defense::WaveSequencePhase::WaveActive;
+            state.scheduledStartTick = noTick;
+            break;
+        case RunPhase::RewardPending:
+            state.phase = tower_defense::WaveSequencePhase::RewardPending;
+            state.scheduledStartTick = noTick;
+            break;
+        case RunPhase::Complete:
+            state.phase = tower_defense::WaveSequencePhase::Complete;
+            state.scheduledStartTick = noTick;
+            break;
+        case RunPhase::Failed:
+            state.phase = tower_defense::WaveSequencePhase::Failed;
+            state.scheduledStartTick = noTick;
+            state.preparationStartedTick = nextWaveTick == noTick
+                ? noTick
+                : (legacy.waveIndex == 0
+                       ? nextWaveTick
+                       : (nextWaveTick == 0 ? 0 : nextWaveTick - 1u));
+            failure = tower_defense::WaveSequenceFailure::WaveRejected;
+            break;
+        }
+        return true;
+    }
+
+    static std::uint64_t legacyNextWaveTick(
+        const tower_defense::WaveSequenceDirector& sequence,
+        const tower_defense::TowerDefenseSimulation& tower) noexcept {
+        const auto& value = sequence.state();
+        const auto noTick =
+            tower_defense::WaveSequenceDirector::noScheduledTick();
+        switch (value.phase) {
+        case tower_defense::WaveSequencePhase::Idle:
+            return 0;
+        case tower_defense::WaveSequencePhase::Preparing:
+            return value.scheduledStartTick;
+        case tower_defense::WaveSequencePhase::Failed:
+            if (tower.director().state().phase ==
+                    tower_defense::WavePhase::Failed ||
+                value.preparationStartedTick == noTick) {
+                return noTick;
+            }
+            return value.waveIndex == 0
+                ? value.preparationStartedTick
+                : value.preparationStartedTick + 1u;
+        default:
+            return noTick;
+        }
     }
 
     static bool validateTowerAlignment(
@@ -405,7 +527,9 @@ private:
             for (const auto wave : run.waves) hash.WriteU32(wave);
         }
         hash.WriteU32(static_cast<std::uint32_t>(simulation.waves_.size()));
-        for (const auto& wave : simulation.waves_) hashWaveDefinition(hash, wave);
+        for (const auto& wave : simulation.waves_) {
+            hashWaveDefinition(hash, wave);
+        }
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.modifiers_.definitions().size()));
         for (const auto& definition : simulation.modifiers_.definitions()) {
