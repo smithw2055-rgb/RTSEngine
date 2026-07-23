@@ -306,7 +306,7 @@ private:
         }
     }
 
-    auto lowerAnimation(ViewId viewId) {
+    std::vector<AnimationState>::iterator lowerAnimation(ViewId viewId) {
         return std::lower_bound(
             animations_.begin(), animations_.end(), viewId,
             [](const AnimationState& value, ViewId lookup) {
