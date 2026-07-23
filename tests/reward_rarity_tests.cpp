@@ -140,7 +140,7 @@ void configureRarityRun(
     run.id = 7;
     run.waves = {1, 2};
     run.rewardRules = {
-        {2, roguelite::RewardRarity::Common, 1,
+        {4, roguelite::RewardRarity::Common, 1,
          roguelite::RewardRarity::Rare},
         {secondBudget, roguelite::RewardRarity::Common, 1,
          roguelite::RewardRarity::Rare}
@@ -185,7 +185,7 @@ void checkPityHistory(const roguelite::RunSimulation& simulation) {
     const auto& history = simulation.history();
     check(history.waves.size() == 2);
     const auto& first = history.waves[0];
-    check(first.rewardRarityBudget == 2);
+    check(first.rewardRarityBudget == 4);
     check(first.rewardRaritySpent == 2);
     check(first.guaranteedRarity == roguelite::RewardRarity::Common);
     check(first.effectiveGuaranteedRarity ==
