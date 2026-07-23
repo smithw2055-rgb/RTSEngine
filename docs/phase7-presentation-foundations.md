@@ -1,6 +1,6 @@
-# Phase 7 Presentation Foundations
+# Phase 7 Presentation and GPU Runtime
 
-This slice establishes the first three Phase 7 deliverables without introducing a concrete graphics backend.
+This phase connects the deterministic simulation to replaceable presentation backends without allowing frame timing, GPU resources, animation or audio to enter authoritative state.
 
 ## Module boundaries
 
@@ -8,113 +8,163 @@ This slice establishes the first three Phase 7 deliverables without introducing 
 engine/platform
     engine-owned window, event and presentation-clock contracts
 
+engine/assets
+    VFS, versioned cooked content, dependency loading, CPU budgets and hot reload
+
+engine/audio
+    backend-neutral playback commands and NullAudioDevice
+
 engine/render
-    backend-neutral device/resource/draw contracts
+    backend-neutral device/resource/upload/draw contracts
     NullRenderDevice for CI and validation
+    optional RenderSokol implementation
 
 engine/presentation
-    immutable PresentationScene
-    double-buffered snapshot interpolation
-    backend-neutral RenderPacket
+    immutable PresentationScene and interpolation
+    stable audiovisual event consumption
+    logical-to-GPU presentation asset cache
+    fixed 2D pass and sprite batch runtime
 
 framework/rts_presentation
     WorldSnapshot -> PresentationScene adapter
+    RTS DomainEvent -> stable PresentationEvent adapter
     composed RtsPresentationRuntime
 ```
 
-The authoritative RTS, tower-defense and roguelite targets do not depend on any of these targets. The bridge target depends on both `RTSEngine::Rts` and `RTSEngine::Presentation`, so the core simulation framework remains independently buildable.
+The authoritative RTS, tower-defense and roguelite targets do not depend on platform, assets, audio, render or presentation. GPU handles and presentation wall-clock time are therefore excluded from commands, saves, snapshots and world hashes.
 
-## PresentationScene
+## PresentationScene and interpolation
 
-`PresentationScene` is a value-only contract containing:
+`PresentationScene` is a value-only contract containing source tick/hash, stable view IDs, logical sprite and animation IDs, positions, team data, health, construction progress and visibility masks. It never contains mutable ECS references or GPU resources.
 
-- source simulation tick and world hash
-- stable 64-bit view IDs derived from generational entity IDs
-- logical sprite and animation asset IDs
-- render layer and stable sort bias
-- position, team, health and construction progress
-- observed-team visibility and exploration masks
+`PresentationSceneBuffer` retains previous/current canonical scenes and produces explicit `Stable`, `Spawned` and `Despawned` views. Stable positions interpolate, spawned/despawned views fade, and movement above the configured teleport distance snaps instead of crossing the map visually.
 
-It never contains ECS component pointers, mutable world references, platform handles or GPU handles.
+## RenderDevice and backends
 
-`RtsPresentationExtractor` maps `gameplay::WorldSnapshot` into a canonical scene sorted by `ViewId`. Enemy visibility is filtered using the observed team's current visibility mask.
+`RenderDevice` owns generational buffer, texture and pipeline handles. The public contract now includes:
 
-## Interpolation
+- dynamic buffer and texture upload
+- explicit vertex layouts and index types
+- fixed render-pass classification
+- blend, filter and address modes
+- frame clear state and ordered draw submission
+- device generation reset
 
-`PresentationSceneBuffer` retains the previous and current immutable scenes and rejects non-canonical or non-increasing publications.
+`NullRenderDevice` stores uploaded bytes, validates descriptors, buffer ranges and resource generations, records submitted frames, and sorts recorded commands by fixed pass and sort key.
 
-Sampling produces an `InterpolatedScene` with explicit lifecycle states:
+### Optional Sokol backend
 
-- `Stable`: entity exists in both snapshots
-- `Spawned`: entity only exists in the current snapshot
-- `Despawned`: entity only exists in the previous snapshot
+`RTSEngine::RenderSokol` is built only when explicitly enabled:
 
-Stable entities interpolate position. Spawned and despawned entities receive alpha-based opacity. Movement above the configured teleport distance snaps to the current position instead of crossing the map visually.
+```bash
+cmake -S . -B build \
+  -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+  -DRTSENGINE_SOKOL_INCLUDE_DIR=/path/to/sokol
+```
 
-Interpolation uses presentation frame time only. It cannot mutate simulation state or alter the source world hash.
+The application supplies callbacks for `sg_environment`, the `sg_swapchain` associated with an engine `WindowHandle`, and shader descriptors generated for known engine `ShaderKey` values. Sokol types remain confined to the optional backend target; no Sokol handle crosses the engine render interface.
 
-## RenderPacket
+The default CI matrix intentionally builds the backend-neutral and Null implementations without downloading a graphics dependency.
 
-`RenderPacketBuilder` converts an interpolated scene into logical draw data:
+## Fixed 2D passes and sprite batching
 
-- sprite instances sorted by render layer, world Y, sort bias and ViewId
-- health bars
-- construction progress bars
-- visibility masks for the future fog pass
+The initial pass order is fixed:
 
-Packets still contain logical asset IDs rather than device textures or pipelines. A future renderer resolves those IDs through device-owned resource caches.
+```text
+Terrain
+WorldShadow
+WorldEntity
+ProjectileAndEffect
+FogOfWar
+SelectionAndDecal
+WorldUi
+ScreenUi
+Debug
+```
 
-## Platform abstraction
+`SpriteBatchCompiler` resolves logical sprite IDs, converts world-space quads to camera-relative NDC vertices, creates indexed quads, emits health/construction bars, and combines adjacent sprites sharing pass, blend mode and texture.
 
-`Platform` defines engine-owned contracts for:
+`Fixed2DRenderer` uploads one vertex stream and one index stream per frame, then submits backend-neutral `DrawCommand` batches through the render device. It maintains four sprite pipelines for opaque, alpha, additive and multiply blending, rebuilds resources after device-generation changes, and reports draw/quad/upload statistics.
 
-- window creation and destruction
-- logical and framebuffer sizes
-- DPI scale
-- focus, resize and quit events
-- presentation-only monotonic time
+## Presentation asset cache
 
-`NullPlatform` provides generational window handles, queued synthetic events and a manually advanced clock for CI. The monotonic clock is explicitly forbidden in authoritative simulation.
+`PresentationAssetCache` is the only bridge from logical assets to GPU textures:
 
-## RenderDevice and NullRenderDevice
+```text
+Logical Sprite ID
+    -> Cooked Sprite
+    -> Cooked Texture dependency
+    -> RenderDevice TextureHandle
+```
 
-`RenderDevice` defines engine-owned generational handles for buffers, textures and pipelines, plus frame and draw submission contracts.
+The cache tracks both AssetManager generation and RenderDevice generation. Content hot reload rebuilds only the affected texture; device reset invalidates handles and lazily recreates them. Logical cooked assets never store device handles.
 
-`NullRenderDevice`:
+## Stable animation, effect and audio events
 
-- validates descriptors and draw handles
-- records completed frames
-- invalidates stale handles after destruction
-- invalidates every handle on device reset
-- increments the device generation on reset
-- requires no graphics API or native window handle
+Authoritative domain events are converted into `PresentationEvent` values with stable IDs derived from domain, tick, event ordinal and payload. A bounded consumer remembers processed IDs so replaying the same event does not duplicate audiovisual output.
 
-No Sokol, Direct3D, OpenGL or other backend object appears in the public contracts.
+Bindings can map an event to:
+
+- an entity animation clip
+- a world effect
+- an audio clip
+
+`PresentationPlaybackRuntime` samples cooked animation frames, inserts effect sprites into the projectile/effect pass, applies additive blending when requested, expires effects by presentation time, and submits audio commands to an `AudioDevice`. None of these operations can produce damage, resources, spawning or other authoritative changes.
+
+`NullAudioDevice` records validated playback commands and provides generational voice handles for cross-platform tests.
+
+## VFS, AssetManager and cooked content
+
+The asset runtime uses canonical `(AssetType, id)` keys and path-normalized virtual filesystems:
+
+- `MemoryVfs` for tests and generated content
+- `MountedVfs` for layered roots such as base content and DLC
+- `DirectoryVfs` for guarded filesystem roots
+
+The `RTA1` cooked container stores its asset key, schema version, canonical dependency list, payload hash and payload bytes. Initial typed payload schemas cover textures, sprites, animation clips, effects and PCM audio.
+
+`AssetManager` provides:
+
+- request handles, cancellation and bounded processing
+- recursive dependency loading and cycle detection
+- key, schema and payload-hash validation
+- retain/release and dependency pinning
+- deterministic least-recently-used CPU-budget eviction
+- transactional hot reload with generation increments
+- runtime statistics
+
+The API is synchronous at the execution point today, but requests and `process(maximumRequests)` establish the cancellation and scheduling boundary needed for a future worker-backed decoder. Worker completion timing must not change publication order.
 
 ## Current application flow
 
 ```cpp
-rts::rts_presentation::RtsPresentationRuntime runtime;
-runtime.registerVisual(binding);
+rts::rts_presentation::RtsPresentationRuntime scenes;
+rts::presentation::PresentationPlaybackRuntime playback(assets, audio);
+rts::presentation::PresentationAssetCache assetCache(assets, renderDevice);
+rts::presentation::Fixed2DRenderer renderer(renderDevice, assetCache);
 
-runtime.publishSnapshot(simulation.snapshot());
-auto packet = runtime.buildRenderPacket(interpolationAlpha);
+scenes.publishSnapshot(simulation.snapshot(), simulation.events());
+auto cues = scenes.consumeCues();
+playback.consume(cues, presentationMilliseconds);
+
+auto packet = scenes.buildRenderPacket(interpolationAlpha);
+playback.apply(packet, presentationMilliseconds);
+renderer.render(frameDescription, packet, camera);
 ```
-
-A later desktop application will translate `RenderPacket` into `RenderDevice` draw commands. That translation is intentionally outside this slice.
 
 ## Tests
 
-The slice includes dedicated cross-platform tests for:
+Dedicated cross-platform tests cover:
 
-- RTS snapshot extraction and fog visibility filtering
-- canonical entity ordering and logical asset binding
-- double-buffer publication and stale snapshot rejection
-- stable, spawned, despawned and teleported views
-- render packet sorting and world UI extraction
-- null platform events, DPI and window generations
-- null render resource generations, frame validation and device reset
+- path traversal rejection, VFS mounts and cooked container validation
+- recursive dependency loading, cancellation and dependency cycles
+- deterministic budget eviction and transactional hot reload
+- cooked sprite upload, texture rebuild and device reset
+- fixed pass ordering, adjacent sprite batching and world UI batches
+- stable event IDs, exact/wildcard bindings and replay deduplication
+- animation frame sampling, additive effects, expiry and NullAudio playback
+- all earlier scene extraction, fog, interpolation and platform/render contracts
 
-## Next Phase 7 boundary
+## Remaining Phase 7 work
 
-The next slice can implement the fixed 2D pass executor and sprite batch compiler that translate `RenderPacket` into backend-neutral `DrawCommand` groups. A Sokol device implementation should follow only after that command boundary is stable.
+The main remaining deliverable is font and UI foundations, followed by a desktop application composition that supplies a native platform backend, a Sokol swapchain and cooked content files. Asset conversion tooling and generalized development hot reload remain Phase 8 concerns.
