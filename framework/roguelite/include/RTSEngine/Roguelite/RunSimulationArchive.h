@@ -17,7 +17,7 @@ namespace rts::roguelite {
 class RunSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x314e5552u; // "RUN1"
-    static constexpr std::uint16_t kVersion = 2u;
+    static constexpr std::uint16_t kVersion = 3u;
     static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumTowerBytes =
         384u * 1024u * 1024u;
@@ -40,7 +40,7 @@ public:
         foundation::BinaryWriter writer;
         writer.writeU32(kMagic);
         writer.writeU16(kVersion);
-        writer.writeU64(contentHash(simulation));
+        writer.writeU64(contentHash(simulation, kVersion));
         writer.writeU32(static_cast<std::uint32_t>(towerBytes.size()));
         writer.writeBytes(towerBytes);
 
@@ -68,16 +68,14 @@ public:
         writer.writeU32(simulation.nextInternalSequence_);
         writer.writeU32(simulation.playerTeamId_);
         writer.writeBool(simulation.hasStepped_);
-        writeHistory(writer, simulation.history_);
+        writeHistory(writer, simulation.history_, kVersion);
         writer.writeU64(simulation.hasStepped_
-            ? simulation.snapshot_.worldHash
-            : 0u);
+            ? simulation.snapshot_.worldHash : 0u);
         return writer.take();
     }
 
-    static bool decode(
-        const std::vector<std::uint8_t>& bytes,
-        RunSimulation& simulation) {
+    static bool decode(const std::vector<std::uint8_t>& bytes,
+                       RunSimulation& simulation) {
         foundation::BinaryReader reader(bytes);
         std::uint32_t magic = 0;
         std::uint16_t version = 0;
@@ -87,7 +85,8 @@ public:
         if (!reader.readU32(magic) || !reader.readU16(version) ||
             !reader.readU64(storedContentHash) || magic != kMagic ||
             version < kMinimumVersion || version > kVersion ||
-            storedContentHash != contentHash(simulation) ||
+            (version < 3u && !legacyRarityCompatible(simulation)) ||
+            storedContentHash != contentHash(simulation, version) ||
             !reader.readU32(towerByteCount) ||
             towerByteCount > kMaximumTowerBytes ||
             !reader.readBytes(
@@ -152,7 +151,8 @@ public:
         state.phase = static_cast<RunPhase>(phase);
 
         RunHistory historyCandidate;
-        if (version >= 2u && !readHistory(reader, historyCandidate)) {
+        if (version >= 2u &&
+            !readHistory(reader, historyCandidate, version)) {
             return false;
         }
         std::uint64_t storedWorldHash = 0;
@@ -205,6 +205,7 @@ public:
         const auto backupState = simulation.state_;
         const auto backupHistory = simulation.history_;
         const auto backupPendingWave = simulation.pendingWave_;
+        const auto backupPendingReward = simulation.pendingRewardOffer_;
         const auto backupLastTick = simulation.lastTick_;
         const auto backupInternalSequence = simulation.nextInternalSequence_;
         const auto backupPlayerTeam = simulation.playerTeamId_;
@@ -226,6 +227,7 @@ public:
             simulation.state_ = backupState;
             simulation.history_ = backupHistory;
             simulation.pendingWave_ = backupPendingWave;
+            simulation.pendingRewardOffer_ = backupPendingReward;
             simulation.lastTick_ = backupLastTick;
             simulation.nextInternalSequence_ = backupInternalSequence;
             simulation.playerTeamId_ = backupPlayerTeam;
@@ -247,7 +249,8 @@ public:
                 state, lastTick, simulation.tower_);
         }
         if (!validateHistory(
-                historyCandidate, state, simulation, simulation.tower_)) {
+                historyCandidate, state, simulation,
+                simulation.tower_, version)) {
             rollback();
             return false;
         }
@@ -257,6 +260,7 @@ public:
         simulation.commands_ = std::move(commandCandidate);
         simulation.history_ = std::move(historyCandidate);
         simulation.pendingWave_ = {};
+        simulation.pendingRewardOffer_ = {};
         simulation.synchronizeRunState();
         if (!sameState(simulation.state_, state)) {
             rollback();
@@ -268,13 +272,17 @@ public:
         simulation.hasStepped_ = hasStepped;
         simulation.events_.clear();
         simulation.snapshot_ = {};
+
         if (hasStepped) {
-            simulation.buildSnapshot(lastTick, version >= 2u);
+            simulation.buildSnapshot(lastTick, version);
             if (simulation.snapshot_.worldHash != storedWorldHash) {
                 rollback();
                 return false;
             }
-            if (version == 1u) simulation.buildSnapshot(lastTick, true);
+            if (version < 3u) {
+                migrateRarityHistory(simulation.history_, simulation.modifiers_);
+                simulation.buildSnapshot(lastTick, kVersion);
+            }
         } else if (simulation.snapshot_.worldHash != 0) {
             rollback();
             return false;
@@ -319,7 +327,8 @@ private:
         for (const auto& wave : history.waves) {
             if (wave.affixes.size() > sim::kMaximumArchiveEntries ||
                 wave.bosses.size() > sim::kMaximumArchiveEntries ||
-                wave.rewardChoices.size() > sim::kMaximumArchiveEntries) {
+                wave.rewardChoices.size() > sim::kMaximumArchiveEntries ||
+                wave.rewardRarities.size() > sim::kMaximumArchiveEntries) {
                 return false;
             }
         }
@@ -327,12 +336,14 @@ private:
     }
 
     static void writeHistory(foundation::BinaryWriter& writer,
-                             const RunHistory& history) {
+                             const RunHistory& history,
+                             std::uint16_t version) {
         writer.writeU32(history.runId);
         writer.writeU64(history.startedTick);
         writer.writeU64(history.finishedTick);
         writer.writeU8(static_cast<std::uint8_t>(history.phase));
         writer.writeBool(history.legacyImported);
+        if (version >= 3u) writer.writeU32(history.rewardPityMisses);
         writer.writeU32(static_cast<std::uint32_t>(history.waves.size()));
         for (const auto& wave : history.waves) {
             writer.writeU32(wave.waveId);
@@ -360,11 +371,28 @@ private:
             for (const auto id : wave.rewardChoices) writer.writeU32(id);
             writer.writeU32(wave.selectedModifier);
             writer.writeBool(wave.modifierApplied);
+            if (version >= 3u) {
+                writer.writeU32(wave.rewardRarityBudget);
+                writer.writeU32(wave.rewardRaritySpent);
+                writer.writeU8(static_cast<std::uint8_t>(
+                    wave.guaranteedRarity));
+                writer.writeU8(static_cast<std::uint8_t>(
+                    wave.effectiveGuaranteedRarity));
+                writer.writeU32(wave.pityBefore);
+                writer.writeU32(wave.pityAfter);
+                writer.writeBool(wave.pityTriggered);
+                writer.writeU32(static_cast<std::uint32_t>(
+                    wave.rewardRarities.size()));
+                for (const auto rarity : wave.rewardRarities) {
+                    writer.writeU8(static_cast<std::uint8_t>(rarity));
+                }
+            }
         }
     }
 
     static bool readHistory(foundation::BinaryReader& reader,
-                            RunHistory& history) {
+                            RunHistory& history,
+                            std::uint16_t version) {
         std::uint8_t phase = 0;
         std::uint32_t waveCount = 0;
         if (!reader.readU32(history.runId) ||
@@ -373,6 +401,8 @@ private:
             !reader.readU8(phase) ||
             phase > static_cast<std::uint8_t>(RunHistoryPhase::Failed) ||
             !reader.readBool(history.legacyImported) ||
+            (version >= 3u &&
+             !reader.readU32(history.rewardPityMisses)) ||
             !reader.readU32(waveCount) ||
             waveCount > sim::kMaximumArchiveEntries) {
             return false;
@@ -403,28 +433,61 @@ private:
                 return false;
             }
             wave.phase = static_cast<WaveResultPhase>(wavePhase);
-            if (!reader.readU32(count) ||
-                count > sim::kMaximumArchiveEntries) return false;
-            wave.affixes.resize(count);
-            for (auto& id : wave.affixes) {
-                if (!reader.readU32(id) || id == 0) return false;
-            }
-            if (!reader.readU32(count) ||
-                count > sim::kMaximumArchiveEntries) return false;
-            wave.bosses.resize(count);
-            for (auto& id : wave.bosses) {
-                if (!reader.readU32(id) || id == 0) return false;
-            }
-            if (!reader.readU32(count) ||
-                count > sim::kMaximumArchiveEntries) return false;
-            wave.rewardChoices.resize(count);
-            for (auto& id : wave.rewardChoices) {
-                if (!reader.readU32(id) || id == 0) return false;
-            }
-            if (!reader.readU32(wave.selectedModifier) ||
+            if (!readIds(reader, wave.affixes) ||
+                !readIds(reader, wave.bosses) ||
+                !readIds(reader, wave.rewardChoices) ||
+                !reader.readU32(wave.selectedModifier) ||
                 !reader.readBool(wave.modifierApplied)) {
                 return false;
             }
+            if (version >= 3u) {
+                std::uint8_t guaranteed = 0;
+                std::uint8_t effective = 0;
+                if (!reader.readU32(wave.rewardRarityBudget) ||
+                    !reader.readU32(wave.rewardRaritySpent) ||
+                    !reader.readU8(guaranteed) ||
+                    guaranteed > static_cast<std::uint8_t>(
+                        RewardRarity::Legendary) ||
+                    !reader.readU8(effective) ||
+                    effective > static_cast<std::uint8_t>(
+                        RewardRarity::Legendary) ||
+                    !reader.readU32(wave.pityBefore) ||
+                    !reader.readU32(wave.pityAfter) ||
+                    !reader.readBool(wave.pityTriggered) ||
+                    !reader.readU32(count) ||
+                    count > sim::kMaximumArchiveEntries) {
+                    return false;
+                }
+                wave.guaranteedRarity =
+                    static_cast<RewardRarity>(guaranteed);
+                wave.effectiveGuaranteedRarity =
+                    static_cast<RewardRarity>(effective);
+                wave.rewardRarities.resize(count);
+                for (auto& rarity : wave.rewardRarities) {
+                    std::uint8_t raw = 0;
+                    if (!reader.readU8(raw) ||
+                        raw > static_cast<std::uint8_t>(
+                            RewardRarity::Legendary)) {
+                        return false;
+                    }
+                    rarity = static_cast<RewardRarity>(raw);
+                }
+            }
+        }
+        return true;
+    }
+
+    template<class T>
+    static bool readIds(foundation::BinaryReader& reader,
+                        std::vector<T>& values) {
+        std::uint32_t count = 0;
+        if (!reader.readU32(count) ||
+            count > sim::kMaximumArchiveEntries) return false;
+        values.resize(count);
+        for (auto& id : values) {
+            std::uint32_t raw = 0;
+            if (!reader.readU32(raw) || raw == 0) return false;
+            id = static_cast<T>(raw);
         }
         return true;
     }
@@ -440,7 +503,6 @@ private:
             }
             remaining += stack.stacks;
         }
-
         while (remaining > 0) {
             bool progressed = false;
             for (std::size_t index = 0; index < stacks.size(); ++index) {
@@ -469,9 +531,7 @@ private:
         const auto* run = RunSimulation::findById(
             simulation.runs_, state.runId);
         if (!run || state.completedWaves != state.waveIndex ||
-            state.waveIndex > run->waves.size()) {
-            return false;
-        }
+            state.waveIndex > run->waves.size()) return false;
         if (state.phase == RunPhase::Complete) {
             return state.waveIndex == run->waves.size() &&
                    state.currentWave == 0 &&
@@ -479,9 +539,7 @@ private:
                        tower_defense::WaveSequenceDirector::noScheduledTick();
         }
         if (state.waveIndex >= run->waves.size() ||
-            state.currentWave != run->waves[state.waveIndex]) {
-            return false;
-        }
+            state.currentWave != run->waves[state.waveIndex]) return false;
         if (state.phase == RunPhase::BetweenWaves) {
             return nextWaveTick !=
                 tower_defense::WaveSequenceDirector::noScheduledTick();
@@ -502,7 +560,6 @@ private:
         state = {};
         failure = tower_defense::WaveSequenceFailure::None;
         if (legacy.phase == RunPhase::Idle) return nextWaveTick == 0;
-
         state.sequenceId = legacy.runId;
         state.waveIndex = legacy.waveIndex;
         state.completedWaves = legacy.completedWaves;
@@ -560,9 +617,7 @@ private:
         case tower_defense::WaveSequencePhase::Failed:
             if (tower.director().state().phase ==
                     tower_defense::WavePhase::Failed ||
-                value.preparationStartedTick == noTick) {
-                return noTick;
-            }
+                value.preparationStartedTick == noTick) return noTick;
             return value.waveIndex == 0
                 ? value.preparationStartedTick
                 : value.preparationStartedTick + 1u;
@@ -614,12 +669,9 @@ private:
         if (history.phase != RunHistoryPhase::Active) {
             history.finishedTick = lastTick;
         }
-
         if (state.phase != RunPhase::WaveActive &&
             state.phase != RunPhase::RewardPending &&
-            state.phase != RunPhase::Failed) {
-            return history;
-        }
+            state.phase != RunPhase::Failed) return history;
         const auto& plan = tower.director().plan();
         if (state.currentWave == 0 || plan.waveId != state.currentWave) {
             return history;
@@ -662,17 +714,40 @@ private:
         return history;
     }
 
+    static void migrateRarityHistory(
+        RunHistory& history,
+        const ModifierRuntime& modifiers) {
+        history.legacyImported = true;
+        history.rewardPityMisses = 0;
+        for (auto& wave : history.waves) {
+            wave.rewardRarityBudget = 0;
+            wave.rewardRaritySpent = 0;
+            wave.guaranteedRarity = RewardRarity::Common;
+            wave.effectiveGuaranteedRarity = RewardRarity::Common;
+            wave.pityBefore = 0;
+            wave.pityAfter = 0;
+            wave.pityTriggered = false;
+            wave.rewardRarities.clear();
+            for (const auto id : wave.rewardChoices) {
+                const auto* definition = modifiers.definition(id);
+                wave.rewardRarities.push_back(
+                    definition ? definition->rarity : RewardRarity::Common);
+            }
+        }
+    }
+
     static bool validateHistory(
         const RunHistory& history,
         const RunState& state,
         const RunSimulation& simulation,
-        const tower_defense::TowerDefenseSimulation& tower) {
+        const tower_defense::TowerDefenseSimulation& tower,
+        std::uint16_t version) {
         if (!archiveableHistory(history)) return false;
         if (state.phase == RunPhase::Idle) {
             return history.runId == 0 && history.startedTick == 0 &&
                    history.finishedTick == 0 &&
                    history.phase == RunHistoryPhase::Idle &&
-                   history.waves.empty();
+                   history.rewardPityMisses == 0 && history.waves.empty();
         }
         if (history.runId != state.runId) return false;
         const auto expectedPhase = state.phase == RunPhase::Complete
@@ -682,9 +757,7 @@ private:
                    : RunHistoryPhase::Active);
         if (history.phase != expectedPhase ||
             ((expectedPhase == RunHistoryPhase::Active) !=
-             (history.finishedTick == 0))) {
-            return false;
-        }
+             (history.finishedTick == 0))) return false;
         const auto* run = RunSimulation::findById(
             simulation.runs_, state.runId);
         if (!run) return false;
@@ -700,9 +773,7 @@ private:
                 wave.bossesDefeated > wave.plannedBosses ||
                 wave.coreHealthStart < 0 || wave.coreHealthEnd < 0 ||
                 wave.coreHealthMaximum < 0 || wave.resourcesStart < 0 ||
-                wave.resourcesEnd < 0) {
-                return false;
-            }
+                wave.resourcesEnd < 0) return false;
             if (wave.phase == WaveResultPhase::Active) {
                 if (wave.completedTick != 0 || wave.resourceDelta != 0 ||
                     wave.resourcesEnd != wave.resourcesStart) return false;
@@ -716,15 +787,38 @@ private:
                 std::find(wave.rewardChoices.begin(),
                           wave.rewardChoices.end(),
                           wave.selectedModifier) ==
-                    wave.rewardChoices.end()) {
-                return false;
+                    wave.rewardChoices.end()) return false;
+            if (version >= 3u) {
+                if (wave.rewardRarities.size() !=
+                    wave.rewardChoices.size()) return false;
+                std::uint64_t spent = 0;
+                for (const auto rarity : wave.rewardRarities) {
+                    if (!ValidRewardRarity(rarity)) return false;
+                    spent += RewardRarityCost(rarity);
+                }
+                if (wave.rewardRarityBudget == 0) {
+                    if (wave.rewardRaritySpent != 0 ||
+                        wave.pityBefore != 0 || wave.pityAfter != 0 ||
+                        wave.pityTriggered ||
+                        wave.guaranteedRarity != RewardRarity::Common ||
+                        wave.effectiveGuaranteedRarity !=
+                            RewardRarity::Common) return false;
+                } else if (spent != wave.rewardRaritySpent ||
+                           spent > wave.rewardRarityBudget ||
+                           !RewardRarityAtLeast(
+                               wave.effectiveGuaranteedRarity,
+                               wave.guaranteedRarity)) {
+                    return false;
+                }
             }
             previousIndex = wave.waveIndex;
             hasPrevious = true;
         }
 
-        if (history.waves.empty()) return history.legacyImported ||
-            state.phase == RunPhase::BetweenWaves;
+        if (history.waves.empty()) {
+            return history.legacyImported ||
+                   state.phase == RunPhase::BetweenWaves;
+        }
         const auto& last = history.waves.back();
         switch (state.phase) {
         case RunPhase::Idle:
@@ -766,6 +860,18 @@ private:
         return true;
     }
 
+    static bool legacyRarityCompatible(
+        const RunSimulation& simulation) noexcept {
+        for (const auto& definition : simulation.modifiers_.definitions()) {
+            if (definition.rarity != RewardRarity::Common) return false;
+        }
+        return std::all_of(
+            simulation.runs_.begin(), simulation.runs_.end(),
+            [](const RunDefinition& run) {
+                return run.rewardRules.empty();
+            });
+    }
+
     static void hashWaveDefinition(
         foundation::CanonicalHash& hash,
         const tower_defense::WaveDefinition& value) {
@@ -795,10 +901,14 @@ private:
 
     static void hashModifierDefinition(
         foundation::CanonicalHash& hash,
-        const ModifierDefinition& value) {
+        const ModifierDefinition& value,
+        std::uint16_t version) {
         hash.WriteU32(value.id);
         hash.WriteU32(value.weight);
         hash.WriteU32(value.maxStacks);
+        if (version >= 3u) {
+            hash.WriteU8(static_cast<std::uint8_t>(value.rarity));
+        }
         const auto hashVector = [&hash](const auto& values) {
             hash.WriteU32(static_cast<std::uint32_t>(values.size()));
             for (const auto item : values) {
@@ -822,7 +932,9 @@ private:
         }
     }
 
-    static std::uint64_t contentHash(const RunSimulation& simulation) {
+    static std::uint64_t contentHash(
+        const RunSimulation& simulation,
+        std::uint16_t version) {
         foundation::CanonicalHash hash;
         hash.WriteU64(simulation.rootSeed_);
         hash.WriteU64(tower_defense::TowerDefenseSimulationArchive::
@@ -832,6 +944,18 @@ private:
             hash.WriteU32(run.id);
             hash.WriteU32(static_cast<std::uint32_t>(run.waves.size()));
             for (const auto wave : run.waves) hash.WriteU32(wave);
+            if (version >= 3u) {
+                hash.WriteU32(static_cast<std::uint32_t>(
+                    run.rewardRules.size()));
+                for (const auto& rule : run.rewardRules) {
+                    hash.WriteU32(rule.rarityBudget);
+                    hash.WriteU8(static_cast<std::uint8_t>(
+                        rule.guaranteedRarity));
+                    hash.WriteU32(rule.pityAfterMisses);
+                    hash.WriteU8(static_cast<std::uint8_t>(
+                        rule.pityRarity));
+                }
+            }
         }
         hash.WriteU32(static_cast<std::uint32_t>(simulation.waves_.size()));
         for (const auto& wave : simulation.waves_) {
@@ -840,7 +964,7 @@ private:
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.modifiers_.definitions().size()));
         for (const auto& definition : simulation.modifiers_.definitions()) {
-            hashModifierDefinition(hash, definition);
+            hashModifierDefinition(hash, definition, version);
         }
         return hash.Value();
     }
