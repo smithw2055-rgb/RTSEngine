@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <vector>
 
+namespace rts::assets {
+struct SpriteContent;
+}
+
 namespace rts::presentation {
 
 struct PresentationAssetCacheStats final {
