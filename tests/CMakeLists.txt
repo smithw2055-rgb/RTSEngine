@@ -1,0 +1,148 @@
+if(MSVC)
+    add_compile_options(/bigobj)
+endif()
+
+add_executable(rts_foundation_tests foundation_tests.cpp)
+target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
+add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
+
+add_executable(rts_platform_render_tests platform_render_tests.cpp)
+target_link_libraries(rts_platform_render_tests PRIVATE RTSEngine::Render)
+add_test(NAME rts_platform_render_tests COMMAND rts_platform_render_tests)
+
+add_executable(rts_presentation_scene_tests presentation_scene_tests.cpp)
+target_link_libraries(rts_presentation_scene_tests PRIVATE RTSEngine::RtsPresentation)
+add_test(NAME rts_presentation_scene_tests COMMAND rts_presentation_scene_tests)
+
+add_executable(rts_snapshot_interpolation_tests snapshot_interpolation_tests.cpp)
+target_link_libraries(rts_snapshot_interpolation_tests PRIVATE RTSEngine::Presentation)
+add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolation_tests)
+
+add_executable(rts_assets_runtime_tests assets_runtime_tests.cpp)
+target_link_libraries(rts_assets_runtime_tests PRIVATE RTSEngine::Assets)
+add_test(NAME rts_assets_runtime_tests COMMAND rts_assets_runtime_tests)
+
+add_executable(rts_fixed_2d_renderer_tests fixed_2d_renderer_tests.cpp)
+target_link_libraries(rts_fixed_2d_renderer_tests PRIVATE RTSEngine::Presentation)
+add_test(NAME rts_fixed_2d_renderer_tests COMMAND rts_fixed_2d_renderer_tests)
+
+add_executable(rts_presentation_events_tests presentation_events_tests.cpp)
+target_link_libraries(rts_presentation_events_tests PRIVATE RTSEngine::RtsPresentation)
+add_test(NAME rts_presentation_events_tests COMMAND rts_presentation_events_tests)
+
+add_executable(rts_ecs_tests ecs_tests.cpp)
+target_link_libraries(rts_ecs_tests PRIVATE RTSEngine::Ecs)
+add_test(NAME rts_ecs_tests COMMAND rts_ecs_tests)
+
+add_executable(rts_ecs_persistence_tests ecs_persistence_tests.cpp)
+target_link_libraries(rts_ecs_persistence_tests PRIVATE RTSEngine::Ecs)
+add_test(NAME rts_ecs_persistence_tests COMMAND rts_ecs_persistence_tests)
+
+add_executable(rts_simulation_tests rts_simulation_tests.cpp)
+target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
+
+add_executable(rts_navigation_workspace_tests navigation_workspace_tests.cpp)
+target_link_libraries(rts_navigation_workspace_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_navigation_workspace_tests COMMAND rts_navigation_workspace_tests)
+
+add_executable(rts_flow_field_tests flow_field_tests.cpp)
+target_link_libraries(rts_flow_field_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_flow_field_tests COMMAND rts_flow_field_tests)
+
+add_executable(rts_vision_tests vision_tests.cpp)
+target_link_libraries(rts_vision_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_vision_tests COMMAND rts_vision_tests)
+
+add_executable(rts_influence_tests influence_tests.cpp)
+target_link_libraries(rts_influence_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_influence_tests COMMAND rts_influence_tests)
+
+add_executable(rts_scale_telemetry_tests scale_telemetry_tests.cpp)
+target_link_libraries(rts_scale_telemetry_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_scale_telemetry_tests COMMAND rts_scale_telemetry_tests)
+
+add_executable(rts_simulation_persistence_tests rts_simulation_persistence_tests.cpp)
+target_link_libraries(rts_simulation_persistence_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_simulation_persistence_tests COMMAND rts_simulation_persistence_tests)
+
+add_executable(rts_base_building_tests base_building_tests.cpp)
+target_link_libraries(rts_base_building_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_base_building_tests COMMAND rts_base_building_tests)
+
+add_executable(rts_economy_production_tests rts_economy_production_tests.cpp)
+target_link_libraries(rts_economy_production_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_economy_production_tests COMMAND rts_economy_production_tests)
+
+add_executable(rts_combat_tests combat_tests.cpp)
+target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
+
+add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
+
+add_executable(rts_lane_graph_tests lane_graph_tests.cpp)
+target_link_libraries(rts_lane_graph_tests PRIVATE RTSEngine::TowerDefense)
+add_test(NAME rts_lane_graph_tests COMMAND rts_lane_graph_tests)
+
+add_executable(rts_tower_defense_tests tower_defense_tests.cpp)
+target_link_libraries(rts_tower_defense_tests PRIVATE RTSEngine::TowerDefense)
+add_test(NAME rts_tower_defense_tests COMMAND rts_tower_defense_tests)
+
+add_executable(rts_wave_modifier_tests wave_modifier_tests.cpp)
+target_link_libraries(rts_wave_modifier_tests PRIVATE RTSEngine::TowerDefense)
+add_test(NAME rts_wave_modifier_tests COMMAND rts_wave_modifier_tests)
+
+add_executable(rts_wave_loop_tests wave_loop_tests.cpp)
+target_link_libraries(rts_wave_loop_tests PRIVATE RTSEngine::TowerDefense)
+add_test(NAME rts_wave_loop_tests COMMAND rts_wave_loop_tests)
+
+add_executable(rts_roguelite_tests roguelite_tests.cpp)
+target_link_libraries(rts_roguelite_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_tests COMMAND rts_roguelite_tests)
+
+add_executable(rts_roguelite_sequence_tests roguelite_sequence_tests.cpp)
+target_link_libraries(rts_roguelite_sequence_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_sequence_projection COMMAND rts_roguelite_sequence_tests projection)
+add_test(NAME rts_roguelite_sequence_archive COMMAND rts_roguelite_sequence_tests archive)
+add_test(NAME rts_roguelite_sequence_continuation COMMAND rts_roguelite_sequence_tests continuation)
+
+add_executable(rts_roguelite_history_tests roguelite_history_tests.cpp)
+target_link_libraries(rts_roguelite_history_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_history_tests COMMAND rts_roguelite_history_tests)
+
+add_executable(rts_reward_rarity_tests reward_rarity_tests.cpp)
+target_link_libraries(rts_reward_rarity_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_reward_rarity_planner COMMAND rts_reward_rarity_tests planner)
+add_test(NAME rts_reward_rarity_pity COMMAND rts_reward_rarity_tests pity)
+add_test(NAME rts_reward_rarity_failures COMMAND rts_reward_rarity_tests failures)
+add_test(NAME rts_reward_rarity_integration COMMAND rts_reward_rarity_tests integration)
+
+add_executable(rts_roguelite_persistence_tests roguelite_persistence_tests.cpp)
+target_link_libraries(rts_roguelite_persistence_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_roguelite_persistence_tests COMMAND rts_roguelite_persistence_tests)
+
+add_executable(rts_save_slot_tests save_slot_tests.cpp)
+target_link_libraries(rts_save_slot_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_save_slot_tests COMMAND rts_save_slot_tests)
+
+add_executable(rts_cloud_save_tests cloud_save_tests.cpp)
+target_link_libraries(rts_cloud_save_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_cloud_save_tests COMMAND rts_cloud_save_tests)
+
+add_executable(rts_cloud_transport_tests cloud_transport_tests.cpp)
+target_link_libraries(rts_cloud_transport_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_cloud_transport_tests COMMAND rts_cloud_transport_tests)
+
+add_executable(rts_command_stream_tests deterministic_command_stream_tests.cpp)
+target_link_libraries(rts_command_stream_tests PRIVATE RTSEngine::Sim)
+add_test(NAME rts_command_stream_tests COMMAND rts_command_stream_tests)
+
+add_executable(rts_gameplay_modifier_tests gameplay_modifier_tests.cpp)
+target_link_libraries(rts_gameplay_modifier_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_gameplay_modifier_tests COMMAND rts_gameplay_modifier_tests)
+
+add_executable(rts_persistence_tests persistence_tests.cpp)
+target_link_libraries(rts_persistence_tests PRIVATE RTSEngine::Roguelite)
+add_test(NAME rts_persistence_tests COMMAND rts_persistence_tests)

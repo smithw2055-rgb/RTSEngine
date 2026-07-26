@@ -1,0 +1,2 @@
+add_executable(rts_tower_defense_demo main.cpp)
+target_link_libraries(rts_tower_defense_demo PRIVATE RTSEngine::TowerDefense)

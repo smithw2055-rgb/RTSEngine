@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        build_type: [Debug, Release]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
+      - name: Build asset runtime
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_assets_runtime_tests --parallel
+      - name: Build fixed 2D renderer
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_fixed_2d_renderer_tests --parallel
+      - name: Build presentation events
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_presentation_events_tests --parallel
+      - name: Compile optional Sokol adapter
+        if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'Debug'
+        shell: bash
+        run: |
+          mkdir -p .ci/sokol
+          curl --fail --location --retry 3 \
+            https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/sokol_gfx.h \
+            --output .ci/sokol/sokol_gfx.h
+          cmake -S . -B build-sokol \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=OFF \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+            -DRTSENGINE_SOKOL_INCLUDE_DIR="$PWD/.ci/sokol"
+          cmake --build build-sokol --config Debug \
+            --target rts_render_sokol --parallel
+      - name: Build remaining targets
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+      - name: Test asset runtime
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_assets_runtime_tests$"
+      - name: Test fixed 2D renderer
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_fixed_2d_renderer_tests$"
+      - name: Test presentation events
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_presentation_events_tests$"
+      - name: Test platform and null render
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_platform_render_tests$"
+      - name: Test presentation scene extraction
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_presentation_scene_tests$"
+      - name: Test snapshot interpolation
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_snapshot_interpolation_tests$"
+      - name: Test sequence projection
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_projection$"
+      - name: Test sequence archive projection
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_archive$"
+      - name: Test sequence continuation
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_sequence_continuation$"
+      - name: Test roguelite persistence
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_roguelite_persistence_tests$"
+      - name: Test rarity planner
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_planner$"
+      - name: Test rarity pity
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_pity$"
+      - name: Test rarity failures
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_failures$"
+      - name: Test rarity integration
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_integration$"
+      - name: Test remaining suite
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_(assets_runtime|fixed_2d_renderer|presentation_events|platform_render|presentation_scene|snapshot_interpolation)_tests|rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
