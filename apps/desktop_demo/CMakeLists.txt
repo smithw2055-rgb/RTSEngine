@@ -20,6 +20,10 @@ target_include_directories(rts_desktop_sokol_composition PUBLIC
 )
 target_compile_features(rts_desktop_sokol_composition PUBLIC cxx_std_17)
 
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    target_compile_options(rts_desktop_sokol_composition PRIVATE /bigobj)
+endif()
+
 add_executable(rts_desktop_demo SokolEntry.cpp)
 target_link_libraries(rts_desktop_demo PRIVATE
     RTSEngine::DesktopSokolComposition
@@ -42,8 +46,18 @@ elseif(APPLE)
         "-framework OpenGL"
     )
 elseif(UNIX)
+    find_package(X11 REQUIRED COMPONENTS Xi Xcursor)
+    find_package(OpenGL REQUIRED)
+    find_package(Threads REQUIRED)
+
     target_compile_definitions(rts_desktop_demo PRIVATE SOKOL_GLCORE)
     target_link_libraries(rts_desktop_demo PRIVATE
-        X11 Xi Xcursor GL dl pthread m
+        X11::X11
+        X11::Xi
+        X11::Xcursor
+        OpenGL::GL
+        Threads::Threads
+        ${CMAKE_DL_LIBS}
+        m
     )
 endif()

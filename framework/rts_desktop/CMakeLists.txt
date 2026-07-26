@@ -17,3 +17,7 @@ target_link_libraries(rts_rts_desktop PUBLIC
     RTSEngine::Presentation
 )
 target_compile_features(rts_rts_desktop PUBLIC cxx_std_17)
+
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    target_compile_options(rts_rts_desktop PRIVATE /bigobj)
+endif()

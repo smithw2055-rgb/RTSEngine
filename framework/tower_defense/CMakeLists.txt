@@ -10,3 +10,7 @@ target_link_libraries(rts_engine_tower_defense PUBLIC
     RTSEngine::Rts
 )
 target_compile_features(rts_engine_tower_defense PUBLIC cxx_std_17)
+
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    target_compile_options(rts_engine_tower_defense PRIVATE /bigobj)
+endif()

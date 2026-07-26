@@ -12,3 +12,7 @@ target_link_libraries(rts_engine_rts PUBLIC
     RTSEngine::Ecs
 )
 target_compile_features(rts_engine_rts PUBLIC cxx_std_17)
+
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    target_compile_options(rts_engine_rts PRIVATE /bigobj)
+endif()
