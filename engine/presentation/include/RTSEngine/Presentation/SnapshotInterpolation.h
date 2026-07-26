@@ -57,6 +57,12 @@ public:
         return true;
     }
 
+    void clear() noexcept {
+        previous_ = {};
+        current_ = {};
+        ready_ = false;
+    }
+
     bool ready() const noexcept { return ready_; }
 
     const PresentationScene& previous() const noexcept { return previous_; }

@@ -13,7 +13,8 @@ Compiled2DFrame SpriteBatchCompiler::compile(
     const RenderPacket& packet,
     SpriteResolver& resolver,
     render::TextureHandle whiteTexture,
-    const Camera2D& camera) const {
+    const Camera2D& camera,
+    const UiDrawList* screenUi) const {
     Compiled2DFrame output;
     if (!camera.valid()) return output;
     output.vertices.reserve(
@@ -39,6 +40,14 @@ Compiled2DFrame SpriteBatchCompiler::compile(
     }
 
     if (whiteTexture.valid()) {
+        for (const auto& overlay : packet.worldOverlays) {
+            if (quadCount(output) >= maximumQuads_) {
+                ++output.droppedQuads;
+                continue;
+            }
+            appendWorldOverlay(output, overlay, whiteTexture, camera);
+            ++output.worldOverlayQuads;
+        }
         for (const auto& ui : packet.worldUi) {
             if (quadCount(output) >= maximumQuads_) {
                 ++output.droppedQuads;
@@ -46,6 +55,22 @@ Compiled2DFrame SpriteBatchCompiler::compile(
             }
             appendWorldUi(output, ui, whiteTexture, camera);
             ++output.worldUiQuads;
+        }
+    }
+
+    if (screenUi && screenUi->valid()) {
+        for (const auto& ui : screenUi->quads) {
+            if (quadCount(output) >= maximumQuads_) {
+                ++output.droppedQuads;
+                continue;
+            }
+            if (!ui.texture.valid() || ui.rect.width <= 0.0f ||
+                ui.rect.height <= 0.0f || ui.color.alpha <= 0.0f) {
+                ++output.droppedQuads;
+                continue;
+            }
+            appendScreenUi(output, ui, *screenUi);
+            ++output.screenUiQuads;
         }
     }
     return output;
@@ -107,6 +132,22 @@ void SpriteBatchCompiler::appendSprite(
                camera);
 }
 
+
+void SpriteBatchCompiler::appendWorldOverlay(
+    Compiled2DFrame& output,
+    const WorldOverlayQuad& overlay,
+    render::TextureHandle whiteTexture,
+    const Camera2D& camera) {
+    const auto halfWidth = std::max(0.0f, overlay.width) * 0.5f;
+    const auto halfHeight = std::max(0.0f, overlay.height) * 0.5f;
+    appendQuad(output, mapPass(overlay.layer), overlay.blend, whiteTexture,
+               overlay.x - halfWidth, overlay.y - halfHeight,
+               overlay.x + halfWidth, overlay.y + halfHeight,
+               0.0f, 0.0f, 1.0f, 1.0f,
+               overlay.red, overlay.green, overlay.blue, overlay.alpha,
+               camera);
+}
+
 void SpriteBatchCompiler::appendWorldUi(
     Compiled2DFrame& output,
     const WorldUiElement& ui,
@@ -128,6 +169,72 @@ void SpriteBatchCompiler::appendWorldUi(
                health ? 0.9f : 0.6f,
                health ? 0.2f : 1.0f,
                ui.opacity, camera);
+}
+
+
+void SpriteBatchCompiler::appendScreenUi(
+    Compiled2DFrame& output,
+    const UiQuad& ui,
+    const UiDrawList& list) {
+    appendScreenQuad(output, ui, list);
+}
+
+float SpriteBatchCompiler::screenNdcX(
+    float value,
+    const UiDrawList& list) noexcept {
+    return (value / static_cast<float>(list.framebufferWidth)) * 2.0f - 1.0f;
+}
+
+float SpriteBatchCompiler::screenNdcY(
+    float value,
+    const UiDrawList& list) noexcept {
+    return 1.0f - (value / static_cast<float>(list.framebufferHeight)) * 2.0f;
+}
+
+void SpriteBatchCompiler::appendScreenQuad(
+    Compiled2DFrame& output,
+    const UiQuad& ui,
+    const UiDrawList& list) {
+    const auto left = ui.rect.x;
+    const auto top = ui.rect.y;
+    const auto right = ui.rect.x + ui.rect.width;
+    const auto bottom = ui.rect.y + ui.rect.height;
+    const auto baseVertex = static_cast<std::uint32_t>(output.vertices.size());
+    const auto firstIndex = static_cast<std::uint32_t>(output.indices.size());
+    output.vertices.push_back(
+        {screenNdcX(left, list), screenNdcY(top, list),
+         ui.u0, ui.v0, ui.color.red, ui.color.green,
+         ui.color.blue, ui.color.alpha});
+    output.vertices.push_back(
+        {screenNdcX(right, list), screenNdcY(top, list),
+         ui.u1, ui.v0, ui.color.red, ui.color.green,
+         ui.color.blue, ui.color.alpha});
+    output.vertices.push_back(
+        {screenNdcX(right, list), screenNdcY(bottom, list),
+         ui.u1, ui.v1, ui.color.red, ui.color.green,
+         ui.color.blue, ui.color.alpha});
+    output.vertices.push_back(
+        {screenNdcX(left, list), screenNdcY(bottom, list),
+         ui.u0, ui.v1, ui.color.red, ui.color.green,
+         ui.color.blue, ui.color.alpha});
+    output.indices.insert(
+        output.indices.end(),
+        {baseVertex, baseVertex + 1u, baseVertex + 2u,
+         baseVertex, baseVertex + 2u, baseVertex + 3u});
+
+    if (!output.batches.empty()) {
+        auto& previous = output.batches.back();
+        if (previous.pass == render::RenderPassKind::ScreenUi &&
+            previous.blend == ui.blend &&
+            previous.texture == ui.texture &&
+            previous.firstIndex + previous.indexCount == firstIndex) {
+            previous.indexCount += 6u;
+            return;
+        }
+    }
+    output.batches.push_back(
+        {render::RenderPassKind::ScreenUi, ui.blend, ui.texture,
+         firstIndex, 6u, ui.sortKey});
 }
 
 void SpriteBatchCompiler::appendQuad(

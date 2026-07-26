@@ -1,6 +1,7 @@
 #pragma once
 
 #include <RTSEngine/Presentation/RenderPacket.h>
+#include <RTSEngine/Presentation/ScreenUi.h>
 #include <RTSEngine/Render/RenderDevice.h>
 
 #include <cstdint>
@@ -72,6 +73,8 @@ struct Compiled2DFrame final {
     std::vector<CompiledDrawBatch> batches;
     std::uint32_t spriteQuads{};
     std::uint32_t worldUiQuads{};
+    std::uint32_t worldOverlayQuads{};
+    std::uint32_t screenUiQuads{};
     std::uint32_t unresolvedSprites{};
     std::uint32_t droppedQuads{};
 };
@@ -84,7 +87,8 @@ public:
     Compiled2DFrame compile(const RenderPacket& packet,
                             SpriteResolver& resolver,
                             render::TextureHandle whiteTexture,
-                            const Camera2D& camera) const;
+                            const Camera2D& camera,
+                            const UiDrawList* screenUi = nullptr) const;
 
 private:
     static std::uint32_t quadCount(
@@ -97,10 +101,24 @@ private:
                              const SpriteInstance& instance,
                              const ResolvedSprite& sprite,
                              const Camera2D& camera);
+    static void appendWorldOverlay(Compiled2DFrame& output,
+                                   const WorldOverlayQuad& overlay,
+                                   render::TextureHandle whiteTexture,
+                                   const Camera2D& camera);
     static void appendWorldUi(Compiled2DFrame& output,
                               const WorldUiElement& ui,
                               render::TextureHandle whiteTexture,
                               const Camera2D& camera);
+    static void appendScreenUi(Compiled2DFrame& output,
+                               const UiQuad& ui,
+                               const UiDrawList& list);
+    static float screenNdcX(float value,
+                            const UiDrawList& list) noexcept;
+    static float screenNdcY(float value,
+                            const UiDrawList& list) noexcept;
+    static void appendScreenQuad(Compiled2DFrame& output,
+                                 const UiQuad& ui,
+                                 const UiDrawList& list);
     static void appendQuad(Compiled2DFrame& output,
                            render::RenderPassKind pass,
                            render::BlendMode blend,

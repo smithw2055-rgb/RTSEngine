@@ -13,6 +13,8 @@ struct Fixed2DRendererStats final {
     std::uint32_t drawCalls{};
     std::uint32_t spriteQuads{};
     std::uint32_t worldUiQuads{};
+    std::uint32_t worldOverlayQuads{};
+    std::uint32_t screenUiQuads{};
     std::uint32_t unresolvedSprites{};
     std::uint32_t droppedQuads{};
     std::size_t vertexBytes{};
@@ -31,7 +33,8 @@ public:
     bool initialize();
     bool render(const render::FrameDescription& frame,
                 const RenderPacket& packet,
-                const Camera2D& camera);
+                const Camera2D& camera,
+                const UiDrawList* screenUi = nullptr);
     void shutdown() noexcept;
 
     bool initialized() const noexcept;

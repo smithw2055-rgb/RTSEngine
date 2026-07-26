@@ -1,89 +1,48 @@
 #pragma once
 
-#include <RTSEngine/Presentation/RenderPacket.h>
 #include <RTSEngine/Presentation/PresentationEvents.h>
-#include <RTSEngine/RtsPresentation/RtsPresentationEvents.h>
+#include <RTSEngine/Presentation/RenderPacket.h>
 #include <RTSEngine/RtsPresentation/RtsPresentationExtractor.h>
+#include <RTSEngine/RtsPresentation/RtsPresentationEvents.h>
 
-#include <utility>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 namespace rts::rts_presentation {
 
 class RtsPresentationRuntime final {
 public:
-    explicit RtsPresentationRuntime(ExtractionOptions options = {}) noexcept
-        : options_(options) {}
+    explicit RtsPresentationRuntime(ExtractionOptions options = {}) noexcept;
 
-    bool registerVisual(presentation::VisualBinding binding) {
-        return catalog_.upsert(std::move(binding));
-    }
-
+    bool registerVisual(presentation::VisualBinding binding);
+    bool registerFallbackVisual(
+        presentation::SceneEntityKind kind,
+        presentation::LogicalAssetId spriteAsset,
+        presentation::LogicalAssetId animationAsset = 0,
+        presentation::RenderLayer layer = presentation::RenderLayer::WorldEntity,
+        std::int32_t sortBias = 0);
     bool registerEventBinding(
-        presentation::PresentationEventBinding binding) {
-        return eventCatalog_.upsert(std::move(binding));
-    }
+        presentation::PresentationEventBinding binding);
 
-    bool publishSnapshot(const gameplay::WorldSnapshot& snapshot) {
-        return publishSnapshot(snapshot, {});
-    }
-
+    bool publishSnapshot(const gameplay::WorldSnapshot& snapshot);
     bool publishSnapshot(
         const gameplay::WorldSnapshot& snapshot,
-        const std::vector<gameplay::DomainEvent>& events) {
-        auto scene = RtsPresentationExtractor::extract(
-            snapshot, catalog_, options_);
-        const auto* previous = scenes_.ready() ? &scenes_.current() : nullptr;
-        auto extractedEvents = RtsPresentationEventExtractor::extract(
-            events, scene, previous);
-        if (!scenes_.publish(std::move(scene))) return false;
-        pendingEvents_.insert(
-            pendingEvents_.end(),
-            extractedEvents.begin(), extractedEvents.end());
-        return true;
-    }
+        const std::vector<gameplay::DomainEvent>& events);
 
     presentation::RenderPacket buildRenderPacket(
         float alpha,
-        presentation::InterpolationOptions options = {}) const {
-        return presentation::RenderPacketBuilder::build(
-            scenes_.sample(alpha, options));
-    }
+        presentation::InterpolationOptions options = {}) const;
+    presentation::PresentationCueBatch consumeCues();
 
-    presentation::PresentationCueBatch consumeCues() {
-        auto pending = std::move(pendingEvents_);
-        pendingEvents_.clear();
-        return eventConsumer_.consume(std::move(pending), eventCatalog_);
-    }
-
-    const presentation::VisualCatalog& catalog() const noexcept {
-        return catalog_;
-    }
-
-    const presentation::PresentationEventCatalog& eventCatalog() const noexcept {
-        return eventCatalog_;
-    }
-
-    const presentation::PresentationSceneBuffer& sceneBuffer() const noexcept {
-        return scenes_;
-    }
-
-    const ExtractionOptions& extractionOptions() const noexcept {
-        return options_;
-    }
-
-    void setExtractionOptions(ExtractionOptions options) noexcept {
-        options_ = options;
-    }
-
-    std::size_t pendingEventCount() const noexcept {
-        return pendingEvents_.size();
-    }
-
-    void clearEventHistory() {
-        pendingEvents_.clear();
-        eventConsumer_.clear();
-    }
+    const presentation::VisualCatalog& catalog() const noexcept;
+    const presentation::PresentationEventCatalog& eventCatalog() const noexcept;
+    const presentation::PresentationSceneBuffer& sceneBuffer() const noexcept;
+    const ExtractionOptions& extractionOptions() const noexcept;
+    void setExtractionOptions(ExtractionOptions options) noexcept;
+    std::size_t pendingEventCount() const noexcept;
+    void clearEventHistory();
+    void reset() noexcept;
 
 private:
     ExtractionOptions options_{};

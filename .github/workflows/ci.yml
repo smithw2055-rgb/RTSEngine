@@ -32,22 +32,33 @@ jobs:
         run: cmake --build build --config ${{ matrix.build_type }} --target rts_fixed_2d_renderer_tests --parallel
       - name: Build presentation events
         run: cmake --build build --config ${{ matrix.build_type }} --target rts_presentation_events_tests --parallel
-      - name: Compile optional Sokol adapter
+      - name: Compile playable Sokol desktop runtime
         if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'Debug'
         shell: bash
         run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxi-dev libxcursor-dev libgl1-mesa-dev
           mkdir -p .ci/sokol
-          curl --fail --location --retry 3 \
-            https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/sokol_gfx.h \
-            --output .ci/sokol/sokol_gfx.h
+          for header in sokol_app.h sokol_gfx.h sokol_glue.h sokol_log.h; do
+            curl --fail --location --retry 3 \
+              "https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/${header}" \
+              --output ".ci/sokol/${header}"
+          done
           cmake -S . -B build-sokol \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DRTSENGINE_BUILD_TESTS=OFF \
-            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=ON \
             -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+            -DRTSENGINE_ENABLE_SOKOL_APP=ON \
             -DRTSENGINE_SOKOL_INCLUDE_DIR="$PWD/.ci/sokol"
-          cmake --build build-sokol --config Debug \
-            --target rts_render_sokol --parallel
+          cmake --build build-sokol --config Debug --parallel \
+            --target rts_platform_sokol rts_render_sokol \
+                     rts_presentation_sokol \
+                     rts_desktop_sokol_composition rts_desktop_demo \
+                     rts_sokol_shader_contract_tests
+          ctest --test-dir build-sokol -C Debug --output-on-failure \
+            -R "^rts_sokol_shader_contract_tests$"
       - name: Build remaining targets
         run: cmake --build build --config ${{ matrix.build_type }} --parallel
       - name: Test asset runtime

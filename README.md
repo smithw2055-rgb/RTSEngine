@@ -23,6 +23,11 @@ The repository is being built as small, testable vertical slices rather than imp
 - stable animation, effect and audio event consumption with replay-safe deduplication
 - virtual file systems, versioned cooked assets, dependency loading, cancellation, CPU budgets and transactional hot reload
 - optional Sokol render-device implementation behind engine-owned interfaces
+- engine-owned keyboard, text, pointer, wheel, touch and dropped-file input contracts
+- embedded bitmap-font HUD primitives and Screen UI batching
+- click/box selection, camera controls, move/attack/attack-move and tower-placement input mapping
+- fixed-step desktop frame loop with save/restore Tick resynchronization
+- playable Sokol desktop composition for an RTS/tower-defense Roguelite session
 - transactional resources, construction, cancellation, production queues, and rally points
 - teams, health, armor, weapons, fixed-tick cooldowns, spatial targeting, buffered damage, and deterministic death cleanup
 - kill bounty rewards and automatic navigation blocker release when buildings or construction sites are destroyed
@@ -36,12 +41,21 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-The optional Sokol backend is enabled by providing a Sokol include directory:
+The optional playable Sokol desktop application requires `sokol_app.h`,
+`sokol_gfx.h`, `sokol_glue.h`, and `sokol_log.h` from the pinned CI revision:
 
 ```bash
-cmake -S . -B build \
+cmake -S . -B build-sokol \
+  -DRTSENGINE_BUILD_TESTS=ON \
+  -DRTSENGINE_BUILD_EXAMPLES=ON \
   -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+  -DRTSENGINE_ENABLE_SOKOL_APP=ON \
   -DRTSENGINE_SOKOL_INCLUDE_DIR=/path/to/sokol
+cmake --build build-sokol --target rts_desktop_demo --parallel
 ```
 
-The authoritative simulation layer does not depend on rendering, audio, UI, scripting, networking, or platform services. See `docs/architecture.md`, `docs/roadmap.md`, `docs/phase7-presentation-foundations.md`, and `docs/adr/` for the design constraints and phased plan.
+The authoritative simulation layer does not depend on rendering, audio, UI,
+scripting, networking, or platform services. See `docs/architecture.md`,
+`docs/roadmap.md`, `docs/phase7-presentation-foundations.md`,
+`docs/phase7-playable-desktop-runtime.md`, and `docs/adr/` for the design
+constraints and phased plan.

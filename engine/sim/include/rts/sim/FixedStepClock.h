@@ -45,6 +45,11 @@ public:
 
     void CommitTick() noexcept { ++currentTick_; }
 
+    void Reset(Tick currentTick = 0) noexcept {
+        currentTick_ = currentTick;
+        accumulator_ = 0.0;
+    }
+
     [[nodiscard]] Tick CurrentTick() const noexcept { return currentTick_; }
     [[nodiscard]] double TickSeconds() const noexcept { return tickSeconds_; }
 

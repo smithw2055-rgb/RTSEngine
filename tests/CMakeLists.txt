@@ -6,9 +6,19 @@ add_executable(rts_foundation_tests foundation_tests.cpp)
 target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
 
+
+add_executable(rts_platform_input_tests platform_input_tests.cpp)
+target_link_libraries(rts_platform_input_tests PRIVATE RTSEngine::Platform)
+add_test(NAME rts_platform_input_tests COMMAND rts_platform_input_tests)
+
 add_executable(rts_platform_render_tests platform_render_tests.cpp)
 target_link_libraries(rts_platform_render_tests PRIVATE RTSEngine::Render)
 add_test(NAME rts_platform_render_tests COMMAND rts_platform_render_tests)
+
+
+add_executable(rts_desktop_controller_tests desktop_controller_tests.cpp)
+target_link_libraries(rts_desktop_controller_tests PRIVATE RTSEngine::RtsPresentation)
+add_test(NAME rts_desktop_controller_tests COMMAND rts_desktop_controller_tests)
 
 add_executable(rts_presentation_scene_tests presentation_scene_tests.cpp)
 target_link_libraries(rts_presentation_scene_tests PRIVATE RTSEngine::RtsPresentation)
@@ -21,6 +31,11 @@ add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolatio
 add_executable(rts_assets_runtime_tests assets_runtime_tests.cpp)
 target_link_libraries(rts_assets_runtime_tests PRIVATE RTSEngine::Assets)
 add_test(NAME rts_assets_runtime_tests COMMAND rts_assets_runtime_tests)
+
+
+add_executable(rts_screen_ui_tests screen_ui_tests.cpp)
+target_link_libraries(rts_screen_ui_tests PRIVATE RTSEngine::Presentation)
+add_test(NAME rts_screen_ui_tests COMMAND rts_screen_ui_tests)
 
 add_executable(rts_fixed_2d_renderer_tests fixed_2d_renderer_tests.cpp)
 target_link_libraries(rts_fixed_2d_renderer_tests PRIVATE RTSEngine::Presentation)
@@ -146,3 +161,27 @@ add_test(NAME rts_gameplay_modifier_tests COMMAND rts_gameplay_modifier_tests)
 add_executable(rts_persistence_tests persistence_tests.cpp)
 target_link_libraries(rts_persistence_tests PRIVATE RTSEngine::Roguelite)
 add_test(NAME rts_persistence_tests COMMAND rts_persistence_tests)
+
+add_executable(rts_desktop_frame_loop_tests desktop_frame_loop_tests.cpp)
+target_link_libraries(rts_desktop_frame_loop_tests PRIVATE RTSEngine::Runtime)
+add_test(NAME rts_desktop_frame_loop_tests COMMAND rts_desktop_frame_loop_tests)
+
+add_executable(rts_playable_desktop_runtime_tests playable_desktop_runtime_tests.cpp)
+target_link_libraries(rts_playable_desktop_runtime_tests PRIVATE
+    RTSEngine::RtsDesktop
+    RTSEngine::Platform
+    RTSEngine::Render
+    RTSEngine::Audio
+)
+add_test(NAME rts_playable_desktop_runtime_tests COMMAND rts_playable_desktop_runtime_tests)
+
+if(RTSENGINE_ENABLE_SOKOL_RENDERER)
+    add_executable(rts_sokol_shader_contract_tests
+        sokol_shader_contract_tests.cpp
+    )
+    target_link_libraries(rts_sokol_shader_contract_tests PRIVATE
+        RTSEngine::PresentationSokol
+    )
+    add_test(NAME rts_sokol_shader_contract_tests
+        COMMAND rts_sokol_shader_contract_tests)
+endif()

@@ -1,6 +1,8 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -71,6 +73,19 @@ public:
         return true;
     }
 
+    bool setFallback(SceneEntityKind kind,
+                     LogicalAssetId spriteAsset,
+                     LogicalAssetId animationAsset = 0,
+                     RenderLayer layer = RenderLayer::WorldEntity,
+                     std::int32_t sortBias = 0) {
+        if (spriteAsset == 0) return false;
+        const auto index = static_cast<std::size_t>(kind);
+        if (index >= fallbacks_.size()) return false;
+        fallbacks_[index] = {{kind, 0}, spriteAsset, animationAsset, layer, sortBias};
+        fallbackSet_[index] = true;
+        return true;
+    }
+
     const VisualBinding* resolve(SceneEntityKind kind,
                                  std::uint32_t definitionId) const noexcept {
         const VisualKey key{kind, definitionId};
@@ -79,8 +94,12 @@ public:
             [](const VisualBinding& value, VisualKey lookup) {
                 return value.key < lookup;
             });
-        return iterator != bindings_.end() && iterator->key == key
-            ? &*iterator : nullptr;
+        if (iterator != bindings_.end() && iterator->key == key) {
+            return &*iterator;
+        }
+        const auto index = static_cast<std::size_t>(kind);
+        return index < fallbacks_.size() && fallbackSet_[index]
+            ? &fallbacks_[index] : nullptr;
     }
 
     const std::vector<VisualBinding>& bindings() const noexcept {
@@ -88,7 +107,11 @@ public:
     }
 
 private:
+    static constexpr std::size_t kKindCount =
+        static_cast<std::size_t>(SceneEntityKind::Effect) + 1u;
     std::vector<VisualBinding> bindings_;
+    std::array<VisualBinding, kKindCount> fallbacks_{};
+    std::array<bool, kKindCount> fallbackSet_{};
 };
 
 struct PresentationEntity final {

@@ -35,15 +35,13 @@ class RtsSimulationArchive;
 
 class RtsSimulation {
 public:
-    RtsSimulation(std::int32_t width = 32, std::int32_t height = 32)
-        : navigation_(width, height),
-          vision_(width, height),
-          influence_(width, height),
-          movement_(width, height),
-          building_(resources_, navigation_),
-          combat_(width, height) {
-        installSystems();
-    }
+    RtsSimulation(std::int32_t width = 32, std::int32_t height = 32);
+    ~RtsSimulation();
+
+    RtsSimulation(const RtsSimulation&) = delete;
+    RtsSimulation& operator=(const RtsSimulation&) = delete;
+    RtsSimulation(RtsSimulation&&) = delete;
+    RtsSimulation& operator=(RtsSimulation&&) = delete;
 
     void registerBuilding(BuildingDefinition definition) {
         buildingDefinitions_.replace(std::move(definition));

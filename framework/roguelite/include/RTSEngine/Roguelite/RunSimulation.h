@@ -108,8 +108,13 @@ class RunSimulation {
 public:
     RunSimulation(std::int32_t width = 32,
                   std::int32_t height = 32,
-                  std::uint64_t rootSeed = 1)
-        : tower_(width, height, rootSeed), rootSeed_(rootSeed) {}
+                  std::uint64_t rootSeed = 1);
+    ~RunSimulation();
+
+    RunSimulation(const RunSimulation&) = delete;
+    RunSimulation& operator=(const RunSimulation&) = delete;
+    RunSimulation(RunSimulation&&) = delete;
+    RunSimulation& operator=(RunSimulation&&) = delete;
 
     void registerUnit(gameplay::UnitDefinition definition) {
         tower_.registerUnit(std::move(definition));

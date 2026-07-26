@@ -141,6 +141,8 @@ A saved run resumes with the same command outcome, RNG state, wave plan and rewa
 
 ## Phase 7 — Presentation and GPU runtime
 
+Status: complete for the playable desktop runtime. See `phase7-playable-desktop-runtime.md`.
+
 Deliverables:
 
 - platform abstraction

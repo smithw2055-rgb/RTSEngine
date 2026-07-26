@@ -165,6 +165,8 @@ Dedicated cross-platform tests cover:
 - animation frame sampling, additive effects, expiry and NullAudio playback
 - all earlier scene extraction, fog, interpolation and platform/render contracts
 
-## Remaining Phase 7 work
+## Phase 7 completion
 
-The main remaining deliverable is font and UI foundations, followed by a desktop application composition that supplies a native platform backend, a Sokol swapchain and cooked content files. Asset conversion tooling and generalized development hot reload remain Phase 8 concerns.
+Font/HUD primitives, engine-owned input state, desktop command mapping, a fixed-step application loop, the optional Sokol platform adapter and a complete playable desktop composition are now implemented. The runtime is covered end-to-end with Null backends and the real Sokol executable is compiled by the optional desktop CI smoke job.
+
+See `phase7-playable-desktop-runtime.md` for module boundaries, controls, build instructions and validation. Source asset conversion and generalized development hot reload remain Phase 8 concerns.
