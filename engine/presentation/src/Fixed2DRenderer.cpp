@@ -48,7 +48,8 @@ bool Fixed2DRenderer::initialize() {
 bool Fixed2DRenderer::render(
     const render::FrameDescription& frame,
     const RenderPacket& packet,
-    const Camera2D& camera) {
+    const Camera2D& camera,
+    const UiDrawList* screenUi) {
     if (device_.deviceGeneration() != deviceGeneration_) {
         initialized_ = false;
         clearHandles();
@@ -56,7 +57,7 @@ bool Fixed2DRenderer::render(
     if (!initialize()) return false;
 
     const auto compiled = compiler_.compile(
-        packet, resolver_, whiteTexture_, camera);
+        packet, resolver_, whiteTexture_, camera, screenUi);
     const auto vertexBytes = compiled.vertices.size() * sizeof(SpriteVertex);
     const auto indexBytes = compiled.indices.size() * sizeof(std::uint32_t);
     if (!ensureBuffers(vertexBytes, indexBytes)) return false;
@@ -97,6 +98,8 @@ bool Fixed2DRenderer::render(
     lastStats_.drawCalls = drawCalls;
     lastStats_.spriteQuads = compiled.spriteQuads;
     lastStats_.worldUiQuads = compiled.worldUiQuads;
+    lastStats_.worldOverlayQuads = compiled.worldOverlayQuads;
+    lastStats_.screenUiQuads = compiled.screenUiQuads;
     lastStats_.unresolvedSprites = compiled.unresolvedSprites;
     lastStats_.droppedQuads = compiled.droppedQuads;
     lastStats_.vertexBytes = vertexBytes;

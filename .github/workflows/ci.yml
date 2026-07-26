@@ -27,29 +27,38 @@ jobs:
       - name: Configure
         run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=ON
       - name: Build asset runtime
-        run: cmake --build build --config ${{ matrix.build_type }} --target rts_assets_runtime_tests --parallel
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_assets_runtime_tests --parallel 2
       - name: Build fixed 2D renderer
-        run: cmake --build build --config ${{ matrix.build_type }} --target rts_fixed_2d_renderer_tests --parallel
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_fixed_2d_renderer_tests --parallel 2
       - name: Build presentation events
-        run: cmake --build build --config ${{ matrix.build_type }} --target rts_presentation_events_tests --parallel
-      - name: Compile optional Sokol adapter
-        if: matrix.os == 'ubuntu-latest' && matrix.build_type == 'Debug'
+        run: cmake --build build --config ${{ matrix.build_type }} --target rts_presentation_events_tests --parallel 2
+      - name: Build playable desktop runtime
         shell: bash
         run: |
-          mkdir -p .ci/sokol
-          curl --fail --location --retry 3 \
-            https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/sokol_gfx.h \
-            --output .ci/sokol/sokol_gfx.h
-          cmake -S . -B build-sokol \
-            -DCMAKE_BUILD_TYPE=Debug \
-            -DRTSENGINE_BUILD_TESTS=OFF \
-            -DRTSENGINE_BUILD_EXAMPLES=OFF \
-            -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
-            -DRTSENGINE_SOKOL_INCLUDE_DIR="$PWD/.ci/sokol"
-          cmake --build build-sokol --config Debug \
-            --target rts_render_sokol --parallel
+          cmake --build build --config ${{ matrix.build_type }} \
+            --target rts_playable_desktop_runtime_tests --parallel 2 \
+            > playable-desktop-build.log 2>&1 || {
+              tail -n 160 playable-desktop-build.log
+              exit 1
+            }
       - name: Build remaining targets
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+        shell: bash
+        run: |
+          cmake --build build --config ${{ matrix.build_type }} --parallel 2 \
+            > remaining-build.log 2>&1 || {
+              tail -n 160 remaining-build.log
+              exit 1
+            }
+      - name: Upload matrix build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-${{ matrix.os }}-${{ matrix.build_type }}
+          path: |
+            playable-desktop-build.log
+            remaining-build.log
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Test asset runtime
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_assets_runtime_tests$"
       - name: Test fixed 2D renderer
@@ -80,3 +89,70 @@ jobs:
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_integration$"
       - name: Test remaining suite
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_(assets_runtime|fixed_2d_renderer|presentation_events|platform_render|presentation_scene|snapshot_interpolation)_tests|rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
+
+  sokol-desktop:
+    name: playable Sokol desktop (ubuntu-latest, Debug)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Linux desktop dependencies
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            libx11-dev \
+            libxi-dev \
+            libxcursor-dev \
+            libgl-dev
+      - name: Fetch pinned Sokol headers
+        shell: bash
+        run: |
+          mkdir -p .ci/sokol
+          for header in sokol_app.h sokol_gfx.h sokol_glue.h sokol_log.h; do
+            curl --fail --silent --show-error --location --retry 3 \
+              "https://raw.githubusercontent.com/floooh/sokol/c4d2b0a0c20b68fbd49f85ee240218c4c994542d/${header}" \
+              --output ".ci/sokol/${header}"
+          done
+      - name: Configure playable Sokol desktop runtime
+        shell: bash
+        run: |
+          cmake -S . -B build-sokol \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=ON \
+            -DRTSENGINE_ENABLE_SOKOL_RENDERER=ON \
+            -DRTSENGINE_ENABLE_SOKOL_APP=ON \
+            -DRTSENGINE_SOKOL_INCLUDE_DIR="$PWD/.ci/sokol"
+      - name: Build Sokol backend libraries
+        shell: bash
+        run: |
+          cmake --build build-sokol --config Debug --parallel 2 \
+            --target rts_platform_sokol rts_render_sokol \
+                     rts_presentation_sokol \
+                     rts_desktop_sokol_composition \
+            > sokol-backends-build.log 2>&1 || {
+              tail -n 160 sokol-backends-build.log
+              exit 1
+            }
+      - name: Build playable Sokol desktop executable
+        shell: bash
+        run: |
+          cmake --build build-sokol --config Debug --parallel 2 \
+            --target rts_desktop_demo rts_sokol_shader_contract_tests \
+            > sokol-desktop-build.log 2>&1 || {
+              tail -n 200 sokol-desktop-build.log
+              exit 1
+            }
+      - name: Upload Sokol build diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-sokol-desktop
+          path: |
+            sokol-backends-build.log
+            sokol-desktop-build.log
+          if-no-files-found: ignore
+          retention-days: 3
+      - name: Test Sokol shader contract
+        run: ctest --test-dir build-sokol -C Debug --output-on-failure -R "^rts_sokol_shader_contract_tests$"

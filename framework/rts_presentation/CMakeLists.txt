@@ -1,12 +1,22 @@
-add_library(rts_rts_presentation INTERFACE)
+add_library(rts_rts_presentation STATIC
+    src/RtsPresentationExtractor.cpp
+    src/RtsPresentationEvents.cpp
+    src/RtsPresentationRuntime.cpp
+    src/DesktopController.cpp
+)
 add_library(RTSEngine::RtsPresentation ALIAS rts_rts_presentation)
 
-target_include_directories(rts_rts_presentation INTERFACE
+target_include_directories(rts_rts_presentation PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/include
 )
 
-target_link_libraries(rts_rts_presentation INTERFACE
+target_link_libraries(rts_rts_presentation PUBLIC
     RTSEngine::Rts
     RTSEngine::Presentation
+    RTSEngine::Platform
 )
-target_compile_features(rts_rts_presentation INTERFACE cxx_std_17)
+target_compile_features(rts_rts_presentation PUBLIC cxx_std_17)
+
+if(MSVC OR CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
+    target_compile_options(rts_rts_presentation PRIVATE /bigobj)
+endif()

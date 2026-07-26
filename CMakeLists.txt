@@ -13,8 +13,28 @@ option(RTSENGINE_BUILD_FUZZERS
        "Build Clang libFuzzer persistence targets" OFF)
 option(RTSENGINE_ENABLE_SOKOL_RENDERER
        "Build the optional Sokol render backend" OFF)
+option(RTSENGINE_ENABLE_SOKOL_APP
+       "Build the optional Sokol desktop platform and application" OFF)
 set(RTSENGINE_SOKOL_INCLUDE_DIR "" CACHE PATH
-    "Directory containing sokol_gfx.h for the optional Sokol backend")
+    "Directory containing pinned Sokol app, gfx, glue and log headers")
+
+if(RTSENGINE_ENABLE_SOKOL_APP AND NOT RTSENGINE_ENABLE_SOKOL_RENDERER)
+    message(FATAL_ERROR
+        "RTSENGINE_ENABLE_SOKOL_APP requires RTSENGINE_ENABLE_SOKOL_RENDERER")
+endif()
+if(RTSENGINE_ENABLE_SOKOL_RENDERER AND
+   NOT EXISTS "${RTSENGINE_SOKOL_INCLUDE_DIR}/sokol_gfx.h")
+    message(FATAL_ERROR
+        "RTSENGINE_ENABLE_SOKOL_RENDERER requires sokol_gfx.h")
+endif()
+if(RTSENGINE_ENABLE_SOKOL_APP)
+    foreach(header sokol_app.h sokol_gfx.h sokol_glue.h sokol_log.h)
+        if(NOT EXISTS "${RTSENGINE_SOKOL_INCLUDE_DIR}/${header}")
+            message(FATAL_ERROR
+                "RTSENGINE_ENABLE_SOKOL_APP requires ${header}")
+        endif()
+    endforeach()
+endif()
 
 if(RTSENGINE_ENABLE_SANITIZERS)
     if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
@@ -33,9 +53,11 @@ add_subdirectory(engine/audio)
 add_subdirectory(engine/render)
 add_subdirectory(engine/presentation)
 add_subdirectory(engine/sim)
+add_subdirectory(engine/runtime)
 add_subdirectory(engine/ecs)
 add_subdirectory(framework/rts)
 add_subdirectory(framework/rts_presentation)
+add_subdirectory(framework/rts_desktop)
 add_subdirectory(framework/tower_defense)
 add_subdirectory(framework/roguelite)
 
@@ -44,6 +66,7 @@ if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/tower_defense_demo)
     add_subdirectory(apps/roguelite_demo)
     add_subdirectory(apps/scale_benchmark)
+    add_subdirectory(apps/desktop_demo)
 endif()
 
 if(RTSENGINE_BUILD_TESTS)

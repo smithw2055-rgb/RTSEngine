@@ -19,6 +19,10 @@ FrameStepPlan SimulationHost::AdvanceFrame(double frameSeconds) {
     return plan;
 }
 
+void SimulationHost::Reset(Tick currentTick) noexcept {
+    clock_.Reset(currentTick);
+}
+
 Tick SimulationHost::CurrentTick() const noexcept {
     return clock_.CurrentTick();
 }

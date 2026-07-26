@@ -11,7 +11,6 @@ add_library(RTSEngine::RenderSokol ALIAS rts_render_sokol)
 target_include_directories(rts_render_sokol
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-    PRIVATE
         ${RTSENGINE_SOKOL_INCLUDE_DIR}
 )
 

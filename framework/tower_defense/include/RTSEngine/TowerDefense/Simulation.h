@@ -94,8 +94,13 @@ class TowerDefenseSimulation {
 public:
     TowerDefenseSimulation(std::int32_t width = 32,
                            std::int32_t height = 32,
-                           std::uint64_t rootSeed = 1)
-        : rts_(width, height), director_(rootSeed), rootSeed_(rootSeed) {}
+                           std::uint64_t rootSeed = 1);
+    ~TowerDefenseSimulation();
+
+    TowerDefenseSimulation(const TowerDefenseSimulation&) = delete;
+    TowerDefenseSimulation& operator=(const TowerDefenseSimulation&) = delete;
+    TowerDefenseSimulation(TowerDefenseSimulation&&) = delete;
+    TowerDefenseSimulation& operator=(TowerDefenseSimulation&&) = delete;
 
     void registerUnit(gameplay::UnitDefinition definition) {
         replaceById(unitDefinitions_, definition);

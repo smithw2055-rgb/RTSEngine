@@ -36,6 +36,21 @@ struct WorldUiElement final {
     float opacity{1.0f};
 };
 
+
+struct WorldOverlayQuad final {
+    float x{};
+    float y{};
+    float width{1.0f};
+    float height{1.0f};
+    float red{1.0f};
+    float green{1.0f};
+    float blue{1.0f};
+    float alpha{0.25f};
+    RenderLayer layer{RenderLayer::SelectionAndDecal};
+    render::BlendMode blend{render::BlendMode::Alpha};
+    std::int32_t sortBias{};
+};
+
 struct RenderPacket final {
     std::uint64_t previousTick{};
     std::uint64_t currentTick{};
@@ -45,6 +60,7 @@ struct RenderPacket final {
     VisibilityMask visibility{};
     std::vector<SpriteInstance> sprites;
     std::vector<WorldUiElement> worldUi;
+    std::vector<WorldOverlayQuad> worldOverlays;
 };
 
 class RenderPacketBuilder final {
@@ -95,6 +111,16 @@ public:
                 if (a.y != b.y) return a.y < b.y;
                 if (a.sortBias != b.sortBias) return a.sortBias < b.sortBias;
                 return a.viewId < b.viewId;
+            });
+        std::stable_sort(
+            packet.worldOverlays.begin(), packet.worldOverlays.end(),
+            [](const WorldOverlayQuad& a, const WorldOverlayQuad& b) {
+                if (a.layer != b.layer) {
+                    return static_cast<std::uint8_t>(a.layer) <
+                           static_cast<std::uint8_t>(b.layer);
+                }
+                if (a.y != b.y) return a.y < b.y;
+                return a.sortBias < b.sortBias;
             });
         std::stable_sort(
             packet.worldUi.begin(), packet.worldUi.end(),

@@ -66,9 +66,14 @@ bool NullPlatform::resize(WindowHandle window,
     slot->state.logicalWidth = width;
     slot->state.logicalHeight = height;
     updateFramebuffer(slot->state);
-    events_.push_back(
-        {PlatformEventType::WindowResized, window,
-         width, height, slot->state.dpiScale, slot->state.focused});
+    PlatformEvent event;
+    event.type = PlatformEventType::WindowResized;
+    event.window = window;
+    event.width = width;
+    event.height = height;
+    event.dpiScale = slot->state.dpiScale;
+    event.focused = slot->state.focused;
+    events_.push_back(std::move(event));
     return true;
 }
 
@@ -77,10 +82,14 @@ bool NullPlatform::setDpiScale(WindowHandle window, float scale) {
     if (!slot || !(scale > 0.0f)) return false;
     slot->state.dpiScale = scale;
     updateFramebuffer(slot->state);
-    events_.push_back(
-        {PlatformEventType::DpiChanged, window,
-         slot->state.logicalWidth, slot->state.logicalHeight,
-         scale, slot->state.focused});
+    PlatformEvent event;
+    event.type = PlatformEventType::DpiChanged;
+    event.window = window;
+    event.width = slot->state.logicalWidth;
+    event.height = slot->state.logicalHeight;
+    event.dpiScale = scale;
+    event.focused = slot->state.focused;
+    events_.push_back(std::move(event));
     return true;
 }
 
@@ -88,10 +97,14 @@ bool NullPlatform::setFocused(WindowHandle window, bool focused) {
     auto* slot = find(window);
     if (!slot) return false;
     slot->state.focused = focused;
-    events_.push_back(
-        {PlatformEventType::FocusChanged, window,
-         slot->state.logicalWidth, slot->state.logicalHeight,
-         slot->state.dpiScale, focused});
+    PlatformEvent event;
+    event.type = PlatformEventType::FocusChanged;
+    event.window = window;
+    event.width = slot->state.logicalWidth;
+    event.height = slot->state.logicalHeight;
+    event.dpiScale = slot->state.dpiScale;
+    event.focused = focused;
+    events_.push_back(std::move(event));
     return true;
 }
 
@@ -99,10 +112,130 @@ bool NullPlatform::requestClose(WindowHandle window) {
     auto* slot = find(window);
     if (!slot) return false;
     slot->state.closeRequested = true;
-    events_.push_back(
-        {PlatformEventType::QuitRequested, window,
-         slot->state.logicalWidth, slot->state.logicalHeight,
-         slot->state.dpiScale, slot->state.focused});
+    PlatformEvent event;
+    event.type = PlatformEventType::QuitRequested;
+    event.window = window;
+    event.width = slot->state.logicalWidth;
+    event.height = slot->state.logicalHeight;
+    event.dpiScale = slot->state.dpiScale;
+    event.focused = slot->state.focused;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+
+bool NullPlatform::key(WindowHandle window,
+                       KeyCode keyCode,
+                       bool down,
+                       std::uint32_t modifiers,
+                       bool repeat) {
+    if (!find(window) || keyCode == KeyCode::Unknown ||
+        keyCode == KeyCode::Count) return false;
+    PlatformEvent event;
+    event.type = down ? PlatformEventType::KeyDown
+                      : PlatformEventType::KeyUp;
+    event.window = window;
+    event.key = keyCode;
+    event.modifiers = modifiers;
+    event.repeat = repeat;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::text(WindowHandle window,
+                        std::uint32_t codepoint,
+                        std::uint32_t modifiers) {
+    if (!find(window) || codepoint == 0 || codepoint > 0x10FFFFu ||
+        (codepoint >= 0xD800u && codepoint <= 0xDFFFu)) return false;
+    PlatformEvent event;
+    event.type = PlatformEventType::TextInput;
+    event.window = window;
+    event.codepoint = codepoint;
+    event.modifiers = modifiers;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::pointerMove(WindowHandle window,
+                               float x,
+                               float y,
+                               std::uint32_t modifiers) {
+    if (!find(window)) return false;
+    PlatformEvent event;
+    event.type = PlatformEventType::PointerMoved;
+    event.window = window;
+    event.x = x;
+    event.y = y;
+    event.modifiers = modifiers;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::pointerButton(WindowHandle window,
+                                 PointerButton buttonValue,
+                                 bool down,
+                                 float x,
+                                 float y,
+                                 std::uint32_t modifiers) {
+    if (!find(window) || buttonValue == PointerButton::Count) return false;
+    PlatformEvent event;
+    event.type = down ? PlatformEventType::PointerDown
+                      : PlatformEventType::PointerUp;
+    event.window = window;
+    event.button = buttonValue;
+    event.x = x;
+    event.y = y;
+    event.modifiers = modifiers;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::pointerWheel(WindowHandle window,
+                                float deltaX,
+                                float deltaY,
+                                float x,
+                                float y,
+                                std::uint32_t modifiers) {
+    if (!find(window)) return false;
+    PlatformEvent event;
+    event.type = PlatformEventType::PointerWheel;
+    event.window = window;
+    event.x = x;
+    event.y = y;
+    event.deltaX = deltaX;
+    event.deltaY = deltaY;
+    event.modifiers = modifiers;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::touch(WindowHandle window,
+                         std::uint64_t pointerId,
+                         PlatformEventType type,
+                         float x,
+                         float y) {
+    if (!find(window) || pointerId == 0 ||
+        (type != PlatformEventType::TouchBegan &&
+         type != PlatformEventType::TouchMoved &&
+         type != PlatformEventType::TouchEnded)) return false;
+    PlatformEvent event;
+    event.type = type;
+    event.window = window;
+    event.pointerId = pointerId;
+    event.x = x;
+    event.y = y;
+    events_.push_back(std::move(event));
+    return true;
+}
+
+bool NullPlatform::dropFiles(WindowHandle window,
+                             std::vector<std::string> paths) {
+    if (!find(window) || paths.empty()) return false;
+    PlatformEvent event;
+    event.type = PlatformEventType::FilesDropped;
+    event.window = window;
+    event.paths = std::move(paths);
+    events_.push_back(std::move(event));
     return true;
 }
 

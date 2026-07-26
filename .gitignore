@@ -1,0 +1,7 @@
+/build*/
+/.ci/
+/.third_party/
+/fuzz-artifacts/
+*.user
+*.suo
+*.vcxproj.user

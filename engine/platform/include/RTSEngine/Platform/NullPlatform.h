@@ -24,6 +24,22 @@ public:
     bool setDpiScale(WindowHandle window, float scale);
     bool setFocused(WindowHandle window, bool focused);
     bool requestClose(WindowHandle window);
+    bool key(WindowHandle window, KeyCode key, bool down,
+             std::uint32_t modifiers = PlatformModifierNone,
+             bool repeat = false);
+    bool text(WindowHandle window, std::uint32_t codepoint,
+              std::uint32_t modifiers = PlatformModifierNone);
+    bool pointerMove(WindowHandle window, float x, float y,
+                     std::uint32_t modifiers = PlatformModifierNone);
+    bool pointerButton(WindowHandle window, PointerButton button, bool down,
+                       float x, float y,
+                       std::uint32_t modifiers = PlatformModifierNone);
+    bool pointerWheel(WindowHandle window, float deltaX, float deltaY,
+                      float x = 0.0f, float y = 0.0f,
+                      std::uint32_t modifiers = PlatformModifierNone);
+    bool touch(WindowHandle window, std::uint64_t pointerId,
+               PlatformEventType type, float x, float y);
+    bool dropFiles(WindowHandle window, std::vector<std::string> paths);
     bool advanceTime(double seconds) noexcept;
 
     std::size_t liveWindowCount() const noexcept;

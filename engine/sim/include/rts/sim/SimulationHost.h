@@ -21,6 +21,7 @@ public:
                             std::uint32_t maxTicksPerFrame = 4);
 
     [[nodiscard]] FrameStepPlan AdvanceFrame(double frameSeconds);
+    void Reset(Tick currentTick = 0) noexcept;
     [[nodiscard]] Tick CurrentTick() const noexcept;
 
 private:
