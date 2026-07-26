@@ -50,7 +50,7 @@ jobs:
               exit 1
             }
       - name: Upload matrix build diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-${{ matrix.os }}-${{ matrix.build_type }}
@@ -145,7 +145,7 @@ jobs:
               exit 1
             }
       - name: Upload Sokol build diagnostics
-        if: always()
+        if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: build-logs-sokol-desktop
