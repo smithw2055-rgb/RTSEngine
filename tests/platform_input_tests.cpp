@@ -32,7 +32,8 @@ int main() {
     require(platform.key(window, KeyCode::B, true,
                          PlatformModifierControl),
             "key down injection failed");
-    require(platform.text(window, U'塔', PlatformModifierControl), "text injection failed");
+    require(platform.text(window, U'\u5854', PlatformModifierControl),
+            "text injection failed");
     require(platform.pointerWheel(window, 0.0f, 2.0f, 100.0f, 80.0f,
                                   PlatformModifierControl),
             "wheel injection failed");
@@ -57,7 +58,7 @@ int main() {
             "pointer position mismatch");
     require(input.pointer().pressed[0], "left button should be pressed");
     require(input.pointer().wheelY == 2.0f, "wheel mismatch");
-    require(input.textInput() == U"塔", "text input mismatch");
+    require(input.textInput() == U"\u5854", "text input mismatch");
     require(input.touches().size() == 1 && input.touches().front().active,
             "touch was not tracked");
     require(input.droppedFiles().size() == 2,
