@@ -3,6 +3,7 @@
 #include <RTSEngine/Rts/AiRuntime.h>
 #include <RTSEngine/Rts/Diplomacy.h>
 #include <RTSEngine/Rts/Simulation.h>
+#include <RTSEngine/Rts/TargetAuthorization.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -12,6 +13,8 @@
 #include <vector>
 
 namespace rts::gameplay {
+
+class RtsGameSessionArchive;
 
 enum class SessionCommandResult : std::uint8_t {
     Accepted,
@@ -38,7 +41,19 @@ struct TeamSupplyLimit final {
 class RtsGameSession final {
 public:
     RtsGameSession(std::int32_t width = 32, std::int32_t height = 32)
-        : simulation_(width, height) {}
+        : simulation_(width, height) {
+        BindRtsTargetAuthorization(
+            simulation_,
+            &diplomacy_,
+            [](const void* context,
+               std::uint32_t observerTeam,
+               std::uint32_t targetTeam) {
+                const auto* diplomacy =
+                    static_cast<const DiplomacyRuntime*>(context);
+                return diplomacy &&
+                       diplomacy->hostile(observerTeam, targetTeam);
+            });
+    }
 
     bool registerBuilding(BuildingDefinition value) {
         return simulation_.registerBuilding(std::move(value));
@@ -211,6 +226,8 @@ public:
     const AiRuntime& ai() const noexcept { return ai_; }
 
 private:
+    friend class RtsGameSessionArchive;
+
     struct TrainReservation final {
         std::uint64_t targetTick{};
         std::uint32_t teamId{};
@@ -223,8 +240,8 @@ private:
     using ProducerConstIterator = std::vector<ProducerPolicy>::const_iterator;
     using SupplyIterator = std::vector<TeamSupplyLimit>::iterator;
     using SupplyConstIterator = std::vector<TeamSupplyLimit>::const_iterator;
-    using ReservationIterator = std::vector<TrainReservation>::iterator;
-    using ReservationConstIterator = std::vector<TrainReservation>::const_iterator;
+    using ReservationConstIterator =
+        std::vector<TrainReservation>::const_iterator;
 
     static auto reservationIdentity(const TrainReservation& value) noexcept {
         return std::tie(value.targetTick, value.teamId, value.sequence);
