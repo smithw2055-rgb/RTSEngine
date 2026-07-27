@@ -322,7 +322,8 @@ public:
                  navigationCandidate,
                  commandCandidate,
                  snapshotCandidate,
-                 version >= 2u ? &visionCandidate : nullptr});
+                 version >= 2u ? &visionCandidate : nullptr,
+                 version});
             snapshotCandidate.worldHash = FinalizeRtsAuthoritativeWorldHash(
                 snapshotCandidate.worldHash,
                 worldCandidate.entityRegistryHash(),
