@@ -21,12 +21,23 @@ struct AuthoritativeStepValidation final {
     }
 };
 
+// Existing RTSEngine applications historically begin at Tick 0 or Tick 1.
+// Preserve that entry policy while requiring exact sequential advancement
+// after the first committed Tick. All nested simulation layers use this same
+// validation contract so a rejected inner Tick cannot split their timelines.
 inline constexpr AuthoritativeStepValidation ValidateAuthoritativeStep(
     bool hasStepped,
     std::uint64_t lastCompletedTick,
     std::uint64_t tick) noexcept {
-    const auto expected = hasStepped ? lastCompletedTick + 1u : 0u;
-    if (hasStepped && tick <= lastCompletedTick) {
+    if (!hasStepped) {
+        if (tick <= 1u) {
+            return {AuthoritativeStepFailure::None, tick, tick};
+        }
+        return {AuthoritativeStepFailure::NonSequentialTick, 0u, tick};
+    }
+
+    const auto expected = lastCompletedTick + 1u;
+    if (tick <= lastCompletedTick) {
         return {AuthoritativeStepFailure::StaleTick, expected, tick};
     }
     if (tick != expected) {
