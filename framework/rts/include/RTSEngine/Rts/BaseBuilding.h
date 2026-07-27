@@ -3,6 +3,7 @@
 #include <RTSEngine/Ecs/EntityCommandBuffer.h>
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/Combat.h>
+#include <RTSEngine/Rts/Economy.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/VisionTypes.h>
 
@@ -15,33 +16,6 @@ namespace rts::gameplay {
 using ConstructionId = std::uint32_t;
 using ProductionId = std::uint32_t;
 
-struct ResourceLedger {
-    std::int32_t available{};
-    std::int32_t reserved{};
-    std::int32_t spent{};
-
-    bool reserve(std::int32_t amount) noexcept {
-        if (amount < 0 || available < amount) return false;
-        available -= amount;
-        reserved += amount;
-        return true;
-    }
-
-    bool commit(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) return false;
-        reserved -= amount;
-        spent += amount;
-        return true;
-    }
-
-    bool release(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) return false;
-        reserved -= amount;
-        available += amount;
-        return true;
-    }
-};
-
 struct BuildingDefinition {
     std::uint32_t id{};
     std::int32_t cost{};
@@ -51,6 +25,9 @@ struct BuildingDefinition {
     bool producer{};
     CombatStats combat{};
     std::int32_t visionRange{8};
+    std::uint32_t supplyProvided{};
+    std::uint32_t productionQueueCapacity{8};
+    std::vector<std::uint32_t> trainableUnits;
 };
 
 struct BuildingFootprint {
@@ -79,6 +56,7 @@ struct ProductionItem {
     ProductionId id{};
     std::uint32_t unitDefinitionId{};
     std::int32_t reservedCost{};
+    std::uint32_t supplyCost{};
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
     std::uint32_t baseRequiredTicks{1};
@@ -110,8 +88,10 @@ struct BuildResult {
 
 class BaseBuildingRuntime {
 public:
-    BaseBuildingRuntime(ResourceLedger& ledger, NavigationGrid& navigation)
-        : ledger_(ledger), navigation_(navigation) {}
+    BaseBuildingRuntime(
+        TeamEconomyRuntime& economies,
+        NavigationGrid& navigation)
+        : economies_(economies), navigation_(navigation) {}
 
     BuildResult begin(const ecs::SystemContext& context,
                       ecs::EntityCommandBuffer& commands,
@@ -121,7 +101,7 @@ public:
                       GridPoint requiredPathGoal,
                       std::uint32_t ownerTeam = 0,
                       std::uint32_t baseBuildTicks = 0) {
-        if (!valid(definition)) {
+        if (!valid(definition) || ownerTeam == 0) {
             return {false, BuildFailure::InvalidDefinition, 0};
         }
 
@@ -132,7 +112,7 @@ public:
         if (placementFailure != BuildFailure::None) {
             return {false, placementFailure, 0};
         }
-        if (!ledger_.reserve(definition.cost)) {
+        if (!economies_.reserveResources(ownerTeam, definition.cost)) {
             return {false, BuildFailure::InsufficientResources, 0};
         }
 
@@ -170,7 +150,7 @@ public:
                 BuildingFootprint& footprint) {
                 if (result == BuildFailure::None || site.id != id) return;
                 releaseFootprint(footprint);
-                ledger_.release(site.reservedCost);
+                economies_.releaseResources(site.ownerTeam, site.reservedCost);
                 commands.destroy(context, entity);
                 result = BuildFailure::None;
             });
@@ -187,7 +167,7 @@ public:
                 ++site.progressTicks;
                 if (site.progressTicks < site.requiredTicks) return;
 
-                ledger_.commit(site.reservedCost);
+                economies_.commitResources(site.ownerTeam, site.reservedCost);
                 commands.add(
                     context, entity,
                     Building{site.definitionId, site.producer});
@@ -235,7 +215,9 @@ public:
         setBlocked(footprint, false);
     }
 
-    const ResourceLedger& ledger() const noexcept { return ledger_; }
+    const ResourceLedger& ledger(std::uint32_t teamId) const noexcept {
+        return economies_.resources(teamId);
+    }
 
     ConstructionId nextConstructionId() const noexcept {
         return nextConstructionId_;
@@ -249,7 +231,9 @@ private:
     static bool valid(const BuildingDefinition& definition) noexcept {
         return definition.id != 0 && definition.cost >= 0 &&
                definition.width > 0 && definition.height > 0 &&
-               definition.visionRange >= 0;
+               definition.visionRange >= 0 &&
+               (!definition.producer ||
+                definition.productionQueueCapacity > 0);
     }
 
     static std::vector<GridPoint> footprintCells(
@@ -271,7 +255,7 @@ private:
             footprintCells(footprint), blocked);
     }
 
-    ResourceLedger& ledger_;
+    TeamEconomyRuntime& economies_;
     NavigationGrid& navigation_;
     ConstructionId nextConstructionId_{};
 };
