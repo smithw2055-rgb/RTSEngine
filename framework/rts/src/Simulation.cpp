@@ -10,7 +10,33 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
       movement_(width, height),
       building_(resources_, navigation_),
       combat_(width, height) {
+    combat_.setVisibilityFilter(
+        &vision_,
+        [](const void* context,
+           std::uint32_t observerTeam,
+           ecs::Entity,
+           std::int32_t targetX,
+           std::int32_t targetY) {
+            const auto* vision = static_cast<const VisionRuntime*>(context);
+            return vision && vision->visible(
+                observerTeam, {targetX, targetY});
+        });
+
     installSystems();
+    scheduler_.add(
+        ecs::Stage::Command,
+        -100,
+        50,
+        [this](ecs::World& world, const ecs::SystemContext&) {
+            VisionSystem::run(world, navigation_, vision_);
+        });
+    scheduler_.add(
+        ecs::Stage::Combat,
+        -100,
+        340,
+        [this](ecs::World& world, const ecs::SystemContext&) {
+            VisionSystem::run(world, navigation_, vision_);
+        });
     scheduler_.add(
         ecs::Stage::Snapshot,
         10,
