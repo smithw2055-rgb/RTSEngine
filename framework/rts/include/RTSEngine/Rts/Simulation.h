@@ -11,6 +11,7 @@
 #include <RTSEngine/Rts/EntityFactory.h>
 #include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/Influence.h>
 #include <RTSEngine/Rts/MovementSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
@@ -20,6 +21,7 @@
 #include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
+#include <RTSEngine/Rts/TeamEconomy.h>
 #include <RTSEngine/Rts/Vision.h>
 #include <rts/sim/AuthoritativeStep.h>
 
@@ -73,7 +75,18 @@ public:
     }
 
     void setResources(std::int32_t available) noexcept {
-        resources_.available = std::max<std::int32_t>(0, available);
+        (void)economy_.setAvailable(
+            playerTeamId_,
+            kPrimaryResourceType,
+            std::max<std::int32_t>(0, available));
+    }
+
+    bool setTeamResource(
+        std::uint32_t teamId,
+        ResourceTypeId resourceType,
+        ResourceAmount available) {
+        if (configurationFrozen()) return false;
+        return economy_.setAvailable(teamId, resourceType, available);
     }
 
     bool setRequiredRoute(GridPoint start, GridPoint goal) noexcept {
@@ -92,6 +105,7 @@ public:
     void reserveMovementAgents(std::size_t count) {
         movement_.reserveAgents(count);
         combat_.reserveCombatants(count);
+        harvesting_.reserveWorkers(count);
     }
 
     void reserveTickScratch(
@@ -125,6 +139,34 @@ public:
         if (configurationFrozen()) return {};
         return createUnitUnchecked(
             position, speed, teamId, combat, visionRange);
+    }
+
+    ecs::Entity createUnitDefinition(
+        std::uint32_t definitionId,
+        Position position,
+        std::uint32_t teamId = 1) {
+        if (configurationFrozen() || teamId == 0) return {};
+        const auto* definition = unitDefinitions_.find(definitionId);
+        if (!definition) return {};
+        return EntityFactory::createUnitDefinition(
+            world_, modifiers_, position, teamId, *definition);
+    }
+
+    ecs::Entity createResourceNode(
+        Position position,
+        ResourceTypeId resourceType,
+        ResourceAmount amount) {
+        if (configurationFrozen() || resourceType == 0 || amount <= 0 ||
+            !navigation_.contains({position.x, position.y}) ||
+            navigation_.blocked({position.x, position.y})) {
+            return {};
+        }
+        const auto entity = world_.create();
+        world_.emplace<Position>(entity, position);
+        world_.emplace<ResourceNode>(
+            entity,
+            ResourceNode{++nextResourceNodeId_, resourceType, amount});
+        return entity;
     }
 
     sim::CommandSubmitResult submitDetailed(TickCommand command) {
@@ -173,7 +215,18 @@ public:
     }
 
     const ResourceLedger& resources() const noexcept {
-        return resources_;
+        compatibilityResources_ = economy_.legacyLedger(playerTeamId_);
+        return compatibilityResources_;
+    }
+
+    const TeamEconomyRuntime& teamEconomy() const noexcept {
+        return economy_;
+    }
+
+    ResourceAmount resourceAvailable(
+        std::uint32_t teamId,
+        ResourceTypeId resourceType) const noexcept {
+        return economy_.available(teamId, resourceType);
     }
 
     sim::AuthoritativeStepValidation validateStep(
@@ -324,7 +377,7 @@ private:
         return {
             structuralCommands_,
             building_,
-            resources_,
+            economy_,
             modifiers_,
             buildingDefinitions_,
             unitDefinitions_,
@@ -355,7 +408,11 @@ private:
             [this](ecs::World& world,
                    const ecs::SystemContext& context) {
                 for (const auto& command : activeCommands_) {
-                    if (OrderSystem::handles(command.type)) {
+                    HarvestCommandSystem::observeStop(world, command);
+                    if (HarvestCommandSystem::handles(command.type)) {
+                        HarvestCommandSystem::process(
+                            world, context, command, events_);
+                    } else if (OrderSystem::handles(command.type)) {
                         OrderSystem::process(
                             world, context, command, {events_, &vision_});
                     } else if (EconomyCommandSystem::handles(command.type)) {
@@ -423,7 +480,7 @@ private:
                     world,
                     context,
                     {structuralCommands_,
-                     resources_,
+                     economy_,
                      modifiers_,
                      unitDefinitions_,
                      events_});
@@ -442,6 +499,16 @@ private:
             });
 
         scheduler_.add(
+            ecs::Stage::Simulation,
+            30,
+            330,
+            [this](ecs::World& world,
+                   const ecs::SystemContext& context) {
+                harvesting_.advance(
+                    world, context, economy_, events_);
+            });
+
+        scheduler_.add(
             ecs::Stage::Combat,
             0,
             350,
@@ -453,9 +520,8 @@ private:
                     {combat_,
                      structuralCommands_,
                      building_,
-                     resources_,
+                     economy_,
                      modifiers_,
-                     playerTeamId_,
                      events_,
                      deathSideEffects_});
             });
@@ -487,7 +553,8 @@ private:
                 SnapshotBuilder::build(
                     world,
                     context.tick,
-                    {resources_,
+                    {economy_,
+                     playerTeamId_,
                      modifiers_,
                      navigation_,
                      commands_,
@@ -512,9 +579,10 @@ private:
     GridFlowFieldCache flowFields_;
     RuntimeTelemetry telemetry_;
     MovementReservationRuntime movement_;
-    ResourceLedger resources_;
+    TeamEconomyRuntime economy_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
+    HarvestingRuntime harvesting_;
     GameplayModifierSystem modifiers_;
     std::vector<TickCommand> activeCommands_;
     std::vector<ConstructionId> completingConstructions_;
@@ -526,8 +594,10 @@ private:
     GridPoint requiredPathStart_{0, 0};
     GridPoint requiredPathGoal_{0, 0};
     ProductionId nextProductionId_{};
+    std::uint32_t nextResourceNodeId_{};
     std::uint32_t playerTeamId_{1};
     std::uint64_t lastCompletedTick_{};
+    mutable ResourceLedger compatibilityResources_{};
     mutable std::uint64_t influenceWorldHash_{kInvalidDerivedHash};
     bool configurationFrozen_{};
     bool hasStepped_{};
