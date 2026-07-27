@@ -324,8 +324,8 @@ void testAiEconomyAndSessionArchive() {
     require(restored.step(1));
     require(RtsGameSessionArchive::authoritativeHash(session) ==
             RtsGameSessionArchive::authoritativeHash(restored));
-    require(session.researchCompleted(2, 100));
-    require(restored.researchCompleted(2, 100));
+    require(!session.researchCompleted(2, 100));
+    require(!restored.researchCompleted(2, 100));
 
     const auto next = session.simulation().commandStreamState().pending;
     require(!next.empty());
@@ -334,6 +334,13 @@ void testAiEconomyAndSessionArchive() {
         gather = gather || command.type == CommandType::Gather;
     }
     require(gather);
+
+    require(session.step(2));
+    require(restored.step(2));
+    require(RtsGameSessionArchive::authoritativeHash(session) ==
+            RtsGameSessionArchive::authoritativeHash(restored));
+    require(session.researchCompleted(2, 100));
+    require(restored.researchCompleted(2, 100));
 }
 
 } // namespace
