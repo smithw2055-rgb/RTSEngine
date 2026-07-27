@@ -91,6 +91,18 @@ public:
 
     void reserveMovementAgents(std::size_t count) {
         movement_.reserveAgents(count);
+        combat_.reserveCombatants(count);
+    }
+
+    void reserveTickScratch(
+        std::size_t activeCommandCount,
+        std::size_t structuralCommandCount,
+        std::size_t deferredEntityCount,
+        std::size_t constructionCompletionCount) {
+        activeCommands_.reserve(activeCommandCount);
+        structuralCommands_.reserve(
+            structuralCommandCount, deferredEntityCount);
+        completingConstructions_.reserve(constructionCompletionCount);
     }
 
     bool setTeamModifierProfile(
@@ -395,7 +407,10 @@ private:
                 ConstructionSystem::run(
                     world,
                     context,
-                    {building_, structuralCommands_, events_});
+                    {building_,
+                     structuralCommands_,
+                     completingConstructions_,
+                     events_});
             });
 
         scheduler_.add(
@@ -502,6 +517,7 @@ private:
     CombatRuntime combat_;
     GameplayModifierSystem modifiers_;
     std::vector<TickCommand> activeCommands_;
+    std::vector<ConstructionId> completingConstructions_;
     std::vector<DomainEvent> events_;
     std::vector<DomainEvent> deathSideEffects_;
     mutable WorldSnapshot snapshot_;
