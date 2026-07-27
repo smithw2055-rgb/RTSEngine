@@ -3,6 +3,7 @@
 #include <RTSEngine/Network/ConnectionQuality.h>
 #include <RTSEngine/Rts/RtsLobby.h>
 #include <RTSEngine/Rts/RtsLockstepArchive.h>
+#include <RTSEngine/Rts/RtsOnlineServices.h>
 #include <rts/foundation/BinaryArchive.h>
 
 #include <algorithm>
