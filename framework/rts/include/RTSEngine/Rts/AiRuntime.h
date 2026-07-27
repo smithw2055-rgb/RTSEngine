@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/Diplomacy.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/Vision.h>
 
@@ -164,6 +165,7 @@ private:
                 const Weapon&,
                 const CombatDirective&) {
                 if (team.id != state.teamId || health.current <= 0 ||
+                    world.try_get<WorkerHarvester>(entity) ||
                     state.nextSequence ==
                         std::numeric_limits<std::uint32_t>::max()) {
                     return;
