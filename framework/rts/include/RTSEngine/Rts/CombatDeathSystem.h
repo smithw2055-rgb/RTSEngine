@@ -9,7 +9,6 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <limits>
 #include <vector>
 
 namespace rts::gameplay {
@@ -18,9 +17,8 @@ struct CombatDeathSystemDependencies {
     CombatRuntime& combat;
     ecs::EntityCommandBuffer& structuralCommands;
     BaseBuildingRuntime& building;
-    ResourceLedger& resources;
+    TeamEconomyRuntime& economies;
     const GameplayModifierSystem& modifiers;
-    std::uint32_t playerTeamId;
     std::vector<DomainEvent>& events;
     std::vector<DomainEvent>& deathSideEffects;
 };
@@ -74,9 +72,11 @@ private:
             dependencies.building.releaseFootprint(*footprint);
         }
 
+        const auto* victimTeam = world.try_get<Team>(victim);
         const auto* site = world.try_get<ConstructionSite>(victim);
         if (site) {
-            dependencies.resources.release(site->reservedCost);
+            dependencies.economies.releaseResources(
+                site->ownerTeam, site->reservedCost);
             dependencies.deathSideEffects.push_back(
                 {context.tick,
                  DomainEventType::ConstructionDestroyed,
@@ -89,27 +89,30 @@ private:
 
         const auto* production =
             world.try_get<ProductionQueue>(victim);
-        if (production) {
+        if (production && victimTeam) {
             for (const auto& item : production->items) {
-                dependencies.resources.release(item.reservedCost);
+                dependencies.economies.releaseResources(
+                    victimTeam->id, item.reservedCost);
+                dependencies.economies.releaseReservedSupply(
+                    victimTeam->id, item.supplyCost);
             }
+        }
+
+        const auto* supply = world.try_get<UnitSupply>(victim);
+        if (supply && victimTeam) {
+            dependencies.economies.releaseUsedSupply(
+                victimTeam->id, supply->amount);
         }
 
         const auto* bounty = world.try_get<Bounty>(victim);
         const auto* killerTeam = world.try_get<Team>(killer);
-        const auto* victimTeam = world.try_get<Team>(victim);
         if (bounty && bounty->amount > 0 && killerTeam && victimTeam &&
-            killerTeam->id == dependencies.playerTeamId &&
             killerTeam->id != victimTeam->id) {
             const auto awarded = dependencies.modifiers.bounty(
                 killerTeam->id, bounty->amount);
-            if (awarded > 0) {
-                const auto next = std::min<std::int64_t>(
-                    std::numeric_limits<std::int32_t>::max(),
-                    static_cast<std::int64_t>(
-                        dependencies.resources.available) + awarded);
-                dependencies.resources.available =
-                    static_cast<std::int32_t>(next);
+            const auto credited = dependencies.economies.addResources(
+                killerTeam->id, awarded);
+            if (credited > 0) {
                 dependencies.deathSideEffects.push_back(
                     {context.tick,
                      DomainEventType::BountyAwarded,
@@ -117,7 +120,7 @@ private:
                      0,
                      0,
                      victim,
-                     awarded});
+                     credited});
             }
         }
     }
