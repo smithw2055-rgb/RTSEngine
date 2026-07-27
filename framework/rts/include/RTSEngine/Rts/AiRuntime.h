@@ -40,15 +40,18 @@ public:
 
     const std::vector<AiTeamState>& teams() const noexcept { return teams_; }
 
+    template<class Submit>
     void emitCommands(
         const ecs::World& world,
         const VisionRuntime& vision,
         const DiplomacyRuntime& diplomacy,
         std::uint64_t tick,
-        TickCommandStream& commands) {
+        Submit&& submit) {
+        auto&& callback = submit;
         for (auto& team : teams_) {
             if (tick % team.thinkIntervalTicks != 0) continue;
-            emitTeamCommands(world, vision, diplomacy, tick, team, commands);
+            emitTeamCommands(
+                world, vision, diplomacy, tick, team, callback);
         }
     }
 
@@ -72,13 +75,14 @@ private:
         return dx + dy;
     }
 
+    template<class Submit>
     static void emitTeamCommands(
         const ecs::World& world,
         const VisionRuntime& vision,
         const DiplomacyRuntime& diplomacy,
         std::uint64_t tick,
         AiTeamState& state,
-        TickCommandStream& commands) {
+        Submit& submit) {
         std::vector<Candidate> enemies;
         world.eachRef<Position, Team, Health>(
             [&](ecs::Entity entity,
@@ -133,7 +137,7 @@ private:
                     command.targetX = state.fallbackObjective.x;
                     command.targetY = state.fallbackObjective.y;
                 }
-                commands.submitDetailed(std::move(command));
+                submit(std::move(command));
             });
     }
 
