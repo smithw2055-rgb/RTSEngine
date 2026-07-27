@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -129,16 +130,15 @@ public:
         // A caller that intentionally skips a Tick gets the historical stream
         // semantics: commands for skipped Ticks are discarded. Authoritative
         // simulations preflight sequential Tick advancement before calling us.
-        const auto firstCurrent = lowerBucket(tick);
-        for (auto bucket = buckets_.begin(); bucket != firstCurrent; ++bucket) {
-            pendingCount_ -= bucket->commands.size();
+        while (!buckets_.empty() && buckets_.front().tick < tick) {
+            pendingCount_ -= buckets_.front().commands.size();
+            buckets_.pop_front();
         }
-        buckets_.erase(buckets_.begin(), firstCurrent);
 
         if (buckets_.empty() || buckets_.front().tick != tick) return {};
         auto result = std::move(buckets_.front().commands);
         pendingCount_ -= result.size();
-        buckets_.erase(buckets_.begin());
+        buckets_.pop_front();
         return result;
     }
 
@@ -175,8 +175,7 @@ public:
             return false;
         }
 
-        std::vector<Bucket> buckets;
-        buckets.reserve(state.pending.size());
+        std::deque<Bucket> buckets;
         for (auto& command : state.pending) {
             if (buckets.empty() ||
                 buckets.back().tick != command.targetTick) {
@@ -211,8 +210,8 @@ private:
         std::vector<Command> commands;
     };
 
-    using BucketIterator = typename std::vector<Bucket>::iterator;
-    using ConstBucketIterator = typename std::vector<Bucket>::const_iterator;
+    using BucketIterator = typename std::deque<Bucket>::iterator;
+    using ConstBucketIterator = typename std::deque<Bucket>::const_iterator;
 
     BucketIterator lowerBucket(std::uint64_t tick) {
         return std::lower_bound(
@@ -301,7 +300,7 @@ private:
         return true;
     }
 
-    std::vector<Bucket> buckets_;
+    std::deque<Bucket> buckets_;
     std::size_t pendingCount_{};
     std::uint64_t committedThrough_{};
 };
