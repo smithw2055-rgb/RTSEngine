@@ -4,13 +4,13 @@
 
 namespace rts::gameplay {
 
-using GridPoint = navigation::GridPoint;
-using NavigationGridState = navigation::NavigationGridState;
-using NavigationGrid = navigation::NavigationGrid;
-using PathResult = navigation::PathResult;
-using GridPathfinderScratch = navigation::GridPathfinderScratch;
-using GridPathfinder = navigation::GridPathfinder;
+using GridPoint = ::rts::navigation::GridPoint;
+using NavigationGridState = ::rts::navigation::NavigationGridState;
+using NavigationGrid = ::rts::navigation::NavigationGrid;
+using PathResult = ::rts::navigation::PathResult;
+using GridPathfinderScratch = ::rts::navigation::GridPathfinderScratch;
+using GridPathfinder = ::rts::navigation::GridPathfinder;
 
-using navigation::ManhattanDistance;
+using ::rts::navigation::ManhattanDistance;
 
 } // namespace rts::gameplay
