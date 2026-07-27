@@ -88,7 +88,22 @@ jobs:
       - name: Test rarity integration
         run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -R "^rts_reward_rarity_integration$"
       - name: Test remaining suite
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure -E "^(rts_(assets_runtime|fixed_2d_renderer|presentation_events|platform_render|presentation_scene|snapshot_interpolation)_tests|rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$"
+        shell: bash
+        run: |
+          ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure \
+            -E "^(rts_(assets_runtime|fixed_2d_renderer|presentation_events|platform_render|presentation_scene|snapshot_interpolation)_tests|rts_reward_rarity_(planner|pity|failures|integration)|rts_roguelite_(sequence_(projection|archive|continuation)|persistence_tests))$" \
+            > remaining-tests.log 2>&1 || {
+              tail -n 240 remaining-tests.log
+              exit 1
+            }
+      - name: Upload test diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-${{ matrix.os }}-${{ matrix.build_type }}
+          path: remaining-tests.log
+          if-no-files-found: ignore
+          retention-days: 3
 
   sokol-desktop:
     name: playable Sokol desktop (ubuntu-latest, Debug)
