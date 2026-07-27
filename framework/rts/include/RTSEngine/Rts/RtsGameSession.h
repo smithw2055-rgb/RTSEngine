@@ -6,6 +6,8 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -134,7 +136,21 @@ public:
                 return productionResult;
             }
         }
-        return translate(simulation_.submitDetailed(std::move(command)));
+
+        const bool production = command.type == CommandType::Train;
+        const TrainReservation reservation{
+            command.targetTick,
+            command.issuer,
+            command.sequence,
+            command.subject};
+        const auto streamResult =
+            simulation_.submitDetailed(std::move(command));
+        const auto result = translate(streamResult);
+        if (production && result == SessionCommandResult::Accepted &&
+            !hasReservation(reservation)) {
+            insertReservation(reservation);
+        }
+        return result;
     }
 
     bool submit(TickCommand command) {
@@ -145,6 +161,14 @@ public:
     RtsStepResult stepDetailed(std::uint64_t tick) {
         const auto result = simulation_.stepDetailed(tick);
         if (result != RtsStepResult::Advanced) return result;
+
+        reservations_.erase(
+            std::remove_if(
+                reservations_.begin(), reservations_.end(),
+                [tick](const TrainReservation& reservation) {
+                    return reservation.targetTick <= tick;
+                }),
+            reservations_.end());
 
         const auto nextTick = simulation_.nextExpectedTick();
         ai_.emitCommands(
@@ -182,11 +206,11 @@ public:
                 const Team& team,
                 const ProductionQueue& queue) {
                 if (team.id != teamId) return;
-                const auto remaining =
-                    std::numeric_limits<std::uint32_t>::max() - used;
-                used += static_cast<std::uint32_t>(
-                    std::min<std::size_t>(queue.items.size(), remaining));
+                addSaturated(used, queue.items.size());
             });
+        for (const auto& reservation : reservations_) {
+            if (reservation.teamId == teamId) addSaturated(used, 1u);
+        }
         return used;
     }
 
@@ -197,11 +221,70 @@ public:
             : std::numeric_limits<std::uint32_t>::max();
     }
 
+    std::size_t pendingTrainReservations() const noexcept {
+        return reservations_.size();
+    }
+
     const RtsSimulation& simulation() const noexcept { return simulation_; }
     const DiplomacyRuntime& diplomacy() const noexcept { return diplomacy_; }
     const AiRuntime& ai() const noexcept { return ai_; }
 
 private:
+    struct TrainReservation final {
+        std::uint64_t targetTick{};
+        std::uint32_t teamId{};
+        std::uint32_t sequence{};
+        ecs::Entity producer{};
+    };
+
+    static auto reservationKey(const TrainReservation& reservation) noexcept {
+        return std::tie(
+            reservation.targetTick,
+            reservation.teamId,
+            reservation.sequence,
+            reservation.producer);
+    }
+
+    static bool reservationLess(
+        const TrainReservation& first,
+        const TrainReservation& second) noexcept {
+        return reservationKey(first) < reservationKey(second);
+    }
+
+    bool hasReservation(const TrainReservation& reservation) const noexcept {
+        const auto found = std::lower_bound(
+            reservations_.begin(), reservations_.end(),
+            reservation, reservationLess);
+        return found != reservations_.end() &&
+               !reservationLess(reservation, *found) &&
+               !reservationLess(*found, reservation);
+    }
+
+    void insertReservation(TrainReservation reservation) {
+        reservations_.insert(
+            std::lower_bound(
+                reservations_.begin(), reservations_.end(),
+                reservation, reservationLess),
+            reservation);
+    }
+
+    std::size_t pendingForProducer(ecs::Entity producer) const noexcept {
+        return static_cast<std::size_t>(std::count_if(
+            reservations_.begin(), reservations_.end(),
+            [producer](const TrainReservation& reservation) {
+                return reservation.producer == producer;
+            }));
+    }
+
+    static void addSaturated(
+        std::uint32_t& value,
+        std::size_t additional) noexcept {
+        const auto remaining =
+            std::numeric_limits<std::uint32_t>::max() - value;
+        value += static_cast<std::uint32_t>(
+            std::min<std::size_t>(additional, remaining));
+    }
+
     auto lowerProducer(std::uint32_t definitionId) noexcept {
         return std::lower_bound(
             producers_.begin(), producers_.end(), definitionId,
@@ -266,7 +349,8 @@ private:
                 command.definitionId)) {
             return SessionCommandResult::ProducerRestricted;
         }
-        if (queue->items.size() >= policy->queueCapacity) {
+        if (queue->items.size() + pendingForProducer(command.subject) >=
+            policy->queueCapacity) {
             return SessionCommandResult::QueueFull;
         }
         if (usedSupply(team->id) >= supplyCapacity(team->id)) {
@@ -295,6 +379,7 @@ private:
     AiRuntime ai_;
     std::vector<ProducerPolicy> producers_;
     std::vector<TeamSupplyLimit> supply_;
+    std::vector<TrainReservation> reservations_;
 };
 
 } // namespace rts::gameplay
