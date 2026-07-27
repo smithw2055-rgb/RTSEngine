@@ -357,10 +357,10 @@ void testGraphLaneRouteIsFrozenAtWaveStart() {
     check(simulation.snapshot().enemies.front().waypointIndex == 1);
     check(simulation.snapshot().enemies.front().waypointCount == 3);
 
-    check(simulation.setLaneConnectionEnabled(20, 40, false));
+    check(!simulation.setLaneConnectionEnabled(20, 40, false));
     const auto live = simulation.director().laneGraph().findRoute(10, 40);
     check(live.found);
-    check(live.nodeIds == std::vector<LaneNodeId>({10, 30, 40}));
+    check(live.nodeIds == std::vector<LaneNodeId>({10, 20, 40}));
     check(simulation.director().plan().routes.front() == frozen);
 
     bool reachedFirstWaypoint = false;
