@@ -68,44 +68,48 @@ public:
         synchronizeLayers();
         clearValues();
 
-        for (const auto entity : world.view<Position, Team, Health>()) {
-            const auto* position = world.try_get<Position>(entity);
-            const auto* team = world.try_get<Team>(entity);
-            const auto* health = world.try_get<Health>(entity);
-            if (!position || !team || !health || health->current <= 0) continue;
+        world.eachRef<Position, Team, Health>(
+            [&](ecs::Entity entity,
+                const Position& position,
+                const Team& team,
+                const Health& health) {
+                if (health.current <= 0) return;
 
-            const auto* armor = world.try_get<Armor>(entity);
-            const auto* weapon = world.try_get<Weapon>(entity);
-            const auto* footprint = world.try_get<BuildingFootprint>(entity);
-            const auto source = sourcePoint(*position, footprint);
-            const auto strength = sourceStrength(
-                *health, armor, weapon, footprint);
+                const auto* armor = world.try_get<Armor>(entity);
+                const auto* weapon = world.try_get<Weapon>(entity);
+                const auto* footprint =
+                    world.try_get<BuildingFootprint>(entity);
+                const auto source = sourcePoint(position, footprint);
+                const auto strength = sourceStrength(
+                    health, armor, weapon, footprint);
 
-            if (auto* ownLayer = findLayer(team->id)) {
-                addKernel(
-                    ownLayer->friendly,
-                    source,
-                    friendlyRadius(weapon, footprint),
-                    strength);
-            }
-
-            if (!weapon || weapon->damage <= 0 || weapon->range < 0) continue;
-            for (auto& observer : layers_) {
-                if (observer.teamId == team->id ||
-                    !visibleEntity(
-                        vision,
-                        observer.teamId,
-                        *position,
-                        footprint)) {
-                    continue;
+                if (auto* ownLayer = findLayer(team.id)) {
+                    addKernel(
+                        ownLayer->friendly,
+                        source,
+                        friendlyRadius(weapon, footprint),
+                        strength);
                 }
-                addKernel(
-                    observer.threat,
-                    source,
-                    threatRadius(*weapon, footprint),
-                    strength);
-            }
-        }
+
+                if (!weapon || weapon->damage <= 0 || weapon->range < 0) {
+                    return;
+                }
+                for (auto& observer : layers_) {
+                    if (observer.teamId == team.id ||
+                        !visibleEntity(
+                            vision,
+                            observer.teamId,
+                            position,
+                            footprint)) {
+                        continue;
+                    }
+                    addKernel(
+                        observer.threat,
+                        source,
+                        threatRadius(*weapon, footprint),
+                        strength);
+                }
+            });
 
         finalizeLayers();
     }
@@ -258,10 +262,12 @@ private:
         const auto boundedRadius = std::min<std::int32_t>(
             std::max<std::int32_t>(0, radius),
             width_ + height_);
-        const auto minimumX = std::max<std::int32_t>(0, source.x - boundedRadius);
+        const auto minimumX = std::max<std::int32_t>(
+            0, source.x - boundedRadius);
         const auto maximumX = std::min<std::int32_t>(
             width_ - 1, source.x + boundedRadius);
-        const auto minimumY = std::max<std::int32_t>(0, source.y - boundedRadius);
+        const auto minimumY = std::max<std::int32_t>(
+            0, source.y - boundedRadius);
         const auto maximumY = std::min<std::int32_t>(
             height_ - 1, source.y + boundedRadius);
         const auto denominator = static_cast<std::int64_t>(boundedRadius) + 1;
@@ -288,10 +294,10 @@ private:
         const VisionRuntime& vision) {
         teamIds_.clear();
         teamIds_.reserve(std::max(teamIds_.capacity(), vision.layerCount()));
-        for (const auto entity : world.view<Team>()) {
-            const auto* team = world.try_get<Team>(entity);
-            if (team) teamIds_.push_back(team->id);
-        }
+        world.eachRef<Team>(
+            [&](ecs::Entity, const Team& team) {
+                teamIds_.push_back(team.id);
+            });
         for (const auto& layer : vision.layers()) {
             teamIds_.push_back(layer.teamId);
         }
@@ -383,7 +389,8 @@ private:
                 if (threatValue > 0) ++layer.threatActiveCells;
                 layer.peakFriendly = std::max(
                     layer.peakFriendly, friendlyValue);
-                layer.peakThreat = std::max(layer.peakThreat, threatValue);
+                layer.peakThreat = std::max(
+                    layer.peakThreat, threatValue);
                 layer.minimumNet = std::min(
                     layer.minimumNet, layer.net[cell]);
                 layer.maximumNet = std::max(
