@@ -54,6 +54,13 @@ add_executable(rts_network_transport_tests network_transport_tests.cpp)
 target_link_libraries(rts_network_transport_tests PRIVATE RTSEngine::Network)
 add_test(NAME rts_network_transport_tests COMMAND rts_network_transport_tests)
 
+add_executable(rts_network_hardening_tests network_hardening_tests.cpp)
+target_link_libraries(rts_network_hardening_tests PRIVATE
+    RTSEngine::Network
+    RTSEngine::Foundation
+)
+add_test(NAME rts_network_hardening_tests COMMAND rts_network_hardening_tests)
+
 add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
@@ -81,6 +88,13 @@ target_link_libraries(rts_multiplayer_runtime_tests PRIVATE
     RTSEngine::Network
 )
 add_test(NAME rts_multiplayer_runtime_tests COMMAND rts_multiplayer_runtime_tests)
+
+add_executable(rts_online_hardening_tests rts_online_hardening_tests.cpp)
+target_link_libraries(rts_online_hardening_tests PRIVATE
+    RTSEngine::Rts
+    RTSEngine::Network
+)
+add_test(NAME rts_online_hardening_tests COMMAND rts_online_hardening_tests)
 
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
