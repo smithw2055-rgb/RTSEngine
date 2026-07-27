@@ -57,6 +57,15 @@ add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
 
+add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
+target_link_libraries(rts_authoritative_session_tests PRIVATE
+    RTSEngine::Rts
+    RTSEngine::TowerDefense
+    RTSEngine::Roguelite
+)
+add_test(NAME rts_authoritative_session_tests
+    COMMAND rts_authoritative_session_tests)
+
 add_executable(rts_navigation_workspace_tests navigation_workspace_tests.cpp)
 target_link_libraries(rts_navigation_workspace_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_navigation_workspace_tests COMMAND rts_navigation_workspace_tests)
