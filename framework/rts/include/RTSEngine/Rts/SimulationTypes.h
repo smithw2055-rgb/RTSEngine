@@ -36,6 +36,13 @@ struct OrderQueue {
     std::vector<Order> pending;
 };
 
+using FlowSampleCallback = bool(*)(
+    void* context,
+    const NavigationGrid& navigation,
+    GridPoint goal,
+    GridPoint current,
+    GridPoint& next);
+
 struct MovementAgent {
     std::vector<GridPoint> path;
     std::size_t nextPoint{};
@@ -44,6 +51,8 @@ struct MovementAgent {
     bool hasPathGoal{};
     bool combatPath{};
     bool flowFieldPath{};
+    void* flowContext{};
+    FlowSampleCallback flowSample{};
     ecs::Entity chaseTarget{};
     GridPoint chaseTargetPosition{};
     std::uint32_t blockedTicks{};
