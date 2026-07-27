@@ -22,6 +22,9 @@ void testOrderingAndDuplicates() {
     require(stream.submit({5, 2, 2, 22}));
     require(stream.submit({5, 1, 2, 12}));
     require(stream.submit({5, 1, 1, 11}));
+    require(stream.submitDetailed({5, 1, 1, 11}) ==
+            rts::sim::CommandSubmitResult::Accepted);
+    require(stream.pending() == 3);
     require(stream.submitDetailed({5, 1, 1, 99}) ==
             rts::sim::CommandSubmitResult::DuplicateIdentity);
     require(stream.pending() == 3);
