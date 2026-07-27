@@ -54,6 +54,26 @@ int main() {
     CHECK(matching.size() == 1);
     CHECK(matching.front() == complete);
 
+    std::uint32_t mutableReferenceCount = 0;
+    world.eachRef<Position, Health>(
+        [&](Entity entity, Position& position, Health& health) {
+            CHECK(entity == complete);
+            health.value += position.x;
+            ++mutableReferenceCount;
+        });
+    CHECK(mutableReferenceCount == 1);
+    CHECK(world.try_get<Health>(complete)->value == 13);
+
+    const World& constWorld = world;
+    std::int32_t constReferenceTotal = 0;
+    constWorld.eachRef<Position, Health>(
+        [&](Entity entity, const Position& position, const Health& health) {
+            if (entity == complete) {
+                constReferenceTotal += position.x + position.y + health.value;
+            }
+        });
+    CHECK(constReferenceTotal == 20);
+
     Scheduler scheduler;
     std::vector<int> executionOrder;
     scheduler.add(Stage::Simulation, 1, 1,
@@ -64,6 +84,9 @@ int main() {
     CHECK((executionOrder == std::vector<int>{1, 2}));
 
     EntityCommandBuffer commands;
+    commands.reserve(16, 4);
+    const auto reservedCommandCapacity = commands.commandCapacity();
+    CHECK(reservedCommandCapacity >= 16);
     const SystemContext simulation{1, 0, Stage::Simulation};
     const DeferredEntity deferred = commands.create(simulation);
     commands.add<Position>(simulation, deferred, Position{9, 9});
@@ -73,6 +96,7 @@ int main() {
     const auto afterCreate = world.view<Position>();
     CHECK(afterCreate.size() == 3);
     CHECK(world.try_get<Position>(afterCreate.back()) != nullptr);
+    CHECK(commands.commandCapacity() == reservedCommandCapacity);
 
     const Entity gated = world.create();
     const SystemContext cleanup{1, 4, Stage::Cleanup};
@@ -81,6 +105,18 @@ int main() {
     CHECK(world.try_get<Health>(gated) == nullptr);
     commands.commit_through(world, Stage::Cleanup);
     CHECK(world.try_get<Health>(gated)->value == 7);
+    CHECK(commands.commandCapacity() == reservedCommandCapacity);
+
+    const Entity removable = world.create();
+    world.emplace<Health>(removable, Health{5});
+    commands.remove<Health>(simulation, removable);
+    commands.destroy(cleanup, removable);
+    commands.commit_through(world, Stage::Simulation);
+    CHECK(world.alive(removable));
+    CHECK(world.try_get<Health>(removable) == nullptr);
+    commands.commit_through(world, Stage::Cleanup);
+    CHECK(!world.alive(removable));
+    CHECK(commands.commandCapacity() == reservedCommandCapacity);
 
     ComponentSchemaRegistry schemas;
     CHECK(schemas.registerSchema<Position>(
