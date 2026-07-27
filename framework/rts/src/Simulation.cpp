@@ -81,7 +81,7 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
       vision_(width, height),
       influence_(width, height),
       movement_(width, height),
-      building_(resources_, navigation_),
+      building_(economy_, navigation_),
       combat_(width, height) {
     combat_.setVisibilityFilter(
         this,
@@ -163,7 +163,9 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
                 requiredPathGoal_,
                 building_.nextConstructionId(),
                 nextProductionId_,
-                playerTeamId_);
+                playerTeamId_,
+                4u,
+                nextResourceNodeId_);
             influenceWorldHash_ = snapshot_.worldHash;
         });
 }
