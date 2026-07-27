@@ -96,6 +96,24 @@ target_link_libraries(rts_online_hardening_tests PRIVATE
 )
 add_test(NAME rts_online_hardening_tests COMMAND rts_online_hardening_tests)
 
+add_executable(rts_online_authenticated_diagnostic
+    rts_online_authenticated_diagnostic.cpp)
+target_link_libraries(rts_online_authenticated_diagnostic PRIVATE
+    RTSEngine::Rts
+    RTSEngine::Network
+)
+add_test(NAME rts_online_authenticated_diagnostic
+    COMMAND rts_online_authenticated_diagnostic)
+
+add_executable(rts_online_dedicated_diagnostic
+    rts_online_dedicated_diagnostic.cpp)
+target_link_libraries(rts_online_dedicated_diagnostic PRIVATE
+    RTSEngine::Rts
+    RTSEngine::Network
+)
+add_test(NAME rts_online_dedicated_diagnostic
+    COMMAND rts_online_dedicated_diagnostic)
+
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
     RTSEngine::Rts
