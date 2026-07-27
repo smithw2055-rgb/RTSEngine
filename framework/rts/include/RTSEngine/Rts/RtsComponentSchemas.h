@@ -522,7 +522,7 @@ inline bool RegisterRtsComponentSchemas(
         }) && ok;
 
     ok = schemas.registerSchema<UnitSupply>(
-        0x52545312u, 1u, "rts.UnitSupply",
+        0x52545313u, 1u, "rts.UnitSupply",
         [](foundation::BinaryWriter& writer, const UnitSupply& value) {
             writer.writeU32(value.amount);
         },
