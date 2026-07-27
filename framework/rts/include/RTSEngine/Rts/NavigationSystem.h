@@ -172,7 +172,8 @@ public:
                             dependencies);
                         return;
                     }
-                    assignFlowField(agent, goal);
+                    assignFlowField(
+                        agent, goal, dependencies.flowFields);
                     dependencies.telemetry.recordFlowAssignment(
                         static_cast<std::uint64_t>(field.distance(start)));
                 } else {
@@ -206,6 +207,16 @@ public:
     }
 
 private:
+    static bool sampleFlow(
+        void* context,
+        const NavigationGrid& navigation,
+        GridPoint goal,
+        GridPoint current,
+        GridPoint& next) {
+        return context && static_cast<GridFlowFieldCache*>(context)->sample(
+            navigation, goal, current, next);
+    }
+
     static void prepareFlowDemands(
         const ecs::World& world,
         NavigationSystemDependencies dependencies) {
@@ -242,7 +253,9 @@ private:
         const MovementAgent& agent,
         GridPoint goal,
         std::uint64_t navigationRevision) noexcept {
-        return (agent.flowFieldPath || !agent.path.empty()) &&
+        const bool reusableFlow =
+            agent.flowFieldPath && agent.flowContext && agent.flowSample;
+        return (reusableFlow || !agent.path.empty()) &&
                agent.hasPathGoal && agent.pathGoal == goal &&
                agent.pathRevision == navigationRevision &&
                !agent.combatPath;
@@ -373,6 +386,12 @@ private:
              0});
     }
 
+    static void clearFlowBinding(MovementAgent& agent) noexcept {
+        agent.flowFieldPath = false;
+        agent.flowContext = nullptr;
+        agent.flowSample = nullptr;
+    }
+
     static void assignExtractedPath(
         MovementAgent& agent,
         GridPoint goal,
@@ -381,18 +400,21 @@ private:
         agent.pathGoal = goal;
         agent.hasPathGoal = true;
         agent.combatPath = combatPath;
-        agent.flowFieldPath = false;
+        clearFlowBinding(agent);
     }
 
     static void assignFlowField(
         MovementAgent& agent,
-        GridPoint goal) {
+        GridPoint goal,
+        GridFlowFieldCache& cache) {
         agent.path.clear();
         agent.nextPoint = 0;
         agent.pathGoal = goal;
         agent.hasPathGoal = true;
         agent.combatPath = false;
         agent.flowFieldPath = true;
+        agent.flowContext = &cache;
+        agent.flowSample = &sampleFlow;
         agent.chaseTarget = {};
         agent.chaseTargetPosition = {};
     }
