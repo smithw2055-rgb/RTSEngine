@@ -52,18 +52,24 @@ public:
             dependencies.telemetry = &localTelemetry;
         }
         dependencies.telemetry->beginMovementTick(context.tick);
-        std::int32_t maximumSteps = 0;
-        for (const auto entity :
-             world.view<Position, MoveSpeed, OrderQueue, MovementAgent>()) {
-            const auto* speed = world.try_get<MoveSpeed>(entity);
-            const auto* agent = world.try_get<MovementAgent>(entity);
-            if (!speed || !agent || agent->path.empty()) continue;
-            dependencies.telemetry->recordMovementAgent();
-            maximumSteps = std::max(
-                maximumSteps,
-                std::max<std::int32_t>(1, speed->cellsPerTick));
-        }
 
+        std::int32_t maximumSteps = 0;
+        world.each<Position, MoveSpeed, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity) {
+                const auto* speed = world.try_get<MoveSpeed>(entity);
+                const auto* agent = world.try_get<MovementAgent>(entity);
+                if (!speed || !agent || agent->path.empty()) return;
+                dependencies.telemetry->recordMovementAgent();
+                maximumSteps = std::max(
+                    maximumSteps,
+                    std::max<std::int32_t>(1, speed->cellsPerTick));
+            });
+
+        // Build occupancy once at Tick start. Each substep rebuilds only after
+        // accepted moves, leaving a current map for the next substep. This cuts
+        // the previous two full occupancy scans per substep to one.
+        rebuildOccupancy(
+            world, dependencies.reservations, *dependencies.telemetry);
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
             dependencies.telemetry->recordMovementSubstep();
             runSubstep(world, context, step, dependencies);
@@ -81,11 +87,14 @@ private:
         MovementReservationRuntime& reservations,
         RuntimeTelemetry& telemetry) {
         reservations.clearOccupancy();
-        for (const auto entity : world.view<Position, MovementAgent>()) {
-            const auto* position = world.try_get<Position>(entity);
-            if (!position) continue;
-            reservations.addOccupant(entity, {position->x, position->y});
-        }
+        world.each<Position, MovementAgent>(
+            [&](ecs::Entity entity) {
+                const auto* position = world.try_get<Position>(entity);
+                if (position) {
+                    reservations.addOccupant(
+                        entity, {position->x, position->y});
+                }
+            });
         telemetry.recordOccupancyRebuild(
             reservations.occupiedCellCount(),
             reservations.maximumCellOccupancy());
@@ -97,47 +106,47 @@ private:
         std::int32_t step,
         MovementSystemDependencies dependencies) {
         auto& reservations = dependencies.reservations;
-        rebuildOccupancy(
-            world, reservations, *dependencies.telemetry);
         reservations.beginIntents();
 
-        for (const auto entity :
-             world.view<Position, MoveSpeed, OrderQueue, MovementAgent>()) {
-            const auto* position = world.try_get<Position>(entity);
-            const auto* speed = world.try_get<MoveSpeed>(entity);
-            auto* agent = world.try_get<MovementAgent>(entity);
-            if (!position || !speed || !agent || agent->path.empty() ||
-                agent->nextPoint >= agent->path.size() ||
-                step >= std::max<std::int32_t>(1, speed->cellsPerTick) ||
-                shouldPauseForCombat(world, entity, *position)) {
-                continue;
-            }
+        world.each<Position, MoveSpeed, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity) {
+                const auto* position = world.try_get<Position>(entity);
+                const auto* speed = world.try_get<MoveSpeed>(entity);
+                auto* agent = world.try_get<MovementAgent>(entity);
+                if (!position || !speed || !agent || agent->path.empty() ||
+                    agent->nextPoint >= agent->path.size() ||
+                    step >= std::max<std::int32_t>(
+                                1, speed->cellsPerTick) ||
+                    shouldPauseForCombat(world, entity, *position)) {
+                    return;
+                }
 
-            const auto destination = agent->path[agent->nextPoint];
-            if (!dependencies.navigation.contains(destination) ||
-                dependencies.navigation.blocked(destination)) {
-                clearPathForReplan(*agent);
-                agent->blockedTicks = 0;
-                dependencies.telemetry->recordBlockedSignal();
-                dependencies.events.push_back(
-                    {context.tick,
-                     DomainEventType::MoveBlocked,
-                     entity,
-                     0,
-                     2});
-                continue;
-            }
+                const auto destination = agent->path[agent->nextPoint];
+                if (!dependencies.navigation.contains(destination) ||
+                    dependencies.navigation.blocked(destination)) {
+                    clearPathForReplan(*agent);
+                    agent->blockedTicks = 0;
+                    dependencies.telemetry->recordBlockedSignal();
+                    dependencies.events.push_back(
+                        {context.tick,
+                         DomainEventType::MoveBlocked,
+                         entity,
+                         0,
+                         2});
+                    return;
+                }
 
-            reservations.addIntent(
-                {entity,
-                 {position->x, position->y},
-                 destination,
-                 agent->blockedTicks});
-        }
+                reservations.addIntent(
+                    {entity,
+                     {position->x, position->y},
+                     destination,
+                     agent->blockedTicks});
+            });
 
         reservations.arbitrate();
         std::uint32_t accepted = 0;
-        for (std::size_t index = 0; index < reservations.intentCount(); ++index) {
+        for (std::size_t index = 0;
+             index < reservations.intentCount(); ++index) {
             if (!reservations.accepted(index)) continue;
             ++accepted;
             const auto& intent = reservations.intent(index);
@@ -182,6 +191,8 @@ private:
             }
         }
 
+        // Synchronize the occupancy map once after the simultaneous movement
+        // commit. Yield recovery then updates this map incrementally.
         rebuildOccupancy(
             world, reservations, *dependencies.telemetry);
         for (const auto index : reservations.rejected()) {
@@ -246,16 +257,20 @@ private:
             (entity.index + agent.yieldOrdinal) % 4u);
 
         for (std::size_t offset = 0; offset < 4u; ++offset) {
-            const auto direction = directions[(firstDirection + offset) % 4u];
+            const auto direction =
+                directions[(firstDirection + offset) % 4u];
             const GridPoint candidate{
                 source.x + direction.x,
                 source.y + direction.y};
-            if (!navigation.contains(candidate) || navigation.blocked(candidate) ||
+            if (!navigation.contains(candidate) ||
+                navigation.blocked(candidate) ||
                 reservations.occupied(candidate) ||
                 distance(candidate, agent.pathGoal) > sourceDistance + 1) {
                 continue;
             }
-            if (!reservations.moveOccupant(entity, source, candidate)) continue;
+            if (!reservations.moveOccupant(entity, source, candidate)) {
+                continue;
+            }
 
             position.x = candidate.x;
             position.y = candidate.y;
@@ -284,30 +299,32 @@ private:
         const ecs::SystemContext& context,
         RuntimeTelemetry& telemetry,
         std::vector<DomainEvent>& events) {
-        for (const auto entity :
-             world.view<Position, OrderQueue, MovementAgent>()) {
-            auto* queue = world.try_get<OrderQueue>(entity);
-            auto* agent = world.try_get<MovementAgent>(entity);
-            if (!queue || !agent || agent->path.empty() ||
-                agent->nextPoint != agent->path.size()) {
-                continue;
-            }
+        world.each<Position, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity) {
+                auto* queue = world.try_get<OrderQueue>(entity);
+                auto* agent = world.try_get<MovementAgent>(entity);
+                if (!queue || !agent || agent->path.empty() ||
+                    agent->nextPoint != agent->path.size()) {
+                    return;
+                }
 
-            const bool completedCombatPath = agent->combatPath;
-            OrderSystem::clearPath(*agent);
-            agent->blockedTicks = 0;
-            if (completedCombatPath) continue;
+                const bool completedCombatPath = agent->combatPath;
+                OrderSystem::clearPath(*agent);
+                agent->blockedTicks = 0;
+                if (completedCombatPath) return;
 
-            if (!queue->pending.empty()) queue->pending.erase(queue->pending.begin());
-            OrderSystem::applyFrontOrderMode(world, entity, *queue);
-            telemetry.recordCompletedMove();
-            events.push_back(
-                {context.tick,
-                 DomainEventType::MoveCompleted,
-                 entity,
-                 0,
-                 0});
-        }
+                if (!queue->pending.empty()) {
+                    queue->pending.erase(queue->pending.begin());
+                }
+                OrderSystem::applyFrontOrderMode(world, entity, *queue);
+                telemetry.recordCompletedMove();
+                events.push_back(
+                    {context.tick,
+                     DomainEventType::MoveCompleted,
+                     entity,
+                     0,
+                     0});
+            });
     }
 
     static std::int32_t distance(GridPoint a, GridPoint b) noexcept {
@@ -328,7 +345,8 @@ private:
             !world.alive(target->entity)) {
             return false;
         }
-        const auto* targetPosition = world.try_get<Position>(target->entity);
+        const auto* targetPosition =
+            world.try_get<Position>(target->entity);
         const auto* targetHealth = world.try_get<Health>(target->entity);
         return targetPosition && targetHealth && targetHealth->current > 0 &&
                distance(
