@@ -64,10 +64,37 @@ public:
     }
 
 private:
+    static bool owns(const ecs::World& world,
+                     ecs::Entity entity,
+                     std::uint32_t issuer) noexcept {
+        const auto* team = world.try_get<Team>(entity);
+        return issuer != 0 && team && team->id == issuer;
+    }
+
+    static void reject(const ecs::SystemContext& context,
+                       const TickCommand& command,
+                       CommandRejectionReason reason,
+                       std::vector<DomainEvent>& events) {
+        events.push_back(
+            {context.tick,
+             DomainEventType::CommandRejected,
+             command.subject,
+             command.objectId,
+             static_cast<std::uint32_t>(reason),
+             command.targetEntity,
+             static_cast<std::int32_t>(command.type)});
+    }
+
     static void beginConstruction(
         const ecs::SystemContext& context,
         const TickCommand& command,
         EconomyCommandDependencies dependencies) {
+        if (command.issuer == 0) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         const auto* definition =
             dependencies.buildingDefinitions.find(command.definitionId);
         BuildResult result;
@@ -103,6 +130,26 @@ private:
         const ecs::SystemContext& context,
         const TickCommand& command,
         EconomyCommandDependencies dependencies) {
+        bool found = false;
+        bool owned = false;
+        for (const auto entity : world.view<ConstructionSite>()) {
+            const auto* site = world.try_get<ConstructionSite>(entity);
+            if (!site || site->id != command.objectId) continue;
+            found = true;
+            owned = site->ownerTeam == command.issuer && command.issuer != 0;
+            break;
+        }
+        if (!found) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owned) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         const auto failure = dependencies.building.cancel(
             context,
             dependencies.structuralCommands,
@@ -123,29 +170,44 @@ private:
         const ecs::SystemContext& context,
         const TickCommand& command,
         EconomyCommandDependencies dependencies) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         auto* queue = world.try_get<ProductionQueue>(command.subject);
         const auto* building = world.try_get<Building>(command.subject);
         const auto* ownerTeam = world.try_get<Team>(command.subject);
         const auto* definition =
             dependencies.unitDefinitions.find(command.definitionId);
-        if (!queue || !building || !building->producer || !definition ||
-            definition->id == 0 || definition->cost < 0 ||
-            !dependencies.resources.reserve(definition->cost)) {
-            dependencies.events.push_back(
-                {context.tick,
-                 DomainEventType::ProductionRejected,
-                 command.subject,
-                 0,
-                 command.definitionId});
+        if (!queue || !building || !building->producer || !ownerTeam) {
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
+            return;
+        }
+        if (!definition || definition->id == 0 || definition->cost < 0) {
+            reject(context, command, CommandRejectionReason::InvalidDefinition,
+                   dependencies.events);
+            return;
+        }
+        if (!dependencies.resources.reserve(definition->cost)) {
+            reject(context, command,
+                   CommandRejectionReason::InsufficientResources,
+                   dependencies.events);
             return;
         }
 
         const ProductionId id = ++dependencies.nextProductionId;
         const auto baseTicks =
             std::max<std::uint32_t>(1, definition->trainTicks);
-        const auto teamId = ownerTeam ? ownerTeam->id : 0;
         const auto requiredTicks =
-            dependencies.modifiers.productionTicks(teamId, baseTicks);
+            dependencies.modifiers.productionTicks(ownerTeam->id, baseTicks);
         queue->items.push_back(
             {id,
              definition->id,
@@ -166,14 +228,21 @@ private:
         const ecs::SystemContext& context,
         const TickCommand& command,
         EconomyCommandDependencies dependencies) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         auto* queue = world.try_get<ProductionQueue>(command.subject);
         if (!queue) {
-            dependencies.events.push_back(
-                {context.tick,
-                 DomainEventType::ProductionRejected,
-                 command.subject,
-                 command.objectId,
-                 0});
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
             return;
         }
         const auto iterator = std::find_if(
@@ -183,12 +252,8 @@ private:
                 return item.id == command.objectId;
             });
         if (iterator == queue->items.end()) {
-            dependencies.events.push_back(
-                {context.tick,
-                 DomainEventType::ProductionRejected,
-                 command.subject,
-                 command.objectId,
-                 0});
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
             return;
         }
         dependencies.resources.release(iterator->reservedCost);
@@ -206,8 +271,21 @@ private:
         const ecs::SystemContext& context,
         const TickCommand& command,
         std::vector<DomainEvent>& events) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner, events);
+            return;
+        }
         auto* rally = world.try_get<RallyPoint>(command.subject);
-        if (!rally) return;
+        if (!rally) {
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   events);
+            return;
+        }
         rally->point = {command.targetX, command.targetY};
         events.push_back(
             {context.tick,
