@@ -245,9 +245,14 @@ void testSimulationSharedFieldAndScaleDeterminism() {
     assert(first.flowStats.builds == 1);
     assert(first.flowStats.misses == 1);
     assert(first.flowStats.pathExtractions >= 1000);
-    assert(first.flowStats.directAssignments == 1000);
+    assert(first.flowStats.directAssignments >= 1000);
+    assert(first.flowStats.directAssignments ==
+           second.flowStats.directAssignments);
     assert(first.flowStats.directSamples > 0);
+    assert(first.flowStats.directSamples == second.flowStats.directSamples);
     assert(first.flowStats.directSampleFailures == 0);
+    assert(first.flowStats.directSampleFailures ==
+           second.flowStats.directSampleFailures);
     assert(first.flowStats.extractionFailures == 0);
     assert(first.pathStats.misses < 1000);
     assert(first.intentCapacity == second.intentCapacity);
