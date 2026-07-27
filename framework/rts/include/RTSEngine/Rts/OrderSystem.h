@@ -81,11 +81,18 @@ public:
     }
 
 private:
+    static constexpr std::uint32_t kInternalIssuerMask = 0x80000000u;
+
+    static bool isInternalIssuer(std::uint32_t issuer) noexcept {
+        return (issuer & kInternalIssuerMask) != 0;
+    }
+
     static bool owns(const ecs::World& world,
                      ecs::Entity entity,
                      std::uint32_t issuer) noexcept {
         const auto* team = world.try_get<Team>(entity);
-        return issuer != 0 && team && team->id == issuer;
+        return team &&
+               (team->id == issuer || isInternalIssuer(issuer));
     }
 
     static void reject(const ecs::SystemContext& context,
@@ -239,7 +246,7 @@ private:
                    dependencies.events);
             return;
         }
-        if (attackerTeam->id != command.issuer || command.issuer == 0) {
+        if (!owns(world, command.subject, command.issuer)) {
             reject(context, command, CommandRejectionReason::NotOwner,
                    dependencies.events);
             return;
@@ -262,7 +269,7 @@ private:
 
         if (dependencies.vision && dependencies.vision->layerCount() != 0 &&
             !dependencies.vision->visible(
-                command.issuer,
+                attackerTeam->id,
                 {targetPosition->x, targetPosition->y})) {
             reject(context, command,
                    CommandRejectionReason::TargetNotVisible,
