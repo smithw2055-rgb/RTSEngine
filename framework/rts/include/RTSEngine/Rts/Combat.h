@@ -6,9 +6,7 @@
 
 #include <algorithm>
 #include <cstdint>
-#include <functional>
 #include <limits>
-#include <utility>
 #include <vector>
 
 namespace rts::gameplay {
@@ -91,8 +89,10 @@ struct CombatEvent {
 
 class CombatRuntime {
 public:
-    using DeathCallback =
-        std::function<void(ecs::Entity victim, ecs::Entity killer)>;
+    using DeathCallback = void(*)(
+        void* context,
+        ecs::Entity victim,
+        ecs::Entity killer);
     using VisibilityCallback = bool(*)(
         const void* context,
         std::uint32_t observerTeam,
@@ -128,7 +128,8 @@ public:
         const ecs::SystemContext& context,
         ecs::EntityCommandBuffer& commands,
         ecs::World& world,
-        DeathCallback onDeath = {}) {
+        void* deathContext = nullptr,
+        DeathCallback onDeath = nullptr) {
         events_.clear();
         damage_.clear();
         deaths_.clear();
@@ -136,7 +137,12 @@ public:
         acquireTargets<Position>(context, world);
         fireWeapons<Position>(context, world);
         resolveDamage(context, world);
-        cleanupDead(context, commands, world, std::move(onDeath));
+        cleanupDead(
+            context,
+            commands,
+            world,
+            deathContext,
+            onDeath);
     }
 
     const std::vector<CombatEvent>& events() const noexcept {
@@ -398,6 +404,7 @@ private:
         const ecs::SystemContext& context,
         ecs::EntityCommandBuffer& commands,
         ecs::World& world,
+        void* deathContext,
         DeathCallback onDeath) {
         std::sort(
             deaths_.begin(), deaths_.end(),
@@ -419,7 +426,7 @@ private:
                 if (record != deaths_.end() && record->victim == entity) {
                     killer = record->killer;
                 }
-                if (onDeath) onDeath(entity, killer);
+                if (onDeath) onDeath(deathContext, entity, killer);
                 commands.destroy(context, entity);
                 events_.push_back(
                     {context.tick,
