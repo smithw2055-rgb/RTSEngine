@@ -10,6 +10,7 @@ target_link_libraries(rts_engine_rts PUBLIC
     RTSEngine::Foundation
     RTSEngine::Sim
     RTSEngine::Ecs
+    RTSEngine::Navigation
 )
 target_compile_features(rts_engine_rts PUBLIC cxx_std_17)
 

@@ -20,6 +20,7 @@ public:
     bool contains(Entity entity) const noexcept {
         return entity.index < sparse_.size() &&
                sparse_[entity.index] != npos &&
+               sparse_[entity.index] < entities_.size() &&
                entities_[sparse_[entity.index]] == entity;
     }
 
@@ -31,28 +32,31 @@ public:
             return data_[sparse_[entity.index]];
         }
 
-        sparse_[entity.index] = data_.size();
-        entities_.push_back(entity);
-        data_.emplace_back(std::forward<Args>(args)...);
-        return data_.back();
+        // Keep dense entities in canonical Entity order. Structural writes are
+        // less frequent than queries in RTS workloads, so paying the insertion
+        // shift once removes per-query sorting and makes allocation-free ranges
+        // deterministic by construction.
+        const auto found = std::lower_bound(
+            entities_.begin(), entities_.end(), entity);
+        const auto position = static_cast<std::size_t>(
+            found - entities_.begin());
+        entities_.insert(found, entity);
+        data_.insert(
+            data_.begin() + static_cast<std::ptrdiff_t>(position),
+            T(std::forward<Args>(args)...));
+        rebuildSparseFrom(position);
+        return data_[position];
     }
 
     bool remove(Entity entity) {
-        if (!contains(entity)) {
-            return false;
-        }
+        if (!contains(entity)) return false;
 
         const auto position = sparse_[entity.index];
-        const auto last = data_.size() - 1;
-        if (position != last) {
-            data_[position] = std::move(data_[last]);
-            entities_[position] = entities_[last];
-            sparse_[entities_[position].index] = position;
-        }
-
-        data_.pop_back();
-        entities_.pop_back();
         sparse_[entity.index] = npos;
+        entities_.erase(
+            entities_.begin() + static_cast<std::ptrdiff_t>(position));
+        data_.erase(data_.begin() + static_cast<std::ptrdiff_t>(position));
+        rebuildSparseFrom(position);
         return true;
     }
 
@@ -72,10 +76,22 @@ public:
         return data_.size();
     }
 
+    void reserve(std::size_t count) {
+        entities_.reserve(count);
+        data_.reserve(count);
+    }
+
 private:
     void ensure(std::uint32_t index) {
         if (sparse_.size() <= index) {
             sparse_.resize(static_cast<std::size_t>(index) + 1, npos);
+        }
+    }
+
+    void rebuildSparseFrom(std::size_t first) noexcept {
+        for (std::size_t position = first;
+             position < entities_.size(); ++position) {
+            sparse_[entities_[position].index] = position;
         }
     }
 
@@ -90,6 +106,7 @@ public:
     virtual std::type_index cppType() const noexcept = 0;
     virtual void remove(Entity entity) = 0;
     virtual std::size_t size() const noexcept = 0;
+    virtual const std::vector<Entity>& entities() const noexcept = 0;
     virtual std::vector<Entity> orderedEntities() const = 0;
     virtual const void* value(Entity entity) const noexcept = 0;
 };
@@ -109,10 +126,12 @@ public:
         return pool.size();
     }
 
+    const std::vector<Entity>& entities() const noexcept override {
+        return pool.entities();
+    }
+
     std::vector<Entity> orderedEntities() const override {
-        auto result = pool.entities();
-        std::sort(result.begin(), result.end());
-        return result;
+        return pool.entities();
     }
 
     const void* value(Entity entity) const noexcept override {

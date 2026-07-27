@@ -33,6 +33,12 @@ namespace rts::gameplay {
 
 class RtsSimulationArchive;
 
+enum class RtsStepResult : std::uint8_t {
+    Advanced,
+    StaleTick,
+    NonSequentialTick
+};
+
 class RtsSimulation {
 public:
     RtsSimulation(std::int32_t width = 32, std::int32_t height = 32);
@@ -43,25 +49,39 @@ public:
     RtsSimulation(RtsSimulation&&) = delete;
     RtsSimulation& operator=(RtsSimulation&&) = delete;
 
-    void registerBuilding(BuildingDefinition definition) {
+    bool registerBuilding(BuildingDefinition definition) {
+        if (configurationFrozen()) return false;
         buildingDefinitions_.replace(std::move(definition));
+        return true;
     }
 
-    void registerUnit(UnitDefinition definition) {
+    bool registerUnit(UnitDefinition definition) {
+        if (configurationFrozen()) return false;
         unitDefinitions_.replace(std::move(definition));
+        return true;
+    }
+
+    void freezeConfiguration() noexcept { configurationFrozen_ = true; }
+
+    bool configurationFrozen() const noexcept {
+        return configurationFrozen_ || hasStepped_;
     }
 
     void setResources(std::int32_t available) noexcept {
         resources_.available = std::max<std::int32_t>(0, available);
     }
 
-    void setRequiredRoute(GridPoint start, GridPoint goal) noexcept {
+    bool setRequiredRoute(GridPoint start, GridPoint goal) noexcept {
+        if (configurationFrozen()) return false;
         requiredPathStart_ = start;
         requiredPathGoal_ = goal;
+        return true;
     }
 
-    void setPlayerTeam(std::uint32_t teamId) noexcept {
+    bool setPlayerTeam(std::uint32_t teamId) noexcept {
+        if (configurationFrozen() || teamId == 0) return false;
         playerTeamId_ = teamId;
+        return true;
     }
 
     void reserveMovementAgents(std::size_t count) {
@@ -95,8 +115,13 @@ public:
             visionRange);
     }
 
+    sim::CommandSubmitResult submitDetailed(TickCommand command) {
+        return commands_.submitDetailed(std::move(command));
+    }
+
     bool submit(TickCommand command) {
-        return commands_.submit(std::move(command));
+        return submitDetailed(std::move(command)) ==
+               sim::CommandSubmitResult::Accepted;
     }
 
     bool setBlocked(GridPoint point, bool blocked) {
@@ -136,9 +161,20 @@ public:
         return resources_;
     }
 
-    void step(std::uint64_t tick) {
-        if (hasStepped_ && tick <= lastCompletedTick_) return;
+    RtsStepResult stepDetailed(std::uint64_t tick) {
+        if (hasStepped_) {
+            if (tick <= lastCompletedTick_) return RtsStepResult::StaleTick;
+            if (tick != lastCompletedTick_ + 1u) {
+                return RtsStepResult::NonSequentialTick;
+            }
+        } else if (tick > 1u) {
+            // Existing applications begin at either Tick 0 or Tick 1. Larger
+            // initial values require an explicit archive restore instead of
+            // silently dropping the skipped command interval.
+            return RtsStepResult::NonSequentialTick;
+        }
 
+        configurationFrozen_ = true;
         events_.clear();
         activeCommands_ = commands_.consume(tick);
         runStage(tick, ecs::Stage::Command);
@@ -149,6 +185,19 @@ public:
         scheduler_.run_stage(world_, tick, ecs::Stage::Snapshot);
         hasStepped_ = true;
         lastCompletedTick_ = tick;
+        return RtsStepResult::Advanced;
+    }
+
+    bool step(std::uint64_t tick) {
+        return stepDetailed(tick) == RtsStepResult::Advanced;
+    }
+
+    bool stepNext() {
+        return step(hasStepped_ ? lastCompletedTick_ + 1u : 0u);
+    }
+
+    std::uint64_t nextExpectedTick() const noexcept {
+        return hasStepped_ ? lastCompletedTick_ + 1u : 0u;
     }
 
     const WorldSnapshot& snapshot() const {
@@ -240,7 +289,7 @@ private:
                 for (const auto& command : activeCommands_) {
                     if (OrderSystem::handles(command.type)) {
                         OrderSystem::process(
-                            world, context, command, {events_});
+                            world, context, command, {events_, &vision_});
                     } else if (EconomyCommandSystem::handles(command.type)) {
                         EconomyCommandSystem::process(
                             world,
@@ -408,6 +457,7 @@ private:
     std::uint32_t playerTeamId_{1};
     std::uint64_t lastCompletedTick_{};
     mutable std::uint64_t influenceWorldHash_{kInvalidDerivedHash};
+    bool configurationFrozen_{};
     bool hasStepped_{};
 };
 
