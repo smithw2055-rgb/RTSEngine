@@ -92,20 +92,28 @@ public:
             return CommandSubmitResult::Late;
         }
 
-        const auto duplicate = std::find_if(
-            commands_.begin(), commands_.end(),
-            [&](const Command& current) {
-                return sameIdentity(current, command);
-            });
-        if (duplicate != commands_.end()) {
+        auto bucket = lowerBucket(command.targetTick);
+        if (bucket == buckets_.end() || bucket->tick != command.targetTick) {
+            bucket = buckets_.insert(
+                bucket, Bucket{command.targetTick, {}});
+        }
+
+        auto position = std::lower_bound(
+            bucket->commands.begin(),
+            bucket->commands.end(),
+            command,
+            lessWithinTick);
+        if (position != bucket->commands.end() &&
+            sameIdentity(*position, command)) {
             // Re-sending the exact command is an idempotent success. Reusing
             // the identity for another payload is a deterministic conflict.
-            return samePayload(*duplicate, command)
+            return samePayload(*position, command)
                 ? CommandSubmitResult::Accepted
                 : CommandSubmitResult::DuplicateIdentity;
         }
 
-        commands_.push_back(std::move(command));
+        bucket->commands.insert(position, std::move(command));
+        ++pendingCount_;
         return CommandSubmitResult::Accepted;
     }
 
@@ -116,31 +124,34 @@ public:
 
     std::vector<Command> consume(std::uint64_t tick) {
         if (tick < committedThrough_) return {};
-        committedThrough_ = tick + 1;
+        committedThrough_ = tick + 1u;
 
-        std::vector<Command> result;
-        std::vector<Command> remaining;
-        result.reserve(commands_.size());
-        remaining.reserve(commands_.size());
-
-        for (auto& command : commands_) {
-            if (command.targetTick == tick) {
-                result.push_back(std::move(command));
-            } else if (command.targetTick > tick) {
-                remaining.push_back(std::move(command));
-            }
-            // Commands older than the consumed tick are deterministically
-            // discarded. submit() prevents new late commands from entering.
+        // A caller that intentionally skips a Tick gets the historical stream
+        // semantics: commands for skipped Ticks are discarded. Authoritative
+        // simulations preflight sequential Tick advancement before calling us.
+        const auto firstCurrent = lowerBucket(tick);
+        for (auto bucket = buckets_.begin(); bucket != firstCurrent; ++bucket) {
+            pendingCount_ -= bucket->commands.size();
         }
-        commands_ = std::move(remaining);
+        buckets_.erase(buckets_.begin(), firstCurrent);
 
-        (void)normalize(result);
+        if (buckets_.empty() || buckets_.front().tick != tick) return {};
+        auto result = std::move(buckets_.front().commands);
+        pendingCount_ -= result.size();
+        buckets_.erase(buckets_.begin());
         return result;
     }
 
     State snapshot() const {
-        State result{committedThrough_, commands_};
-        (void)normalize(result.pending);
+        State result;
+        result.committedThrough = committedThrough_;
+        result.pending.reserve(pendingCount_);
+        for (const auto& bucket : buckets_) {
+            result.pending.insert(
+                result.pending.end(),
+                bucket.commands.begin(),
+                bucket.commands.end());
+        }
         return result;
     }
 
@@ -154,19 +165,66 @@ public:
             !normalize(state.pending)) {
             return false;
         }
+
+        std::vector<Bucket> buckets;
+        buckets.reserve(state.pending.size());
+        for (auto& command : state.pending) {
+            if (buckets.empty() ||
+                buckets.back().tick != command.targetTick) {
+                buckets.push_back({command.targetTick, {}});
+            }
+            buckets.back().commands.push_back(std::move(command));
+        }
+
         committedThrough_ = state.committedThrough;
-        commands_ = std::move(state.pending);
+        pendingCount_ = 0;
+        for (const auto& bucket : buckets) {
+            pendingCount_ += bucket.commands.size();
+        }
+        buckets_ = std::move(buckets);
         return true;
     }
 
-    void clearPending() noexcept { commands_.clear(); }
+    void clearPending() noexcept {
+        buckets_.clear();
+        pendingCount_ = 0;
+    }
 
-    std::size_t pending() const noexcept { return commands_.size(); }
+    std::size_t pending() const noexcept { return pendingCount_; }
+    std::size_t bucketCount() const noexcept { return buckets_.size(); }
     std::uint64_t committedThrough() const noexcept {
         return committedThrough_;
     }
 
 private:
+    struct Bucket final {
+        std::uint64_t tick{};
+        std::vector<Command> commands;
+    };
+
+    using BucketIterator = typename std::vector<Bucket>::iterator;
+    using ConstBucketIterator = typename std::vector<Bucket>::const_iterator;
+
+    BucketIterator lowerBucket(std::uint64_t tick) {
+        return std::lower_bound(
+            buckets_.begin(),
+            buckets_.end(),
+            tick,
+            [](const Bucket& bucket, std::uint64_t value) {
+                return bucket.tick < value;
+            });
+    }
+
+    ConstBucketIterator lowerBucket(std::uint64_t tick) const {
+        return std::lower_bound(
+            buckets_.begin(),
+            buckets_.end(),
+            tick,
+            [](const Bucket& bucket, std::uint64_t value) {
+                return bucket.tick < value;
+            });
+    }
+
     static bool sameIdentity(const Command& a, const Command& b) noexcept {
         return a.targetTick == b.targetTick &&
                a.issuer == b.issuer &&
@@ -205,12 +263,16 @@ private:
         return same;
     }
 
-    static bool less(const Command& a, const Command& b) {
+    static bool lessWithinTick(const Command& a, const Command& b) noexcept {
+        if (a.issuer != b.issuer) return a.issuer < b.issuer;
+        return a.sequence < b.sequence;
+    }
+
+    static bool less(const Command& a, const Command& b) noexcept {
         if (a.targetTick != b.targetTick) {
             return a.targetTick < b.targetTick;
         }
-        if (a.issuer != b.issuer) return a.issuer < b.issuer;
-        return a.sequence < b.sequence;
+        return lessWithinTick(a, b);
     }
 
     static bool normalize(std::vector<Command>& commands) {
@@ -230,8 +292,9 @@ private:
         return true;
     }
 
-    std::vector<Command> commands_;
+    std::vector<Bucket> buckets_;
+    std::size_t pendingCount_{};
     std::uint64_t committedThrough_{};
 };
 
-} // namespace rts::sim
+} // namespace rts::sim {
