@@ -15,7 +15,7 @@ namespace rts::network {
 struct ReliableChannelConfig final {
     std::uint32_t resendIntervalMs{100};
     std::uint32_t maximumAttempts{20};
-    std::size_t maximumInFlight{256};
+    std::size_t maximumInFlight{64};
     std::size_t maximumMessageBytes{1024};
 };
 
@@ -83,6 +83,7 @@ public:
                 PacketKind::Data, message.sequence, message.payload);
             if (packet.size() > transport.maximumPayloadBytes()) {
                 message.attempts = config_.maximumAttempts;
+                message.lastSentAtMs = 0;
                 continue;
             }
             if (transport.send(remoteEndpoint_, transportChannel_, packet) ==
@@ -94,18 +95,15 @@ public:
             }
         }
 
+        const auto exhausted = [this, now](const PendingMessage& value) {
+            return value.attempts >= config_.maximumAttempts &&
+                   now >= value.lastSentAtMs + config_.resendIntervalMs;
+        };
         const auto failed = std::count_if(
-            pending_.begin(), pending_.end(),
-            [this](const PendingMessage& value) {
-                return value.attempts >= config_.maximumAttempts;
-            });
+            pending_.begin(), pending_.end(), exhausted);
         stats_.messagesFailed += static_cast<std::uint64_t>(failed);
         pending_.erase(
-            std::remove_if(
-                pending_.begin(), pending_.end(),
-                [this](const PendingMessage& value) {
-                    return value.attempts >= config_.maximumAttempts;
-                }),
+            std::remove_if(pending_.begin(), pending_.end(), exhausted),
             pending_.end());
     }
 
@@ -174,10 +172,14 @@ private:
     };
 
     static ReliableChannelConfig sanitize(ReliableChannelConfig value) noexcept {
-        value.resendIntervalMs = std::max<std::uint32_t>(1u, value.resendIntervalMs);
-        value.maximumAttempts = std::max<std::uint32_t>(1u, value.maximumAttempts);
-        value.maximumInFlight = std::max<std::size_t>(1u, value.maximumInFlight);
-        value.maximumMessageBytes = std::max<std::size_t>(1u, value.maximumMessageBytes);
+        value.resendIntervalMs = std::max<std::uint32_t>(
+            1u, value.resendIntervalMs);
+        value.maximumAttempts = std::max<std::uint32_t>(
+            1u, value.maximumAttempts);
+        value.maximumInFlight = std::clamp<std::size_t>(
+            value.maximumInFlight, 1u, 64u);
+        value.maximumMessageBytes = std::max<std::size_t>(
+            1u, value.maximumMessageBytes);
         return value;
     }
 
