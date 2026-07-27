@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +16,7 @@ struct RtsLobbyHostConfig final {
     RtsNetworkContentIdentity identity;
     std::uint32_t maximumPlayers{8};
     std::uint32_t maximumSpectators{16};
+    bool dedicatedServer{};
 };
 
 enum class RtsLobbyJoinResult : std::uint8_t {
@@ -30,14 +32,26 @@ public:
     const RtsLobbyHostConfig& config() const noexcept { return config_; }
     bool started() const noexcept { return started_; }
     std::uint64_t revision() const noexcept { return revision_; }
+    network::NetworkEndpointId managementEndpoint() const noexcept {
+        return managementEndpoint_;
+    }
 
     bool registerHost(
         network::NetworkEndpointId endpoint,
         std::string displayName,
         bool ready = true) {
-        if (started_ || endpoint == 0 || displayName.empty() ||
-            displayName.size() > kMaximumPlayerNameBytes ||
+        if (started_ || endpoint == 0 || managementEndpoint_ != 0 ||
             !members_.empty()) {
+            return false;
+        }
+        managementEndpoint_ = endpoint;
+        if (config_.dedicatedServer) {
+            ++revision_;
+            return true;
+        }
+        if (displayName.empty() ||
+            displayName.size() > kMaximumPlayerNameBytes) {
+            managementEndpoint_ = 0;
             return false;
         }
         RtsLobbyMember member;
@@ -54,15 +68,15 @@ public:
         return true;
     }
 
-    RtsLobbyJoinResult join(
+    RtsLobbyJoinResult validateJoin(
         network::NetworkEndpointId endpoint,
         const RtsNetworkHello& hello,
-        RtsNetworkWelcome& welcome,
-        RtsNetworkReject& reject) {
+        RtsNetworkReject& reject) const {
         reject.expectedIdentity = config_.identity;
         if (started_) return rejectWith(
             RtsNetworkRejectReason::SessionStarted, reject);
-        if (endpoint == 0 || hello.displayName.empty() ||
+        if (endpoint == 0 || endpoint == managementEndpoint_ ||
+            hello.displayName.empty() ||
             hello.displayName.size() > kMaximumPlayerNameBytes) {
             return rejectWith(RtsNetworkRejectReason::InvalidRequest, reject);
         }
@@ -86,6 +100,18 @@ public:
             (hello.requestedRole == sim::LockstepPeerRole::Spectator &&
              spectators >= config_.maximumSpectators)) {
             return rejectWith(RtsNetworkRejectReason::LobbyFull, reject);
+        }
+        return RtsLobbyJoinResult::Accepted;
+    }
+
+    RtsLobbyJoinResult join(
+        network::NetworkEndpointId endpoint,
+        const RtsNetworkHello& hello,
+        RtsNetworkWelcome& welcome,
+        RtsNetworkReject& reject) {
+        if (validateJoin(endpoint, hello, reject) !=
+            RtsLobbyJoinResult::Accepted) {
+            return RtsLobbyJoinResult::Rejected;
         }
 
         RtsLobbyMember member;
@@ -153,6 +179,68 @@ public:
         if (started_ || !canStart()) return false;
         started_ = true;
         ++revision_;
+        return true;
+    }
+
+    bool restore(
+        RtsLobbySnapshot snapshot,
+        network::NetworkEndpointId managementEndpoint) {
+        if (managementEndpoint == 0 || snapshot.sessionId != config_.sessionId ||
+            snapshot.members.size() >
+                static_cast<std::size_t>(config_.maximumPlayers) +
+                    config_.maximumSpectators) {
+            return false;
+        }
+        std::sort(
+            snapshot.members.begin(), snapshot.members.end(),
+            [](const RtsLobbyMember& first, const RtsLobbyMember& second) {
+                return first.peer.peerId < second.peer.peerId;
+            });
+        sim::LockstepPeerId maximumPeerId = 0;
+        std::vector<std::uint32_t> playerSlots;
+        std::vector<network::NetworkEndpointId> endpoints;
+        for (const auto& member : snapshot.members) {
+            if (member.endpoint == 0 || member.peer.peerId == 0 ||
+                member.displayName.empty() ||
+                member.displayName.size() > kMaximumPlayerNameBytes ||
+                !member.peer.active) {
+                return false;
+            }
+            if (member.peer.role == sim::LockstepPeerRole::Player) {
+                if (member.peer.playerSlot == 0 ||
+                    member.peer.issuer != member.peer.playerSlot) {
+                    return false;
+                }
+                playerSlots.push_back(member.peer.playerSlot);
+            } else if (member.peer.playerSlot != 0 || member.peer.issuer != 0) {
+                return false;
+            }
+            maximumPeerId = std::max(maximumPeerId, member.peer.peerId);
+            endpoints.push_back(member.endpoint);
+        }
+        if (maximumPeerId == std::numeric_limits<sim::LockstepPeerId>::max()) {
+            return false;
+        }
+        std::sort(playerSlots.begin(), playerSlots.end());
+        std::sort(endpoints.begin(), endpoints.end());
+        if (std::adjacent_find(playerSlots.begin(), playerSlots.end()) !=
+                playerSlots.end() ||
+            std::adjacent_find(endpoints.begin(), endpoints.end()) !=
+                endpoints.end()) {
+            return false;
+        }
+        for (std::size_t index = 1; index < snapshot.members.size(); ++index) {
+            if (snapshot.members[index - 1].peer.peerId ==
+                snapshot.members[index].peer.peerId) {
+                return false;
+            }
+        }
+
+        managementEndpoint_ = managementEndpoint;
+        members_ = std::move(snapshot.members);
+        started_ = snapshot.started;
+        revision_ = snapshot.revision + 1u;
+        nextPeerId_ = maximumPeerId + 1u;
         return true;
     }
 
@@ -243,6 +331,7 @@ private:
 
     RtsLobbyHostConfig config_;
     std::vector<RtsLobbyMember> members_;
+    network::NetworkEndpointId managementEndpoint_{};
     std::uint64_t revision_{};
     sim::LockstepPeerId nextPeerId_{1};
     bool started_{};
