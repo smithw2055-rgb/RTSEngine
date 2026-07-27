@@ -6,7 +6,6 @@ add_executable(rts_foundation_tests foundation_tests.cpp)
 target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
 
-
 add_executable(rts_platform_input_tests platform_input_tests.cpp)
 target_link_libraries(rts_platform_input_tests PRIVATE RTSEngine::Platform)
 add_test(NAME rts_platform_input_tests COMMAND rts_platform_input_tests)
@@ -14,7 +13,6 @@ add_test(NAME rts_platform_input_tests COMMAND rts_platform_input_tests)
 add_executable(rts_platform_render_tests platform_render_tests.cpp)
 target_link_libraries(rts_platform_render_tests PRIVATE RTSEngine::Render)
 add_test(NAME rts_platform_render_tests COMMAND rts_platform_render_tests)
-
 
 add_executable(rts_desktop_controller_tests desktop_controller_tests.cpp)
 target_link_libraries(rts_desktop_controller_tests PRIVATE RTSEngine::RtsPresentation)
@@ -31,7 +29,6 @@ add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolatio
 add_executable(rts_assets_runtime_tests assets_runtime_tests.cpp)
 target_link_libraries(rts_assets_runtime_tests PRIVATE RTSEngine::Assets)
 add_test(NAME rts_assets_runtime_tests COMMAND rts_assets_runtime_tests)
-
 
 add_executable(rts_screen_ui_tests screen_ui_tests.cpp)
 target_link_libraries(rts_screen_ui_tests PRIVATE RTSEngine::Presentation)
@@ -60,6 +57,10 @@ add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
 add_executable(rts_game_session_tests rts_game_session_tests.cpp)
 target_link_libraries(rts_game_session_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_game_session_tests COMMAND rts_game_session_tests)
+
+add_executable(rts_team_economy_tests rts_team_economy_tests.cpp)
+target_link_libraries(rts_team_economy_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_team_economy_tests COMMAND rts_team_economy_tests)
 
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
