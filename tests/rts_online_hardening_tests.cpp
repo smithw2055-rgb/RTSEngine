@@ -14,9 +14,14 @@ namespace {
 
 using namespace rts;
 
-void require(bool value) {
-    if (!value) std::abort();
+void requireImpl(bool value, int line) {
+    if (!value) {
+        std::cerr << "online hardening assertion failed at line " << line << '\n';
+        std::abort();
+    }
 }
+
+#define require(value) requireImpl((value), __LINE__)
 
 class TestSecurityProvider final : public network::INetworkSecurityProvider {
 public:
@@ -554,6 +559,8 @@ void testDedicatedServerHasNoLocalPlayer() {
     require(server.health().players == 2);
     require(server.health().simulationTicks == 4);
 }
+
+#undef require
 
 } // namespace
 
