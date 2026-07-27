@@ -241,13 +241,14 @@ void testDeterministicLruAndPointBudget() {
 void testSimulationUsesSharedCache() {
     RtsSimulation simulation(8, 4);
     const auto first = simulation.createUnit({0, 0}, {1});
+    const auto second = simulation.createUnit({0, 0}, {1});
+    assert(first.valid() && second.valid());
     assert(simulation.submit(
         {0, 1, 1, CommandType::Move, first, 7, 0, false}));
     simulation.step(0);
     assert(simulation.pathCache().stats().misses == 1);
     assert(simulation.pathCache().stats().hits == 0);
 
-    const auto second = simulation.createUnit({0, 0}, {1});
     assert(simulation.submit(
         {1, 1, 2, CommandType::Move, second, 7, 0, false}));
     simulation.step(1);
