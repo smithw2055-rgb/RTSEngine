@@ -4,6 +4,7 @@
 #include <RTSEngine/Rts/BaseBuilding.h>
 #include <RTSEngine/Rts/GameplayModifiers.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/TechTree.h>
 #include <RTSEngine/Rts/VisionTypes.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
@@ -83,7 +84,9 @@ enum class CommandType : std::uint8_t {
     Attack,
     AttackMove,
     HoldPosition,
-    Gather
+    Gather,
+    Research,
+    CancelResearch
 };
 
 struct TickCommand {
@@ -112,7 +115,10 @@ enum class CommandRejectionReason : std::uint32_t {
     InvalidDefinition,
     InsufficientResources,
     ResourceUnavailable,
-    NoDropOff
+    NoDropOff,
+    PrerequisiteMissing,
+    AlreadyCompleted,
+    AlreadyQueued
 };
 
 enum class DomainEventType : std::uint8_t {
@@ -148,7 +154,11 @@ enum class DomainEventType : std::uint8_t {
     GatherRejected,
     ResourceHarvested,
     ResourceDeposited,
-    ResourceDepleted
+    ResourceDepleted,
+    ResearchAccepted,
+    ResearchRejected,
+    ResearchCancelled,
+    ResearchCompleted
 };
 
 struct DomainEvent {
@@ -179,6 +189,7 @@ struct SnapshotEntity {
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{};
     std::uint32_t productionQueueSize{};
+    std::uint32_t researchQueueSize{};
     std::uint32_t teamId{};
     std::int32_t healthCurrent{};
     std::int32_t healthMaximum{};
@@ -221,6 +232,7 @@ struct WorldSnapshot {
     std::uint64_t worldHash{};
     ResourceLedger resources{};
     std::vector<TeamResourceAccount> teamResources;
+    std::vector<TeamTechState> teamTech;
     std::uint64_t commandCommittedThrough{};
     std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
