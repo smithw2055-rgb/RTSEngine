@@ -44,6 +44,8 @@ void testStableHeapPath() {
     assert(!first.budgetExceeded && !second.budgetExceeded);
     assert(first.points == second.points);
     assert(first.expandedNodes == second.expandedNodes);
+    assert(first.dependencyChunks == second.dependencyChunks);
+    assert(!first.dependencyChunks.empty());
     assert(!first.points.empty());
     assert((first.points.back() == GridPoint{63, 63}));
     for (const auto point : first.points) {
@@ -67,9 +69,11 @@ void testWorkspaceStopsGrowingAfterWarmup() {
     const auto cellCapacity = scratch.cellCapacity();
     const auto heapCapacity = scratch.heapCapacity();
     const auto reverseCapacity = scratch.reverseCapacity();
+    const auto dependencyCapacity = scratch.dependencyCapacity();
     assert(cellCapacity >= 64u * 64u);
     assert(heapCapacity >= 64u * 64u);
     assert(reverseCapacity >= 64u * 64u);
+    assert(dependencyCapacity >= grid.chunkCount());
 
     for (std::uint32_t request = 0; request < 512; ++request) {
         const GridPoint start{
@@ -86,6 +90,7 @@ void testWorkspaceStopsGrowingAfterWarmup() {
         assert(scratch.cellCapacity() == cellCapacity);
         assert(scratch.heapCapacity() == heapCapacity);
         assert(scratch.reverseCapacity() == reverseCapacity);
+        assert(scratch.dependencyCapacity() == dependencyCapacity);
     }
 }
 
@@ -98,6 +103,7 @@ void testBudgetAndInvalidRequests() {
     assert(!budgeted.found);
     assert(budgeted.budgetExceeded);
     assert(budgeted.expandedNodes == 2);
+    assert(!budgeted.dependencyChunks.empty());
 
     const auto invalid = GridPathfinder::find(
         grid, {-1, 0}, {63, 63}, scratch, 20000);
@@ -159,6 +165,40 @@ void testCacheStoresNegativeAndBudgetResults() {
     assert(cache.entryCount() == 3);
     assert(cache.stats().misses == 3);
     assert(cache.stats().hits == 2);
+}
+
+void testChunkSelectiveInvalidation() {
+    NavigationGrid grid(64, 64);
+    GridPathfinderScratch scratch;
+    GridPathCache cache;
+
+    const PathResult first = cache.resolve(
+        grid, {0, 0}, {10, 0}, scratch, 1000);
+    assert(first.found);
+    assert(first.dependencyChunks.size() == 1u);
+    const auto searchedChunk = first.dependencyChunks.front();
+    assert(searchedChunk == grid.chunkIndex({0, 0}));
+
+    const auto remoteChunk = grid.chunkIndex({63, 63});
+    assert(remoteChunk != searchedChunk);
+    assert(grid.setBlocked({63, 63}, true));
+    const PathResult remoteChangeHit = cache.resolve(
+        grid, {0, 0}, {10, 0}, scratch, 1000);
+    assert(equalResult(first, remoteChangeHit));
+    assert(cache.stats().hits == 1);
+    assert(cache.stats().misses == 1);
+    assert(cache.stats().invalidations == 0);
+
+    assert(grid.setBlocked({5, 0}, true));
+    const PathResult localChangeMiss = cache.resolve(
+        grid, {0, 0}, {10, 0}, scratch, 1000);
+    assert(localChangeMiss.found);
+    assert(localChangeMiss.points != first.points);
+    assert(cache.stats().misses == 2);
+    assert(cache.stats().invalidations == 1);
+    for (const auto point : localChangeMiss.points) {
+        assert(!grid.blocked(point));
+    }
 }
 
 void testRevisionAndRestoreInvalidateCache() {
@@ -265,6 +305,7 @@ int main() {
     testBudgetAndInvalidRequests();
     testCacheHitMatchesColdSearch();
     testCacheStoresNegativeAndBudgetResults();
+    testChunkSelectiveInvalidation();
     testRevisionAndRestoreInvalidateCache();
     testDeterministicLruAndPointBudget();
     testSimulationUsesSharedCache();
