@@ -44,10 +44,6 @@ struct ConstructionSite {
     bool producer{};
     std::uint32_t ownerTeam{};
     std::uint32_t baseRequiredTicks{1};
-    ResourceTypeId dropOffResourceType{};
-    std::int32_t dropOffAccessX{};
-    std::int32_t dropOffAccessY{};
-    std::uint32_t supplyProvided{};
 };
 
 struct Building {
@@ -151,11 +147,18 @@ public:
             requiredTicks,
             definition.producer,
             resolvedOwner,
-            sourceTicks,
-            definition.dropOffResourceType,
-            dropOffAccess.x,
-            dropOffAccess.y,
-            definition.supplyProvided});
+            sourceTicks});
+        if (definition.dropOffResourceType != 0 ||
+            definition.supplyProvided != 0) {
+            commands.add(
+                context,
+                deferred,
+                ConstructionEconomyFeatures{
+                    definition.dropOffResourceType,
+                    dropOffAccess.x,
+                    dropOffAccess.y,
+                    definition.supplyProvided});
+        }
         return {true, BuildFailure::None, id};
     }
 
@@ -197,20 +200,26 @@ public:
                         {footprint.origin.x + footprint.width,
                          footprint.origin.y + footprint.height / 2}});
                 }
-                if (site.dropOffResourceType != 0) {
+                const auto* features =
+                    world.try_get<ConstructionEconomyFeatures>(entity);
+                if (features && features->dropOffResourceType != 0) {
                     commands.add(
                         context,
                         entity,
                         ResourceDropOff{
-                            site.dropOffResourceType,
-                            site.dropOffAccessX,
-                            site.dropOffAccessY});
+                            features->dropOffResourceType,
+                            features->dropOffAccessX,
+                            features->dropOffAccessY});
                 }
-                if (site.supplyProvided != 0) {
+                if (features && features->supplyProvided != 0) {
                     commands.add(
                         context,
                         entity,
-                        SupplyProvider{site.supplyProvided});
+                        SupplyProvider{features->supplyProvided});
+                }
+                if (features) {
+                    commands.remove<ConstructionEconomyFeatures>(
+                        context, entity);
                 }
                 commands.remove<ConstructionSite>(context, entity);
             });
