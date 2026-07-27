@@ -150,9 +150,6 @@ public:
                tower_.registerLane(std::move(lane));
     }
 
-    // Wave definitions are also used as per-wave runtime templates. The base
-    // definition is frozen in waves_; TowerDefense may receive a derived copy
-    // with a deterministic reward pool when a wave is queued.
     bool registerWave(tower_defense::WaveDefinition wave) {
         if (configurationFrozen() || wave.id == 0) return false;
         const auto copy = wave;
@@ -281,6 +278,9 @@ public:
 private:
     friend class RunSimulationArchive;
 
+    using TowerRuntimeAuthority =
+        tower_defense::TowerDefenseSimulation::RuntimeAuthority;
+
     struct PendingWaveBaseline final {
         tower_defense::WaveId waveId{};
         std::uint32_t waveIndex{};
@@ -290,6 +290,10 @@ private:
         std::int32_t resources{};
         bool valid{};
     };
+
+    static TowerRuntimeAuthority towerRuntimeAuthority() noexcept {
+        return TowerRuntimeAuthority{};
+    }
 
     template<class T>
     static void replaceById(std::vector<T>& values, T value) {
@@ -472,7 +476,7 @@ private:
         command.sequence = nextInternalSequence_++;
         command.type = tower_defense::CommandType::ChooseReward;
         command.objectId = id;
-        if (!tower_.submit(command)) {
+        if (!tower_.submitRuntime(towerRuntimeAuthority(), command)) {
             events_.push_back(
                 {tick, EventType::ModifierRejected, state_.runId,
                  state_.currentWave, id, 0,
@@ -532,7 +536,8 @@ private:
                 pendingRewardOffer_.choices.size());
         }
 
-        if (!tower_.registerWave(std::move(wave)) ||
+        if (!tower_.registerRuntimeWave(
+                towerRuntimeAuthority(), std::move(wave)) ||
             !sequence_.markWaveStartQueued()) {
             pendingRewardOffer_ = {};
             failRun(tick, RunFailure::InvalidDefinition,
@@ -546,7 +551,7 @@ private:
         command.sequence = nextInternalSequence_++;
         command.type = tower_defense::CommandType::StartWave;
         command.objectId = waveId;
-        if (!tower_.submit(command)) {
+        if (!tower_.submitRuntime(towerRuntimeAuthority(), command)) {
             pendingRewardOffer_ = {};
             failRun(tick, RunFailure::TowerDefenseRejected,
                     tower_defense::WaveSequenceFailure::TowerCommandRejected);
