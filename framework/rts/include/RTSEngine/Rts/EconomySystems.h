@@ -17,7 +17,7 @@ namespace rts::gameplay {
 struct EconomyCommandDependencies {
     ecs::EntityCommandBuffer& structuralCommands;
     BaseBuildingRuntime& building;
-    ResourceLedger& resources;
+    TeamEconomyRuntime& economy;
     GameplayModifierSystem& modifiers;
     const DefinitionCatalog<BuildingDefinition>& buildingDefinitions;
     const DefinitionCatalog<UnitDefinition>& unitDefinitions;
@@ -196,7 +196,10 @@ private:
                    dependencies.events);
             return;
         }
-        if (!dependencies.resources.reserve(definition->cost)) {
+        if (!dependencies.economy.reserve(
+                ownerTeam->id,
+                kPrimaryResourceType,
+                definition->cost)) {
             reject(context, command,
                    CommandRejectionReason::InsufficientResources,
                    dependencies.events);
@@ -240,7 +243,8 @@ private:
         }
 
         auto* queue = world.try_get<ProductionQueue>(command.subject);
-        if (!queue) {
+        const auto* team = world.try_get<Team>(command.subject);
+        if (!queue || !team) {
             reject(context, command, CommandRejectionReason::MissingCapability,
                    dependencies.events);
             return;
@@ -256,7 +260,10 @@ private:
                    dependencies.events);
             return;
         }
-        dependencies.resources.release(iterator->reservedCost);
+        dependencies.economy.release(
+            team->id,
+            kPrimaryResourceType,
+            iterator->reservedCost);
         queue->items.erase(iterator);
         dependencies.events.push_back(
             {context.tick,
@@ -331,7 +338,7 @@ public:
 
 struct ProductionSystemDependencies {
     ecs::EntityCommandBuffer& structuralCommands;
-    ResourceLedger& resources;
+    TeamEconomyRuntime& economy;
     const GameplayModifierSystem& modifiers;
     const DefinitionCatalog<UnitDefinition>& unitDefinitions;
     std::vector<DomainEvent>& events;
@@ -356,10 +363,17 @@ public:
 
                 const auto* definition =
                     dependencies.unitDefinitions.find(item.unitDefinitionId);
-                if (!definition) {
+                const auto* ownerTeam = world.try_get<Team>(entity);
+                const auto teamId = ownerTeam ? ownerTeam->id : 0;
+                if (!definition || teamId == 0) {
                     const auto rejectedId = item.id;
                     const auto rejectedDefinition = item.unitDefinitionId;
-                    dependencies.resources.release(item.reservedCost);
+                    if (teamId != 0) {
+                        dependencies.economy.release(
+                            teamId,
+                            kPrimaryResourceType,
+                            item.reservedCost);
+                    }
                     queue.items.erase(queue.items.begin());
                     dependencies.events.push_back(
                         {context.tick,
@@ -370,22 +384,21 @@ public:
                     return;
                 }
 
-                dependencies.resources.commit(item.reservedCost);
+                dependencies.economy.commit(
+                    teamId,
+                    kPrimaryResourceType,
+                    item.reservedCost);
                 const auto producedId = item.id;
-                const auto* ownerTeam = world.try_get<Team>(entity);
-                const auto teamId = ownerTeam ? ownerTeam->id : 0;
                 const auto deferred =
                     dependencies.structuralCommands.create(context);
-                EntityFactory::queueUnit(
+                EntityFactory::queueUnitDefinition(
                     context,
                     dependencies.structuralCommands,
                     dependencies.modifiers,
                     deferred,
                     Position{rally.point.x, rally.point.y},
-                    definition->cellsPerTick,
                     teamId,
-                    definition->combat,
-                    definition->visionRange);
+                    *definition);
                 queue.items.erase(queue.items.begin());
                 dependencies.events.push_back(
                     {context.tick,
