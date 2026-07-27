@@ -88,6 +88,16 @@ public:
         std::vector<Command> pending;
     };
 
+    bool reserveTick(std::uint64_t tick, std::size_t commandCount) {
+        if (tick < committedThrough_) return false;
+        auto bucket = lowerBucket(tick);
+        if (bucket == buckets_.end() || bucket->tick != tick) {
+            bucket = buckets_.insert(bucket, Bucket{tick, {}});
+        }
+        bucket->commands.reserve(commandCount);
+        return true;
+    }
+
     CommandSubmitResult submitDetailed(Command command) {
         if (command.targetTick < committedThrough_) {
             return CommandSubmitResult::Late;
