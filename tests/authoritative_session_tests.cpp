@@ -1,4 +1,6 @@
+#include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Roguelite/RunSimulation.h>
+#include <RTSEngine/Rts/AuthoritativeStateHash.h>
 #include <RTSEngine/Rts/Replay.h>
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
@@ -129,6 +131,42 @@ void testReplayRejectsConflictingDuplicates() {
     require(!gameplay::RtsReplayRecorder::normalize(checkpointConflict));
 }
 
+void testEntityAllocationStateChangesCanonicalHash() {
+    ecs::World first;
+    ecs::World second;
+    require(first.create().valid());
+    const auto temporary = first.create();
+    require(temporary.valid());
+    require(first.destroy(temporary));
+    require(second.create().valid());
+    require(first.entityRegistryHash() != second.entityRegistryHash());
+}
+
+void testFutureRuntimeFieldsChangeWorldHash() {
+    constexpr std::uint64_t base = 100;
+    constexpr std::uint64_t registry = 200;
+    const auto original = gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {0, 0}, {7, 7}, 3, 4, 1);
+    require(original != gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {1, 0}, {7, 7}, 3, 4, 1));
+    require(original != gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {0, 0}, {6, 7}, 3, 4, 1));
+    require(original != gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {0, 0}, {7, 7}, 4, 4, 1));
+    require(original != gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {0, 0}, {7, 7}, 3, 5, 1));
+    require(original != gameplay::FinalizeRtsAuthoritativeWorldHash(
+        base, registry, {0, 0}, {7, 7}, 3, 4, 2));
+
+    gameplay::RtsSimulation first(8, 8);
+    gameplay::RtsSimulation second(8, 8);
+    require(first.setRequiredRoute({0, 0}, {7, 7}));
+    require(second.setRequiredRoute({0, 0}, {6, 7}));
+    require(first.step(0));
+    require(second.step(0));
+    require(first.snapshot().worldHash != second.snapshot().worldHash);
+}
+
 } // namespace
 
 int main() {
@@ -137,6 +175,8 @@ int main() {
     testTowerRejectedTickDoesNotSplitNestedState();
     testRunRejectedTickDoesNotSplitNestedState();
     testReplayRejectsConflictingDuplicates();
+    testEntityAllocationStateChangesCanonicalHash();
+    testFutureRuntimeFieldsChangeWorldHash();
     std::cout << "authoritative session boundary tests passed\n";
     return 0;
 }
