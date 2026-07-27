@@ -3,6 +3,7 @@
 #include <RTSEngine/Ecs/Scheduler.h>
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
+#include <RTSEngine/Rts/Vision.h>
 
 #include <vector>
 
@@ -10,6 +11,7 @@ namespace rts::gameplay {
 
 struct OrderSystemDependencies {
     std::vector<DomainEvent>& events;
+    const VisionRuntime* vision{};
 };
 
 class OrderSystem final {
@@ -30,16 +32,16 @@ public:
         switch (command.type) {
         case CommandType::Move:
         case CommandType::Stop:
-            processMoveOrStop(world, context, command, dependencies.events);
+            processMoveOrStop(world, context, command, dependencies);
             break;
         case CommandType::Attack:
-            processAttack(world, context, command, dependencies.events);
+            processAttack(world, context, command, dependencies);
             break;
         case CommandType::AttackMove:
-            processAttackMove(world, context, command, dependencies.events);
+            processAttackMove(world, context, command, dependencies);
             break;
         case CommandType::HoldPosition:
-            processHoldPosition(world, context, command, dependencies.events);
+            processHoldPosition(world, context, command, dependencies);
             break;
         default:
             break;
@@ -79,15 +81,50 @@ public:
     }
 
 private:
+    static bool owns(const ecs::World& world,
+                     ecs::Entity entity,
+                     std::uint32_t issuer) noexcept {
+        const auto* team = world.try_get<Team>(entity);
+        return issuer != 0 && team && team->id == issuer;
+    }
+
+    static void reject(const ecs::SystemContext& context,
+                       const TickCommand& command,
+                       CommandRejectionReason reason,
+                       std::vector<DomainEvent>& events) {
+        events.push_back(
+            {context.tick,
+             DomainEventType::CommandRejected,
+             command.subject,
+             command.objectId,
+             static_cast<std::uint32_t>(reason),
+             command.targetEntity,
+             static_cast<std::int32_t>(command.type)});
+    }
+
     static void processMoveOrStop(
         ecs::World& world,
         const ecs::SystemContext& context,
         const TickCommand& command,
-        std::vector<DomainEvent>& events) {
-        if (!world.alive(command.subject)) return;
+        OrderSystemDependencies dependencies) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         auto* queue = world.try_get<OrderQueue>(command.subject);
         auto* agent = world.try_get<MovementAgent>(command.subject);
-        if (!queue || !agent) return;
+        if (!queue || !agent) {
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
+            return;
+        }
 
         if (command.type == CommandType::Stop) {
             queue->pending.clear();
@@ -98,7 +135,7 @@ private:
                 directive->mode = CombatMode::Guard;
                 directive->forcedTarget = {};
             }
-            events.push_back(
+            dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::OrderStopped,
                  command.subject,
@@ -122,7 +159,7 @@ private:
                 ? CombatMode::AttackMove
                 : CombatMode::PassiveMove;
         }
-        events.push_back(
+        dependencies.events.push_back(
             {context.tick,
              DomainEventType::MoveAccepted,
              command.subject,
@@ -134,8 +171,18 @@ private:
         ecs::World& world,
         const ecs::SystemContext& context,
         const TickCommand& command,
-        std::vector<DomainEvent>& events) {
-        if (!world.alive(command.subject)) return;
+        OrderSystemDependencies dependencies) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         auto* queue = world.try_get<OrderQueue>(command.subject);
         auto* agent = world.try_get<MovementAgent>(command.subject);
         auto* directive =
@@ -143,12 +190,8 @@ private:
         auto* target = world.try_get<CombatTarget>(command.subject);
         const auto* weapon = world.try_get<Weapon>(command.subject);
         if (!queue || !agent || !directive || !target || !weapon) {
-            events.push_back(
-                {context.tick,
-                 DomainEventType::AttackRejected,
-                 command.subject,
-                 0,
-                 1});
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
             return;
         }
 
@@ -165,7 +208,7 @@ private:
             ? CombatMode::AttackMove
             : CombatMode::PassiveMove;
         target->entity = {};
-        events.push_back(
+        dependencies.events.push_back(
             {context.tick,
              DomainEventType::AttackMoveAccepted,
              command.subject,
@@ -177,7 +220,7 @@ private:
         ecs::World& world,
         const ecs::SystemContext& context,
         const TickCommand& command,
-        std::vector<DomainEvent>& events) {
+        OrderSystemDependencies dependencies) {
         auto* queue = world.try_get<OrderQueue>(command.subject);
         auto* agent = world.try_get<MovementAgent>(command.subject);
         auto* directive =
@@ -190,22 +233,40 @@ private:
             world.try_get<Health>(command.targetEntity);
         const auto* targetPosition =
             world.try_get<Position>(command.targetEntity);
-        const bool valid =
-            world.alive(command.subject) &&
-            world.alive(command.targetEntity) &&
-            queue && agent && directive && target && attackerTeam && weapon &&
-            targetTeam && targetHealth && targetPosition &&
-            targetHealth->current > 0 &&
+
+        if (!world.alive(command.subject) || !attackerTeam) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (attackerTeam->id != command.issuer || command.issuer == 0) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+        if (!queue || !agent || !directive || !target || !weapon) {
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
+            return;
+        }
+
+        const bool validTarget =
+            world.alive(command.targetEntity) && targetTeam && targetHealth &&
+            targetPosition && targetHealth->current > 0 &&
             targetTeam->id != attackerTeam->id;
-        if (!valid) {
-            events.push_back(
-                {context.tick,
-                 DomainEventType::AttackRejected,
-                 command.subject,
-                 0,
-                 2,
-                 command.targetEntity,
-                 0});
+        if (!validTarget) {
+            reject(context, command, CommandRejectionReason::InvalidTarget,
+                   dependencies.events);
+            return;
+        }
+
+        if (dependencies.vision && dependencies.vision->layerCount() != 0 &&
+            !dependencies.vision->visible(
+                command.issuer,
+                {targetPosition->x, targetPosition->y})) {
+            reject(context, command,
+                   CommandRejectionReason::TargetNotVisible,
+                   dependencies.events);
             return;
         }
 
@@ -214,7 +275,7 @@ private:
         directive->mode = CombatMode::AttackTarget;
         directive->forcedTarget = command.targetEntity;
         target->entity = command.targetEntity;
-        events.push_back(
+        dependencies.events.push_back(
             {context.tick,
              DomainEventType::AttackAccepted,
              command.subject,
@@ -228,20 +289,26 @@ private:
         ecs::World& world,
         const ecs::SystemContext& context,
         const TickCommand& command,
-        std::vector<DomainEvent>& events) {
+        OrderSystemDependencies dependencies) {
+        if (!world.alive(command.subject)) {
+            reject(context, command, CommandRejectionReason::InvalidEntity,
+                   dependencies.events);
+            return;
+        }
+        if (!owns(world, command.subject, command.issuer)) {
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+
         auto* queue = world.try_get<OrderQueue>(command.subject);
         auto* agent = world.try_get<MovementAgent>(command.subject);
         auto* directive =
             world.try_get<CombatDirective>(command.subject);
         auto* target = world.try_get<CombatTarget>(command.subject);
-        if (!world.alive(command.subject) || !queue || !agent ||
-            !directive || !target) {
-            events.push_back(
-                {context.tick,
-                 DomainEventType::AttackRejected,
-                 command.subject,
-                 0,
-                 3});
+        if (!queue || !agent || !directive || !target) {
+            reject(context, command, CommandRejectionReason::MissingCapability,
+                   dependencies.events);
             return;
         }
 
@@ -250,7 +317,7 @@ private:
         directive->mode = CombatMode::HoldPosition;
         directive->forcedTarget = {};
         target->entity = {};
-        events.push_back(
+        dependencies.events.push_back(
             {context.tick,
              DomainEventType::HoldPositionAccepted,
              command.subject,

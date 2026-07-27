@@ -87,6 +87,17 @@ struct TickCommand {
 
 using TickCommandStream = sim::DeterministicCommandStream<TickCommand>;
 
+enum class CommandRejectionReason : std::uint32_t {
+    None,
+    InvalidEntity,
+    NotOwner,
+    MissingCapability,
+    InvalidTarget,
+    TargetNotVisible,
+    InvalidDefinition,
+    InsufficientResources
+};
+
 enum class DomainEventType : std::uint8_t {
     MoveAccepted,
     MoveCompleted,
@@ -114,7 +125,8 @@ enum class DomainEventType : std::uint8_t {
     EntityDied,
     BountyAwarded,
     MoveBlocked,
-    MoveYielded
+    MoveYielded,
+    CommandRejected
 };
 
 struct DomainEvent {

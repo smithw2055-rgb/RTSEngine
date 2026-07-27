@@ -11,6 +11,12 @@ namespace rts::sim {
 // Command must expose targetTick, issuer, and sequence fields. The stream owns
 // ordering, duplicate suppression, skipped-Tick cleanup, late-command rejection,
 // and a canonical persistence state shared by all orchestration layers.
+enum class CommandSubmitResult : std::uint8_t {
+    Accepted,
+    DuplicateIdentity,
+    Late
+};
+
 template<class Command>
 class DeterministicCommandStream final {
 public:
@@ -19,10 +25,30 @@ public:
         std::vector<Command> pending;
     };
 
-    bool submit(Command command) {
-        if (command.targetTick < committedThrough_) return false;
+    CommandSubmitResult submitDetailed(Command command) {
+        if (command.targetTick < committedThrough_) {
+            return CommandSubmitResult::Late;
+        }
+
+        // A command identity is globally unique within the pending stream.
+        // Silently accepting a second payload for the same identity makes the
+        // authoritative result depend on producer or network arrival order.
+        const auto duplicate = std::find_if(
+            commands_.begin(), commands_.end(),
+            [&](const Command& current) {
+                return sameIdentity(current, command);
+            });
+        if (duplicate != commands_.end()) {
+            return CommandSubmitResult::DuplicateIdentity;
+        }
+
         commands_.push_back(std::move(command));
-        return true;
+        return CommandSubmitResult::Accepted;
+    }
+
+    bool submit(Command command) {
+        return submitDetailed(std::move(command)) ==
+               CommandSubmitResult::Accepted;
     }
 
     std::vector<Command> consume(std::uint64_t tick) {
@@ -78,6 +104,12 @@ public:
     }
 
 private:
+    static bool sameIdentity(const Command& a, const Command& b) noexcept {
+        return a.targetTick == b.targetTick &&
+               a.issuer == b.issuer &&
+               a.sequence == b.sequence;
+    }
+
     static bool less(const Command& a, const Command& b) {
         if (a.targetTick != b.targetTick) {
             return a.targetTick < b.targetTick;
@@ -90,12 +122,9 @@ private:
         std::stable_sort(commands.begin(), commands.end(), less);
         commands.erase(
             std::unique(
-                commands.begin(),
-                commands.end(),
+                commands.begin(), commands.end(),
                 [](const Command& a, const Command& b) {
-                    return a.targetTick == b.targetTick &&
-                           a.issuer == b.issuer &&
-                           a.sequence == b.sequence;
+                    return sameIdentity(a, b);
                 }),
             commands.end());
     }
