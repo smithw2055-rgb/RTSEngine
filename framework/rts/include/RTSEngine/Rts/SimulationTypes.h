@@ -66,6 +66,10 @@ struct UnitDefinition {
     std::int32_t cellsPerTick{1};
     CombatStats combat{};
     std::int32_t visionRange{6};
+    bool worker{};
+    ResourceAmount cargoCapacity{};
+    ResourceAmount harvestAmount{1};
+    std::uint32_t harvestTicks{1};
 };
 
 enum class CommandType : std::uint8_t {
@@ -78,7 +82,8 @@ enum class CommandType : std::uint8_t {
     SetRally,
     Attack,
     AttackMove,
-    HoldPosition
+    HoldPosition,
+    Gather
 };
 
 struct TickCommand {
@@ -105,7 +110,9 @@ enum class CommandRejectionReason : std::uint32_t {
     InvalidTarget,
     TargetNotVisible,
     InvalidDefinition,
-    InsufficientResources
+    InsufficientResources,
+    ResourceUnavailable,
+    NoDropOff
 };
 
 enum class DomainEventType : std::uint8_t {
@@ -136,7 +143,12 @@ enum class DomainEventType : std::uint8_t {
     BountyAwarded,
     MoveBlocked,
     MoveYielded,
-    CommandRejected
+    CommandRejected,
+    GatherAccepted,
+    GatherRejected,
+    ResourceHarvested,
+    ResourceDeposited,
+    ResourceDepleted
 };
 
 struct DomainEvent {
@@ -152,7 +164,8 @@ struct DomainEvent {
 enum class SnapshotKind : std::uint8_t {
     Unit,
     Construction,
-    Building
+    Building,
+    ResourceNode
 };
 
 struct SnapshotEntity {
@@ -176,6 +189,10 @@ struct SnapshotEntity {
     std::uint32_t movementBlockedTicks{};
     std::uint32_t movementYieldOrdinal{};
     std::int32_t visionRange{};
+    ResourceTypeId resourceType{};
+    ResourceAmount resourceAmount{};
+    ResourceAmount cargoAmount{};
+    ResourceAmount cargoCapacity{};
 };
 
 struct TeamVisibilitySnapshot final {
@@ -203,6 +220,7 @@ struct WorldSnapshot {
     std::uint64_t tick{};
     std::uint64_t worldHash{};
     ResourceLedger resources{};
+    std::vector<TeamResourceAccount> teamResources;
     std::uint64_t commandCommittedThrough{};
     std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
