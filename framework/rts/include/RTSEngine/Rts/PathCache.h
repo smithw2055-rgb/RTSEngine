@@ -51,10 +51,15 @@ public:
         const GridPathCacheKey key{start, goal, nodeBudget};
         auto found = lowerBound(key);
         if (found != entries_.end() && equalKey(found->key, key)) {
-            ++stats_.hits;
-            stats_.returnedPathPoints += found->result.points.size();
-            found->lastUse = nextAccessSerial();
-            return found->result;
+            if (dependenciesCurrent(grid, *found)) {
+                ++stats_.hits;
+                stats_.returnedPathPoints += found->result.points.size();
+                found->lastUse = nextAccessSerial();
+                return found->result;
+            }
+            pointCount_ -= found->result.points.size();
+            found = entries_.erase(found);
+            ++stats_.invalidations;
         }
 
         ++stats_.misses;
@@ -88,6 +93,11 @@ public:
         entry.result = std::move(result);
         entry.lastUse = nextAccessSerial();
         entry.insertionSerial = nextInsertionSerial();
+        entry.dependencies.reserve(entry.result.dependencyChunks.size());
+        for (const auto chunk : entry.result.dependencyChunks) {
+            entry.dependencies.push_back(
+                {chunk, grid.chunkRevision(chunk)});
+        }
         pointCount_ += entry.result.points.size();
 
         found = lowerBound(key);
@@ -118,9 +128,15 @@ public:
     std::uint64_t activeRevision() const noexcept { return activeRevision_; }
 
 private:
+    struct ChunkDependency final {
+        std::uint32_t chunk{};
+        std::uint64_t revision{};
+    };
+
     struct Entry final {
         GridPathCacheKey key{};
         PathResult result;
+        std::vector<ChunkDependency> dependencies;
         std::uint64_t lastUse{};
         std::uint64_t insertionSerial{};
     };
@@ -155,25 +171,35 @@ private:
             });
     }
 
+    static bool dependenciesCurrent(
+        const NavigationGrid& grid,
+        const Entry& entry) noexcept {
+        for (const auto& dependency : entry.dependencies) {
+            if (grid.chunkRevision(dependency.chunk) != dependency.revision) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     void synchronize(const NavigationGrid& grid) {
-        const bool changed = bound_ &&
+        const bool replaced = bound_ &&
             (activeGrid_ != &grid || activeWidth_ != grid.width() ||
              activeHeight_ != grid.height() ||
-             activeRevision_ != grid.revision() ||
              activeCacheEpoch_ != grid.cacheEpoch());
-        if (changed) {
+        if (replaced) {
             entries_.clear();
             pointCount_ = 0;
             ++stats_.invalidations;
         }
-        if (!bound_ || changed) {
+        if (!bound_ || replaced) {
             activeGrid_ = &grid;
             activeWidth_ = grid.width();
             activeHeight_ = grid.height();
-            activeRevision_ = grid.revision();
             activeCacheEpoch_ = grid.cacheEpoch();
             bound_ = true;
         }
+        activeRevision_ = grid.revision();
     }
 
     bool exceedsPointBudget(std::size_t additional) const noexcept {
