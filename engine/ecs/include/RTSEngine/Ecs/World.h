@@ -36,6 +36,10 @@ public:
 
     std::uint32_t capacity() const noexcept { return entities_.capacity(); }
 
+    std::uint64_t entityRegistryHash() const noexcept {
+        return entities_.canonicalHash();
+    }
+
     template<class T, class... Args>
     T& emplace(Entity entity, Args&&... args) {
         assert(alive(entity));
