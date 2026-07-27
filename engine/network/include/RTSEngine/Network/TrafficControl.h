@@ -117,9 +117,12 @@ public:
 
     bool allow(std::uint64_t nowMs, std::size_t bytes) noexcept {
         const auto amount = static_cast<std::uint64_t>(bytes);
-        const bool packetAllowed = packetBucket_.consume(nowMs, 1u);
-        const bool bytesAllowed = byteBucket_.consume(nowMs, amount);
-        if (packetAllowed && bytesAllowed) {
+        auto packetCandidate = packetBucket_;
+        auto byteCandidate = byteBucket_;
+        if (packetCandidate.consume(nowMs, 1u) &&
+            byteCandidate.consume(nowMs, amount)) {
+            packetBucket_ = packetCandidate;
+            byteBucket_ = byteCandidate;
             ++stats_.acceptedPackets;
             stats_.acceptedBytes = saturatingAdd(stats_.acceptedBytes, amount);
             return true;
