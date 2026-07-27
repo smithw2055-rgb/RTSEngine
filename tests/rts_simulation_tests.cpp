@@ -20,7 +20,7 @@ std::vector<std::uint64_t> runScenario() {
 
     const auto unit = simulation.createUnit({0, 0}, {1});
     assert(simulation.submit({1, 1, 1, CommandType::Move, unit, 5, 0, false}));
-    assert(simulation.submit({1, 1, 1, CommandType::Move, unit, 99, 99, false}));
+    assert(!simulation.submit({1, 1, 1, CommandType::Move, unit, 99, 99, false}));
     assert(simulation.submit({1, 1, 2, CommandType::Move, unit, 5, 3, true}));
 
     std::vector<std::uint64_t> hashes;
