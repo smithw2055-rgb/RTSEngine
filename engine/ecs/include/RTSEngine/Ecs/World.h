@@ -3,7 +3,6 @@
 #include <RTSEngine/Ecs/ComponentPool.h>
 #include <RTSEngine/Ecs/EntityRegistry.h>
 
-#include <algorithm>
 #include <cassert>
 #include <memory>
 #include <typeindex>
@@ -26,9 +25,7 @@ public:
     Entity create() { return entities_.create(); }
 
     bool destroy(Entity entity) {
-        if (!entities_.destroy(entity)) {
-            return false;
-        }
+        if (!entities_.destroy(entity)) return false;
         for (auto& entry : pools_) {
             entry.second->remove(entity);
         }
@@ -63,20 +60,57 @@ public:
         return value ? value->pool.try_get(entity) : nullptr;
     }
 
-    template<class First, class... Rest>
-    std::vector<Entity> view() const {
-        std::vector<Entity> result;
-        const auto* first = find_pool<First>();
-        if (!first) {
-            return result;
-        }
+    template<class T>
+    void reserve(std::size_t count) {
+        pool<T>().pool.reserve(count);
+    }
 
-        for (Entity entity : first->pool.entities()) {
-            if (alive(entity) && (has<Rest>(entity) && ...)) {
+    // Allocation-free deterministic query. The smallest component pool is used
+    // as the driving range and all component pools are already kept in Entity
+    // order, so callers can use this directly in warmed simulation Tick paths.
+    template<class... Components, class Function>
+    void each(Function&& function) {
+        const auto* driving = smallestPool<Components...>();
+        if (!driving) return;
+        auto&& callback = function;
+        for (const auto entity : driving->entities()) {
+            if (alive(entity) && (has<Components>(entity) && ...)) {
+                callback(entity);
+            }
+        }
+    }
+
+    template<class... Components, class Function>
+    void each(Function&& function) const {
+        const auto* driving = smallestPool<Components...>();
+        if (!driving) return;
+        auto&& callback = function;
+        for (const auto entity : driving->entities()) {
+            if (alive(entity) && (has<Components>(entity) && ...)) {
+                callback(entity);
+            }
+        }
+    }
+
+    template<class... Components>
+    void viewInto(std::vector<Entity>& result) const {
+        result.clear();
+        const auto* driving = smallestPool<Components...>();
+        if (!driving) return;
+        if (result.capacity() < driving->size()) {
+            result.reserve(driving->size());
+        }
+        for (const auto entity : driving->entities()) {
+            if (alive(entity) && (has<Components>(entity) && ...)) {
                 result.push_back(entity);
             }
         }
-        std::sort(result.begin(), result.end());
+    }
+
+    template<class First, class... Rest>
+    std::vector<Entity> view() const {
+        std::vector<Entity> result;
+        viewInto<First, Rest...>(result);
         return result;
     }
 
@@ -87,6 +121,21 @@ private:
     bool has(Entity entity) const {
         const auto* value = find_pool<T>();
         return value && value->pool.contains(entity);
+    }
+
+    template<class... Components>
+    const IComponentPool* smallestPool() const noexcept {
+        const IComponentPool* candidates[] = {
+            static_cast<const IComponentPool*>(find_pool<Components>())...
+        };
+        const IComponentPool* result = nullptr;
+        for (const auto* candidate : candidates) {
+            if (!candidate) return nullptr;
+            if (!result || candidate->size() < result->size()) {
+                result = candidate;
+            }
+        }
+        return result;
     }
 
     template<class T>
