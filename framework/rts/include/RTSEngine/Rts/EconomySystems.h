@@ -299,6 +299,7 @@ private:
 struct ConstructionSystemDependencies {
     BaseBuildingRuntime& building;
     ecs::EntityCommandBuffer& structuralCommands;
+    std::vector<ConstructionId>& completing;
     std::vector<DomainEvent>& events;
 };
 
@@ -308,16 +309,16 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         ConstructionSystemDependencies dependencies) {
-        std::vector<ConstructionId> completing;
+        dependencies.completing.clear();
         world.eachRef<ConstructionSite>(
             [&](ecs::Entity, ConstructionSite& site) {
                 if (site.progressTicks + 1 >= site.requiredTicks) {
-                    completing.push_back(site.id);
+                    dependencies.completing.push_back(site.id);
                 }
             });
         dependencies.building.advance(
             context, dependencies.structuralCommands, world);
-        for (const auto id : completing) {
+        for (const auto id : dependencies.completing) {
             dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::ConstructionCompleted,
