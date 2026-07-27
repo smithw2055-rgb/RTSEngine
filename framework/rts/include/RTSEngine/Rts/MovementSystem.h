@@ -54,15 +54,17 @@ public:
         dependencies.telemetry->beginMovementTick(context.tick);
 
         std::int32_t maximumSteps = 0;
-        world.each<Position, MoveSpeed, OrderQueue, MovementAgent>(
-            [&](ecs::Entity entity) {
-                const auto* speed = world.try_get<MoveSpeed>(entity);
-                const auto* agent = world.try_get<MovementAgent>(entity);
-                if (!speed || !agent || agent->path.empty()) return;
+        world.eachRef<Position, MoveSpeed, OrderQueue, MovementAgent>(
+            [&](ecs::Entity,
+                Position&,
+                MoveSpeed& speed,
+                OrderQueue&,
+                MovementAgent& agent) {
+                if (agent.path.empty()) return;
                 dependencies.telemetry->recordMovementAgent();
                 maximumSteps = std::max(
                     maximumSteps,
-                    std::max<std::int32_t>(1, speed->cellsPerTick));
+                    std::max<std::int32_t>(1, speed.cellsPerTick));
             });
 
         // Build occupancy once at Tick start. Each substep rebuilds only after
@@ -87,13 +89,12 @@ private:
         MovementReservationRuntime& reservations,
         RuntimeTelemetry& telemetry) {
         reservations.clearOccupancy();
-        world.each<Position, MovementAgent>(
-            [&](ecs::Entity entity) {
-                const auto* position = world.try_get<Position>(entity);
-                if (position) {
-                    reservations.addOccupant(
-                        entity, {position->x, position->y});
-                }
+        world.eachRef<Position, MovementAgent>(
+            [&](ecs::Entity entity,
+                const Position& position,
+                const MovementAgent&) {
+                reservations.addOccupant(
+                    entity, {position.x, position.y});
             });
         telemetry.recordOccupancyRebuild(
             reservations.occupiedCellCount(),
@@ -108,24 +109,24 @@ private:
         auto& reservations = dependencies.reservations;
         reservations.beginIntents();
 
-        world.each<Position, MoveSpeed, OrderQueue, MovementAgent>(
-            [&](ecs::Entity entity) {
-                const auto* position = world.try_get<Position>(entity);
-                const auto* speed = world.try_get<MoveSpeed>(entity);
-                auto* agent = world.try_get<MovementAgent>(entity);
-                if (!position || !speed || !agent || agent->path.empty() ||
-                    agent->nextPoint >= agent->path.size() ||
-                    step >= std::max<std::int32_t>(
-                                1, speed->cellsPerTick) ||
-                    shouldPauseForCombat(world, entity, *position)) {
+        world.eachRef<Position, MoveSpeed, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity,
+                Position& position,
+                MoveSpeed& speed,
+                OrderQueue&,
+                MovementAgent& agent) {
+                if (agent.path.empty() ||
+                    agent.nextPoint >= agent.path.size() ||
+                    step >= std::max<std::int32_t>(1, speed.cellsPerTick) ||
+                    shouldPauseForCombat(world, entity, position)) {
                     return;
                 }
 
-                const auto destination = agent->path[agent->nextPoint];
+                const auto destination = agent.path[agent.nextPoint];
                 if (!dependencies.navigation.contains(destination) ||
                     dependencies.navigation.blocked(destination)) {
-                    clearPathForReplan(*agent);
-                    agent->blockedTicks = 0;
+                    clearPathForReplan(agent);
+                    agent.blockedTicks = 0;
                     dependencies.telemetry->recordBlockedSignal();
                     dependencies.events.push_back(
                         {context.tick,
@@ -138,9 +139,9 @@ private:
 
                 reservations.addIntent(
                     {entity,
-                     {position->x, position->y},
+                     {position.x, position.y},
                      destination,
-                     agent->blockedTicks});
+                     agent.blockedTicks});
             });
 
         reservations.arbitrate();
@@ -299,24 +300,25 @@ private:
         const ecs::SystemContext& context,
         RuntimeTelemetry& telemetry,
         std::vector<DomainEvent>& events) {
-        world.each<Position, OrderQueue, MovementAgent>(
-            [&](ecs::Entity entity) {
-                auto* queue = world.try_get<OrderQueue>(entity);
-                auto* agent = world.try_get<MovementAgent>(entity);
-                if (!queue || !agent || agent->path.empty() ||
-                    agent->nextPoint != agent->path.size()) {
+        world.eachRef<Position, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity,
+                Position&,
+                OrderQueue& queue,
+                MovementAgent& agent) {
+                if (agent.path.empty() ||
+                    agent.nextPoint != agent.path.size()) {
                     return;
                 }
 
-                const bool completedCombatPath = agent->combatPath;
-                OrderSystem::clearPath(*agent);
-                agent->blockedTicks = 0;
+                const bool completedCombatPath = agent.combatPath;
+                OrderSystem::clearPath(agent);
+                agent.blockedTicks = 0;
                 if (completedCombatPath) return;
 
-                if (!queue->pending.empty()) {
-                    queue->pending.erase(queue->pending.begin());
+                if (!queue.pending.empty()) {
+                    queue.pending.erase(queue.pending.begin());
                 }
-                OrderSystem::applyFrontOrderMode(world, entity, *queue);
+                OrderSystem::applyFrontOrderMode(world, entity, queue);
                 telemetry.recordCompletedMove();
                 events.push_back(
                     {context.tick,
