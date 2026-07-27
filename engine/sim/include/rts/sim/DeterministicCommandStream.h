@@ -146,13 +146,22 @@ public:
         State result;
         result.committedThrough = committedThrough_;
         result.pending.reserve(pendingCount_);
-        for (const auto& bucket : buckets_) {
-            result.pending.insert(
-                result.pending.end(),
-                bucket.commands.begin(),
-                bucket.commands.end());
-        }
+        forEachPending([&](const Command& command) {
+            result.pending.push_back(command);
+        });
         return result;
+    }
+
+    // Canonical allocation-free traversal for Tick hashing, telemetry and
+    // read-only inspection. Commands are visited by Tick, issuer and sequence.
+    template<class Function>
+    void forEachPending(Function&& function) const {
+        auto&& callback = function;
+        for (const auto& bucket : buckets_) {
+            for (const auto& command : bucket.commands) {
+                callback(command);
+            }
+        }
     }
 
     bool restore(State state) {
@@ -297,4 +306,4 @@ private:
     std::uint64_t committedThrough_{};
 };
 
-} // namespace rts::sim {
+} // namespace rts::sim
