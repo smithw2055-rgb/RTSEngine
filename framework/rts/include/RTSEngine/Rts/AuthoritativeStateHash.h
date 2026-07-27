@@ -15,11 +15,15 @@ inline std::uint64_t FinalizeRtsAuthoritativeWorldHash(
     std::uint32_t nextConstructionId,
     std::uint32_t nextProductionId,
     std::uint32_t playerTeamId,
-    std::uint16_t compatibilityVersion = 3u) noexcept {
+    std::uint16_t compatibilityVersion = 3u,
+    std::uint32_t nextResourceNodeId = 0u) noexcept {
     if (compatibilityVersion < 3u) return baseWorldHash;
 
     foundation::CanonicalHash hash;
-    hash.WriteString("rts.authoritative-world.v3");
+    hash.WriteString(
+        compatibilityVersion >= 4u
+            ? "rts.authoritative-world.v4"
+            : "rts.authoritative-world.v3");
     hash.WriteU64(baseWorldHash);
     hash.WriteU64(entityRegistryHash);
     hash.WriteI32(requiredPathStart.x);
@@ -29,6 +33,9 @@ inline std::uint64_t FinalizeRtsAuthoritativeWorldHash(
     hash.WriteU32(nextConstructionId);
     hash.WriteU32(nextProductionId);
     hash.WriteU32(playerTeamId);
+    if (compatibilityVersion >= 4u) {
+        hash.WriteU32(nextResourceNodeId);
+    }
     return hash.Value();
 }
 
