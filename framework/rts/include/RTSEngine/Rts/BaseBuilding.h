@@ -45,6 +45,8 @@ struct ConstructionSite {
     std::uint32_t ownerTeam{};
     std::uint32_t baseRequiredTicks{1};
     ResourceTypeId dropOffResourceType{};
+    std::int32_t dropOffAccessX{};
+    std::int32_t dropOffAccessY{};
     std::uint32_t supplyProvided{};
 };
 
@@ -107,7 +109,10 @@ public:
                       GridPoint requiredPathGoal,
                       std::uint32_t ownerTeam = 0,
                       std::uint32_t baseBuildTicks = 0) {
-        if (!valid(definition) || ownerTeam == 0) {
+        const auto resolvedOwner = ownerTeam == 0
+            ? compatibilityTeam_
+            : ownerTeam;
+        if (!valid(definition) || resolvedOwner == 0) {
             return {false, BuildFailure::InvalidDefinition, 0};
         }
 
@@ -118,7 +123,13 @@ public:
         if (placementFailure != BuildFailure::None) {
             return {false, placementFailure, 0};
         }
-        if (!reserve(ownerTeam, definition.cost)) {
+
+        GridPoint dropOffAccess{};
+        if (definition.dropOffResourceType != 0 &&
+            !findDropOffAccess(footprint, dropOffAccess)) {
+            return {false, BuildFailure::Occupied, 0};
+        }
+        if (!reserve(resolvedOwner, definition.cost)) {
             return {false, BuildFailure::InsufficientResources, 0};
         }
 
@@ -139,9 +150,11 @@ public:
             0,
             requiredTicks,
             definition.producer,
-            ownerTeam,
+            resolvedOwner,
             sourceTicks,
             definition.dropOffResourceType,
+            dropOffAccess.x,
+            dropOffAccess.y,
             definition.supplyProvided});
         return {true, BuildFailure::None, id};
     }
@@ -188,7 +201,10 @@ public:
                     commands.add(
                         context,
                         entity,
-                        ResourceDropOff{site.dropOffResourceType});
+                        ResourceDropOff{
+                            site.dropOffResourceType,
+                            site.dropOffAccessX,
+                            site.dropOffAccessY});
                 }
                 if (site.supplyProvided != 0) {
                     commands.add(
@@ -272,6 +288,45 @@ private:
         return economy_
             ? economy_->release(teamId, kPrimaryResourceType, amount)
             : legacyLedger_ && legacyLedger_->release(amount);
+    }
+
+    bool findDropOffAccess(
+        const BuildingFootprint& footprint,
+        GridPoint& result) const {
+        std::vector<GridPoint> candidates;
+        candidates.reserve(static_cast<std::size_t>(
+            (footprint.width + footprint.height) * 2 + 1));
+        candidates.push_back(
+            {footprint.origin.x + footprint.width,
+             footprint.origin.y + footprint.height / 2});
+        for (std::int32_t y = 0; y < footprint.height; ++y) {
+            candidates.push_back(
+                {footprint.origin.x + footprint.width,
+                 footprint.origin.y + y});
+        }
+        for (std::int32_t x = footprint.width - 1; x >= 0; --x) {
+            candidates.push_back(
+                {footprint.origin.x + x,
+                 footprint.origin.y + footprint.height});
+        }
+        for (std::int32_t y = footprint.height - 1; y >= 0; --y) {
+            candidates.push_back(
+                {footprint.origin.x - 1,
+                 footprint.origin.y + y});
+        }
+        for (std::int32_t x = 0; x < footprint.width; ++x) {
+            candidates.push_back(
+                {footprint.origin.x + x,
+                 footprint.origin.y - 1});
+        }
+        for (const auto candidate : candidates) {
+            if (navigation_.contains(candidate) &&
+                !navigation_.blocked(candidate)) {
+                result = candidate;
+                return true;
+            }
+        }
+        return false;
     }
 
     static std::vector<GridPoint> footprintCells(
