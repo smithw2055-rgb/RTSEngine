@@ -55,6 +55,13 @@ struct SupplyProvider final {
     std::uint32_t capacity{};
 };
 
+struct ConstructionEconomyFeatures final {
+    ResourceTypeId dropOffResourceType{};
+    std::int32_t dropOffAccessX{};
+    std::int32_t dropOffAccessY{};
+    std::uint32_t supplyProvided{};
+};
+
 struct TeamResourceAccount final {
     std::uint32_t teamId{};
     ResourceTypeId resourceType{};
