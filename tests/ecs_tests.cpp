@@ -55,12 +55,15 @@ int main() {
     CHECK(matching.front() == complete);
 
     std::uint32_t mutableReferenceCount = 0;
+    bool mutableReferenceEntitiesMatched = true;
     world.eachRef<Position, Health>(
         [&](Entity entity, Position& position, Health& health) {
-            CHECK(entity == complete);
+            mutableReferenceEntitiesMatched =
+                mutableReferenceEntitiesMatched && entity == complete;
             health.value += position.x;
             ++mutableReferenceCount;
         });
+    CHECK(mutableReferenceEntitiesMatched);
     CHECK(mutableReferenceCount == 1);
     CHECK(world.try_get<Health>(complete)->value == 13);
 
