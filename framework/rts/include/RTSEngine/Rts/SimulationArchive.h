@@ -20,10 +20,11 @@ namespace rts::gameplay {
 class RtsSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31535452u; // "RTS1"
-    static constexpr std::uint16_t kVersion = 3u;
+    static constexpr std::uint16_t kVersion = 4u;
     static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumWorldBytes = 128u * 1024u * 1024u;
     static constexpr std::uint32_t kMaximumModifierEntries = 4096u;
+    static constexpr std::uint32_t kMaximumEconomyAccounts = 4096u;
 
     static std::vector<std::uint8_t> encode(
         const RtsSimulation& simulation) {
@@ -40,7 +41,8 @@ public:
 
         const auto commandState = simulation.commands_.snapshot();
         if (commandState.pending.size() > sim::kMaximumArchiveEntries ||
-            simulation.modifiers_.entries().size() > kMaximumModifierEntries) {
+            simulation.modifiers_.entries().size() > kMaximumModifierEntries ||
+            simulation.economies_.accounts().size() > kMaximumEconomyAccounts) {
             return {};
         }
 
@@ -55,9 +57,14 @@ public:
             return {};
         }
 
-        writer.writeI32(simulation.resources_.available);
-        writer.writeI32(simulation.resources_.reserved);
-        writer.writeI32(simulation.resources_.spent);
+        writer.writeU32(static_cast<std::uint32_t>(
+            simulation.economies_.accounts().size()));
+        for (const auto& account : simulation.economies_.accounts()) {
+            writer.writeU32(account.teamId);
+            writer.writeI32(account.resources.available);
+            writer.writeI32(account.resources.reserved);
+            writer.writeI32(account.resources.spent);
+        }
 
         writer.writeU32(static_cast<std::uint32_t>(
             simulation.modifiers_.entries().size()));
@@ -136,12 +143,34 @@ public:
             return false;
         }
 
-        ResourceLedger resources;
-        if (!reader.readI32(resources.available) ||
-            !reader.readI32(resources.reserved) ||
-            !reader.readI32(resources.spent) || resources.available < 0 ||
-            resources.reserved < 0 || resources.spent < 0) {
-            return false;
+        ResourceLedger legacyResources;
+        std::vector<TeamEconomyAccount> economyAccounts;
+        if (version >= 4u) {
+            std::uint32_t accountCount = 0;
+            if (!reader.readU32(accountCount) ||
+                accountCount > kMaximumEconomyAccounts) {
+                return false;
+            }
+            economyAccounts.resize(accountCount);
+            std::uint32_t previousTeam = 0;
+            for (auto& account : economyAccounts) {
+                if (!reader.readU32(account.teamId) ||
+                    account.teamId == 0 || account.teamId <= previousTeam ||
+                    !reader.readI32(account.resources.available) ||
+                    !reader.readI32(account.resources.reserved) ||
+                    !reader.readI32(account.resources.spent) ||
+                    !account.resources.valid()) {
+                    return false;
+                }
+                previousTeam = account.teamId;
+            }
+        } else {
+            if (!reader.readI32(legacyResources.available) ||
+                !reader.readI32(legacyResources.reserved) ||
+                !reader.readI32(legacyResources.spent) ||
+                !legacyResources.valid()) {
+                return false;
+            }
         }
 
         std::vector<TeamModifierEntry> modifierEntries;
@@ -192,7 +221,7 @@ public:
             !readGridPoint(reader, requiredGoal) ||
             !reader.readU32(nextConstructionId) ||
             !reader.readU32(nextProductionId) ||
-            !reader.readU32(playerTeamId) ||
+            !reader.readU32(playerTeamId) || playerTeamId == 0 ||
             !reader.readU64(lastCompletedTick) ||
             !reader.readBool(hasStepped) ||
             !reader.readU64(storedWorldHash) || !reader.atEnd()) {
@@ -212,26 +241,48 @@ public:
             return false;
         }
 
+        TeamEconomyRuntime economiesCandidate;
+        if (version >= 4u) {
+            if (!economiesCandidate.restoreAccounts(
+                    std::move(economyAccounts)) ||
+                !economiesCandidate.find(playerTeamId)) {
+                return false;
+            }
+        } else {
+            economyAccounts.push_back(
+                {playerTeamId, legacyResources, 0, 0, 0});
+            if (!economiesCandidate.restoreAccounts(
+                    std::move(economyAccounts))) {
+                return false;
+            }
+        }
+
         GameplayModifierSystem modifiersCandidate;
         for (const auto& entry : modifierEntries) {
             modifiersCandidate.setProfile<MoveSpeed>(
                 worldCandidate, entry.teamId, entry.profile);
         }
 
+        EconomySupplySystem::rebuild(
+            worldCandidate,
+            economiesCandidate,
+            simulation.buildingDefinitions_);
         if (!validateWorld(
                 worldCandidate,
                 navigationCandidate,
-                resources,
+                economiesCandidate,
                 nextConstructionId,
                 nextProductionId)) {
             return false;
         }
 
-        foundation::BinaryWriter canonicalWorld;
-        if (!ecs::WorldArchive::write(
-                canonicalWorld, worldCandidate, schemas) ||
-            canonicalWorld.bytes() != worldBytes) {
-            return false;
+        if (version >= 4u) {
+            foundation::BinaryWriter canonicalWorld;
+            if (!ecs::WorldArchive::write(
+                    canonicalWorld, worldCandidate, schemas) ||
+                canonicalWorld.bytes() != worldBytes) {
+                return false;
+            }
         }
 
         WorldSnapshot snapshotCandidate;
@@ -241,12 +292,14 @@ public:
             SnapshotBuilder::build(
                 worldCandidate,
                 lastCompletedTick,
-                {resources,
+                {economiesCandidate,
+                 playerTeamId,
                  modifiersCandidate,
                  navigationCandidate,
                  commandCandidate,
                  snapshotCandidate,
-                 version >= 2u ? &visionCandidate : nullptr});
+                 version >= 2u ? &visionCandidate : nullptr,
+                 version});
             snapshotCandidate.worldHash = FinalizeRtsAuthoritativeWorldHash(
                 snapshotCandidate.worldHash,
                 worldCandidate.entityRegistryHash(),
@@ -262,7 +315,7 @@ public:
         simulation.world_ = std::move(worldCandidate);
         simulation.navigation_ = std::move(navigationCandidate);
         simulation.vision_ = std::move(visionCandidate);
-        simulation.resources_ = resources;
+        simulation.economies_ = std::move(economiesCandidate);
         simulation.modifiers_ = std::move(modifiersCandidate);
         simulation.commands_ = std::move(commandCandidate);
         simulation.requiredPathStart_ = requiredStart;
@@ -360,6 +413,15 @@ private:
             hash.WriteBool(definition.producer);
             hashCombatStats(hash, definition.combat);
             if (version >= 2u) hash.WriteI32(definition.visionRange);
+            if (version >= 4u) {
+                hash.WriteU32(definition.supplyProvided);
+                hash.WriteU32(definition.productionQueueCapacity);
+                hash.WriteU32(static_cast<std::uint32_t>(
+                    definition.trainableUnits.size()));
+                for (const auto unitId : definition.trainableUnits) {
+                    hash.WriteU32(unitId);
+                }
+            }
         }
         hash.WriteU32(static_cast<std::uint32_t>(
             simulation.unitDefinitions_.values().size()));
@@ -370,76 +432,127 @@ private:
             hash.WriteI32(definition.cellsPerTick);
             hashCombatStats(hash, definition.combat);
             if (version >= 2u) hash.WriteI32(definition.visionRange);
+            if (version >= 4u) hash.WriteU32(definition.supplyCost);
         }
         return hash.Value();
+    }
+
+    static void addReserved(
+        std::vector<std::pair<std::uint32_t, std::int64_t>>& values,
+        std::uint32_t teamId,
+        std::int32_t amount) {
+        auto found = std::lower_bound(
+            values.begin(),
+            values.end(),
+            teamId,
+            [](const auto& entry, std::uint32_t value) {
+                return entry.first < value;
+            });
+        if (found == values.end() || found->first != teamId) {
+            values.insert(found, {teamId, amount});
+        } else {
+            found->second += amount;
+        }
+    }
+
+    static std::int64_t reservedFor(
+        const std::vector<std::pair<std::uint32_t, std::int64_t>>& values,
+        std::uint32_t teamId) {
+        const auto found = std::lower_bound(
+            values.begin(),
+            values.end(),
+            teamId,
+            [](const auto& entry, std::uint32_t value) {
+                return entry.first < value;
+            });
+        return found != values.end() && found->first == teamId
+            ? found->second
+            : 0;
     }
 
     static bool validateWorld(
         const ecs::World& world,
         const NavigationGrid& navigation,
-        const ResourceLedger& resources,
+        const TeamEconomyRuntime& economies,
         ConstructionId nextConstructionId,
         ProductionId nextProductionId) {
-        std::int64_t reserved = 0;
+        std::vector<std::pair<std::uint32_t, std::int64_t>> reserved;
         ConstructionId maximumConstructionId = 0;
         ProductionId maximumProductionId = 0;
 
-        for (const auto entity : world.view<ConstructionSite>()) {
-            const auto* site = world.try_get<ConstructionSite>(entity);
-            if (!site) return false;
-            reserved += site->reservedCost;
-            maximumConstructionId = std::max(maximumConstructionId, site->id);
-        }
-        for (const auto entity : world.view<ProductionQueue>()) {
-            const auto* queue = world.try_get<ProductionQueue>(entity);
-            if (!queue) return false;
-            for (const auto& item : queue->items) {
-                reserved += item.reservedCost;
-                maximumProductionId = std::max(maximumProductionId, item.id);
-            }
-        }
-        if (reserved != resources.reserved ||
-            nextConstructionId < maximumConstructionId ||
-            nextProductionId < maximumProductionId ||
-            reserved > std::numeric_limits<std::int32_t>::max()) {
+        world.eachRef<ConstructionSite>(
+            [&](ecs::Entity, const ConstructionSite& site) {
+                addReserved(reserved, site.ownerTeam, site.reservedCost);
+                maximumConstructionId = std::max(
+                    maximumConstructionId, site.id);
+            });
+        bool validQueues = true;
+        world.eachRef<ProductionQueue, Team>(
+            [&](ecs::Entity,
+                const ProductionQueue& queue,
+                const Team& team) {
+                for (const auto& item : queue.items) {
+                    if (item.id == 0 || item.unitDefinitionId == 0 ||
+                        item.reservedCost < 0 || item.requiredTicks == 0 ||
+                        item.baseRequiredTicks == 0) {
+                        validQueues = false;
+                        return;
+                    }
+                    addReserved(reserved, team.id, item.reservedCost);
+                    maximumProductionId = std::max(
+                        maximumProductionId, item.id);
+                }
+            });
+        if (!validQueues || nextConstructionId < maximumConstructionId ||
+            nextProductionId < maximumProductionId) {
             return false;
         }
 
-        for (const auto entity : world.view<BuildingFootprint>()) {
-            const auto* footprint = world.try_get<BuildingFootprint>(entity);
-            if (!footprint) return false;
-            for (std::int32_t y = 0; y < footprint->height; ++y) {
-                for (std::int32_t x = 0; x < footprint->width; ++x) {
-                    const GridPoint point{
-                        footprint->origin.x + x,
-                        footprint->origin.y + y};
-                    if (!navigation.contains(point) ||
-                        !navigation.blocked(point)) {
-                        return false;
-                    }
-                }
-            }
-        }
-
-        for (const auto entity : world.view<OrderQueue>()) {
-            const auto* queue = world.try_get<OrderQueue>(entity);
-            if (!queue) return false;
-            for (const auto& order : queue->pending) {
-                if (!navigation.contains(order.target)) return false;
-            }
-        }
-        for (const auto entity : world.view<MovementAgent>()) {
-            const auto* agent = world.try_get<MovementAgent>(entity);
-            if (!agent || agent->nextPoint > agent->path.size()) return false;
-            for (const auto point : agent->path) {
-                if (!navigation.contains(point)) return false;
-            }
-            if (agent->hasPathGoal &&
-                !navigation.contains(agent->pathGoal)) {
+        for (const auto& account : economies.accounts()) {
+            const auto expected = reservedFor(reserved, account.teamId);
+            if (!account.resources.valid() ||
+                expected != account.resources.reserved ||
+                expected > std::numeric_limits<std::int32_t>::max()) {
                 return false;
             }
         }
-        return true;
+        for (const auto& entry : reserved) {
+            if (!economies.find(entry.first)) return false;
+        }
+
+        bool valid = true;
+        world.eachRef<BuildingFootprint>(
+            [&](ecs::Entity, const BuildingFootprint& footprint) {
+                for (std::int32_t y = 0; y < footprint.height; ++y) {
+                    for (std::int32_t x = 0; x < footprint.width; ++x) {
+                        const GridPoint point{
+                            footprint.origin.x + x,
+                            footprint.origin.y + y};
+                        if (!navigation.contains(point) ||
+                            !navigation.blocked(point)) {
+                            valid = false;
+                        }
+                    }
+                }
+            });
+        world.eachRef<OrderQueue>(
+            [&](ecs::Entity, const OrderQueue& queue) {
+                for (const auto& order : queue.pending) {
+                    if (!navigation.contains(order.target)) valid = false;
+                }
+            });
+        world.eachRef<MovementAgent>(
+            [&](ecs::Entity, const MovementAgent& agent) {
+                if (agent.nextPoint > agent.path.size()) valid = false;
+                for (const auto point : agent.path) {
+                    if (!navigation.contains(point)) valid = false;
+                }
+                if (agent.hasPathGoal &&
+                    !navigation.contains(agent.pathGoal)) {
+                    valid = false;
+                }
+            });
+        return valid;
     }
 };
 
