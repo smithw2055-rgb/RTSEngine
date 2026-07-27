@@ -6,6 +6,7 @@
 #include <vector>
 
 #include <rts/sim/Lockstep.h>
+#include <rts/sim/SessionSchema.h>
 
 namespace rts::sim {
 
