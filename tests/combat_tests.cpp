@@ -174,6 +174,25 @@ void testCombatSpatialCapacityStable() {
     }
 }
 
+struct DeathCallbackContext final {
+    ecs::Entity attacker{};
+    ecs::Entity tower{};
+    gameplay::NavigationGrid* navigation{};
+    std::uint32_t* deaths{};
+};
+
+void releaseDeadTower(
+    void* rawContext,
+    ecs::Entity victim,
+    ecs::Entity killer) {
+    auto& context = *static_cast<DeathCallbackContext*>(rawContext);
+    assert(killer == context.attacker);
+    if (victim == context.tower) {
+        context.navigation->setBlocked({3, 3}, false);
+        ++*context.deaths;
+    }
+}
+
 void testDeathCallbackReleasesBlocker() {
     ecs::World world;
     ecs::EntityCommandBuffer commands;
@@ -194,17 +213,14 @@ void testDeathCallbackReleasesBlocker() {
     world.emplace<gameplay::CombatTarget>(attacker, gameplay::CombatTarget{});
 
     std::uint32_t deaths = 0;
+    DeathCallbackContext deathContext{
+        attacker, tower, &navigation, &deaths};
     combat.advance<Position>(
         {0, 0, ecs::Stage::Combat},
         commands,
         world,
-        [&](ecs::Entity victim, ecs::Entity killer) {
-            assert(killer == attacker);
-            if (victim == tower) {
-                navigation.setBlocked({3, 3}, false);
-                ++deaths;
-            }
-        });
+        &deathContext,
+        &releaseDeadTower);
     commands.commit_through(world, ecs::Stage::Combat);
 
     assert(deaths == 1);
