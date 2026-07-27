@@ -3,6 +3,7 @@
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/TowerDefense/WaveDirector.h>
 #include <rts/foundation/CanonicalHash.h>
+#include <rts/sim/AuthoritativeStep.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
 #include <algorithm>
@@ -102,16 +103,29 @@ public:
     TowerDefenseSimulation(TowerDefenseSimulation&&) = delete;
     TowerDefenseSimulation& operator=(TowerDefenseSimulation&&) = delete;
 
-    void registerUnit(gameplay::UnitDefinition definition) {
-        replaceById(unitDefinitions_, definition);
-        rts_.registerUnit(definition);
+    bool configurationFrozen() const noexcept {
+        return hasStepped_ || rts_.configurationFrozen();
     }
 
-    void registerBuilding(gameplay::BuildingDefinition definition) {
-        rts_.registerBuilding(std::move(definition));
+    void freezeConfiguration() noexcept {
+        rts_.freezeConfiguration();
+    }
+
+    bool registerUnit(gameplay::UnitDefinition definition) {
+        if (configurationFrozen() || !rts_.registerUnit(definition)) {
+            return false;
+        }
+        replaceById(unitDefinitions_, std::move(definition));
+        return true;
+    }
+
+    bool registerBuilding(gameplay::BuildingDefinition definition) {
+        return !configurationFrozen() &&
+               rts_.registerBuilding(std::move(definition));
     }
 
     bool registerAffix(WaveAffixDefinition affix) {
+        if (configurationFrozen()) return false;
         const auto copy = affix;
         if (!director_.registerAffix(std::move(affix))) return false;
         replaceById(affixDefinitions_, copy);
@@ -119,6 +133,7 @@ public:
     }
 
     bool registerBoss(BossDefinition boss) {
+        if (configurationFrozen()) return false;
         const auto copy = boss;
         if (!director_.registerBoss(std::move(boss))) return false;
         replaceById(bossDefinitions_, copy);
@@ -126,40 +141,46 @@ public:
     }
 
     bool upsertLaneNode(LaneNode node) {
-        return rts_.navigation().contains(node.point) &&
+        return !configurationFrozen() &&
+               rts_.navigation().contains(node.point) &&
                director_.upsertLaneNode(node);
     }
 
     bool removeLaneNode(LaneNodeId id) {
-        return director_.removeLaneNode(id);
+        return !configurationFrozen() && director_.removeLaneNode(id);
     }
 
     bool connectLaneNodes(
         LaneNodeId from,
         LaneNodeId to,
         std::uint32_t cost = 1) {
-        return director_.connectLaneNodes(from, to, cost);
+        return !configurationFrozen() &&
+               director_.connectLaneNodes(from, to, cost);
     }
 
     bool connectLaneNodesBidirectional(
         LaneNodeId first,
         LaneNodeId second,
         std::uint32_t cost = 1) {
-        return director_.connectLaneNodesBidirectional(first, second, cost);
+        return !configurationFrozen() &&
+               director_.connectLaneNodesBidirectional(first, second, cost);
     }
 
     bool disconnectLaneNodes(LaneNodeId from, LaneNodeId to) {
-        return director_.disconnectLaneNodes(from, to);
+        return !configurationFrozen() &&
+               director_.disconnectLaneNodes(from, to);
     }
 
     bool setLaneConnectionEnabled(
         LaneNodeId from,
         LaneNodeId to,
         bool enabled) {
-        return director_.setLaneConnectionEnabled(from, to, enabled);
+        return !configurationFrozen() &&
+               director_.setLaneConnectionEnabled(from, to, enabled);
     }
 
     bool registerLane(SpawnLane lane) {
+        if (configurationFrozen()) return false;
         gameplay::GridPoint spawn;
         gameplay::GridPoint goal;
         if (!resolveLaneEndpoints(lane, spawn, goal) ||
@@ -175,6 +196,7 @@ public:
     }
 
     bool registerWave(WaveDefinition wave) {
+        if (configurationFrozen()) return false;
         const auto copy = wave;
         if (!director_.registerWave(std::move(wave))) return false;
         replaceById(waveDefinitions_, copy);
@@ -182,7 +204,9 @@ public:
     }
 
     bool registerReward(RewardDefinition reward) {
-        if (!director_.registerReward(reward)) return false;
+        if (configurationFrozen() || !director_.registerReward(reward)) {
+            return false;
+        }
         replaceById(rewardDefinitions_, reward);
         return true;
     }
@@ -191,9 +215,12 @@ public:
         rts_.setResources(available);
     }
 
-    void setPlayerTeam(std::uint32_t teamId) noexcept {
+    bool setPlayerTeam(std::uint32_t teamId) noexcept {
+        if (configurationFrozen() || !rts_.setPlayerTeam(teamId)) {
+            return false;
+        }
         playerTeamId_ = teamId;
-        rts_.setPlayerTeam(teamId);
+        return true;
     }
 
     bool setTeamModifierProfile(
@@ -202,23 +229,26 @@ public:
         return rts_.setTeamModifierProfile(teamId, profile);
     }
 
-    void setRequiredRoute(gameplay::GridPoint start,
+    bool setRequiredRoute(gameplay::GridPoint start,
                           gameplay::GridPoint goal) noexcept {
-        rts_.setRequiredRoute(start, goal);
+        return !configurationFrozen() && rts_.setRequiredRoute(start, goal);
     }
 
     bool setBlocked(gameplay::GridPoint point, bool blocked) {
-        return rts_.setBlocked(point, blocked);
+        return !configurationFrozen() && rts_.setBlocked(point, blocked);
     }
 
     ecs::Entity createBaseCore(gameplay::Position position,
                                std::uint32_t teamId,
                                gameplay::CombatStats combat) {
+        if (configurationFrozen()) return {};
         combat.maximumHealth = std::max<std::int32_t>(1, combat.maximumHealth);
         combat.bounty = 0;
-        core_ = rts_.createUnit(position, gameplay::MoveSpeed{0}, teamId, combat);
+        const auto entity =
+            rts_.createUnit(position, gameplay::MoveSpeed{0}, teamId, combat);
+        if (!entity.valid() || !rts_.setPlayerTeam(teamId)) return {};
+        core_ = entity;
         playerTeamId_ = teamId;
-        rts_.setPlayerTeam(teamId);
         coreFailureReported_ = false;
         return core_;
     }
@@ -227,6 +257,7 @@ public:
                                gameplay::MoveSpeed speed,
                                std::uint32_t teamId,
                                gameplay::CombatStats combat) {
+        if (configurationFrozen()) return {};
         return rts_.createUnit(position, speed, teamId, combat);
     }
 
@@ -238,20 +269,42 @@ public:
         return rts_.submit(std::move(command));
     }
 
-    bool step(std::uint64_t tick) {
-        if (hasStepped_ && tick <= lastTick_) return false;
-        hasStepped_ = true;
-        lastTick_ = tick;
-        events_.clear();
+    sim::AuthoritativeStepValidation validateStep(
+        std::uint64_t tick) const noexcept {
+        const auto outer = sim::ValidateAuthoritativeStep(
+            hasStepped_, lastTick_, tick);
+        if (!outer) return outer;
+        const auto inner = rts_.validateStep(tick);
+        if (!inner) {
+            return {
+                sim::AuthoritativeStepFailure::InnerLayerRejected,
+                inner.expectedTick,
+                tick};
+        }
+        return outer;
+    }
 
+    bool step(std::uint64_t tick) {
+        if (!validateStep(tick)) return false;
+
+        freezeConfiguration();
+        events_.clear();
         for (const auto& command : commands_.consume(tick)) {
             processCommand(tick, command);
         }
         spawnDueEnemies(tick);
-        rts_.step(tick);
+        if (rts_.stepDetailed(tick) != gameplay::RtsStepResult::Advanced) {
+            return false;
+        }
         reconcileAfterTick(tick);
         buildSnapshot(tick);
+        hasStepped_ = true;
+        lastTick_ = tick;
         return true;
+    }
+
+    std::uint64_t nextExpectedTick() const noexcept {
+        return hasStepped_ ? lastTick_ + 1u : 0u;
     }
 
     const TowerDefenseSnapshot& snapshot() const noexcept { return snapshot_; }
@@ -502,7 +555,7 @@ private:
                 definition->combat, spawn.modifier);
             const auto speed = ApplySpeedModifier(
                 definition->cellsPerTick, spawn.modifier);
-            const auto entity = rts_.createUnit(
+            const auto entity = rts_.createUnitInternal(
                 {spawn.spawn.x, spawn.spawn.y},
                 {speed},
                 director_.plan().enemyTeamId,
@@ -521,7 +574,7 @@ private:
                 attackMove.targetX = route->points[waypoint].x;
                 attackMove.targetY = route->points[waypoint].y;
                 attackMove.append = waypoint > 1u;
-                if (!rts_.submit(attackMove)) {
+                if (!rts_.submitInternal(attackMove)) {
                     director_.fail();
                     events_.push_back(
                         {tick, EventType::WaveRejected,
