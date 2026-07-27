@@ -6,6 +6,7 @@
 namespace {
 
 using namespace rts::gameplay;
+namespace ecs = rts::ecs;
 
 void require(bool condition) {
     if (!condition) std::abort();
