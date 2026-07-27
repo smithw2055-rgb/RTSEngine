@@ -23,6 +23,7 @@ struct SnapshotBuilderDependencies {
     const TickCommandStream& commands;
     WorldSnapshot& snapshot;
     const VisionRuntime* vision{};
+    std::uint16_t compatibilityVersion{4u};
 };
 
 class SnapshotBuilder final {
@@ -53,7 +54,13 @@ public:
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
-        dependencies.economy.appendHash(hash);
+        if (dependencies.compatibilityVersion >= 4u) {
+            dependencies.economy.appendHash(hash);
+        } else {
+            hash.WriteI32(snapshot.resources.available);
+            hash.WriteI32(snapshot.resources.reserved);
+            hash.WriteI32(snapshot.resources.spent);
+        }
         dependencies.modifiers.appendHash(hash);
         hash.WriteU64(dependencies.commands.committedThrough());
         hash.WriteU32(static_cast<std::uint32_t>(
@@ -71,10 +78,17 @@ public:
         }
 
         const bool includeVision = dependencies.vision != nullptr;
-        appendUnits(world, hash, snapshot, includeVision);
-        appendConstruction(world, hash, snapshot, includeVision);
-        appendBuildings(world, hash, snapshot, includeVision);
-        appendResourceNodes(world, hash, snapshot);
+        const bool includeEconomy =
+            dependencies.compatibilityVersion >= 4u;
+        appendUnits(
+            world, hash, snapshot, includeVision, includeEconomy);
+        appendConstruction(
+            world, hash, snapshot, includeVision, includeEconomy);
+        appendBuildings(
+            world, hash, snapshot, includeVision, includeEconomy);
+        if (includeEconomy) {
+            appendResourceNodes(world, hash, snapshot);
+        }
 
         std::sort(
             snapshot.entities.begin(),
@@ -257,6 +271,7 @@ private:
         const MovementAgent& agent,
         bool moving,
         bool includeVision,
+        bool includeEconomy,
         SnapshotEntity& snapshot) {
         hashEntity(hash, entity);
         hash.WriteI32(position.x);
@@ -285,7 +300,9 @@ private:
         hash.WriteU32(agent.blockedTicks);
         hash.WriteU32(agent.yieldOrdinal);
         hashCombat(hash, world, entity);
-        hashUnitEconomy(hash, world, entity, snapshot);
+        if (includeEconomy) {
+            hashUnitEconomy(hash, world, entity, snapshot);
+        }
         if (includeVision) hashVision(hash, world, entity);
     }
 
@@ -293,7 +310,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<Position, OrderQueue, MovementAgent>(
             [&](ecs::Entity entity,
                 const Position& position,
@@ -326,6 +344,7 @@ private:
                     agent,
                     moving,
                     includeVision,
+                    includeEconomy,
                     value);
                 snapshot.entities.push_back(value);
             });
@@ -335,7 +354,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<ConstructionSite, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const ConstructionSite& site,
@@ -362,14 +382,16 @@ private:
                 hash.WriteU32(site.baseRequiredTicks);
                 hash.WriteBool(site.producer);
                 hash.WriteU32(site.ownerTeam);
-                const auto* features =
-                    world.try_get<ConstructionEconomyFeatures>(entity);
-                hash.WriteBool(features != nullptr);
-                if (features) {
-                    hash.WriteU32(features->dropOffResourceType);
-                    hash.WriteI32(features->dropOffAccessX);
-                    hash.WriteI32(features->dropOffAccessY);
-                    hash.WriteU32(features->supplyProvided);
+                if (includeEconomy) {
+                    const auto* features =
+                        world.try_get<ConstructionEconomyFeatures>(entity);
+                    hash.WriteBool(features != nullptr);
+                    if (features) {
+                        hash.WriteU32(features->dropOffResourceType);
+                        hash.WriteI32(features->dropOffAccessX);
+                        hash.WriteI32(features->dropOffAccessY);
+                        hash.WriteU32(features->supplyProvided);
+                    }
                 }
                 hashFootprint(hash, footprint);
                 hashCombat(hash, world, entity);
@@ -381,7 +403,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<Building, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const Building& building,
@@ -424,16 +447,20 @@ private:
                     hash.WriteI32(rally->point.x);
                     hash.WriteI32(rally->point.y);
                 }
-                const auto* dropOff = world.try_get<ResourceDropOff>(entity);
-                hash.WriteBool(dropOff != nullptr);
-                if (dropOff) {
-                    hash.WriteU32(dropOff->resourceType);
-                    hash.WriteI32(dropOff->accessX);
-                    hash.WriteI32(dropOff->accessY);
+                if (includeEconomy) {
+                    const auto* dropOff =
+                        world.try_get<ResourceDropOff>(entity);
+                    hash.WriteBool(dropOff != nullptr);
+                    if (dropOff) {
+                        hash.WriteU32(dropOff->resourceType);
+                        hash.WriteI32(dropOff->accessX);
+                        hash.WriteI32(dropOff->accessY);
+                    }
+                    const auto* supply =
+                        world.try_get<SupplyProvider>(entity);
+                    hash.WriteBool(supply != nullptr);
+                    if (supply) hash.WriteU32(supply->capacity);
                 }
-                const auto* supply = world.try_get<SupplyProvider>(entity);
-                hash.WriteBool(supply != nullptr);
-                if (supply) hash.WriteU32(supply->capacity);
                 hashCombat(hash, world, entity);
                 if (includeVision) hashVision(hash, world, entity);
             });
@@ -452,7 +479,7 @@ private:
                 value.x = position.x;
                 value.y = position.y;
                 value.kind = SnapshotKind::ResourceNode;
-                value.objectId = 0;
+                value.definitionId = node.id;
                 value.resourceType = node.resourceType;
                 value.resourceAmount = node.remaining;
                 snapshot.entities.push_back(value);
