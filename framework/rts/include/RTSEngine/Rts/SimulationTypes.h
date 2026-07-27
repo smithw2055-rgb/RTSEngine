@@ -43,6 +43,7 @@ struct MovementAgent {
     GridPoint pathGoal{};
     bool hasPathGoal{};
     bool combatPath{};
+    bool flowFieldPath{};
     ecs::Entity chaseTarget{};
     GridPoint chaseTargetPosition{};
     std::uint32_t blockedTicks{};
