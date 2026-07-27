@@ -9,16 +9,115 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <limits>
 #include <utility>
 #include <vector>
 
 namespace rts::gameplay {
 
+class PackedVisibilityGrid final {
+public:
+    class const_iterator final {
+    public:
+        using iterator_category = std::forward_iterator_tag;
+        using value_type = std::uint8_t;
+        using difference_type = std::ptrdiff_t;
+        using pointer = void;
+        using reference = std::uint8_t;
+
+        const_iterator() = default;
+        const_iterator(const PackedVisibilityGrid* grid, std::size_t offset)
+            : grid_(grid), offset_(offset) {}
+
+        std::uint8_t operator*() const noexcept {
+            return grid_ && grid_->test(offset_) ? 1u : 0u;
+        }
+
+        const_iterator& operator++() noexcept {
+            ++offset_;
+            return *this;
+        }
+
+        const_iterator operator++(int) noexcept {
+            const auto copy = *this;
+            ++*this;
+            return copy;
+        }
+
+        friend bool operator==(
+            const const_iterator& a,
+            const const_iterator& b) noexcept {
+            return a.grid_ == b.grid_ && a.offset_ == b.offset_;
+        }
+
+        friend bool operator!=(
+            const const_iterator& a,
+            const const_iterator& b) noexcept {
+            return !(a == b);
+        }
+
+    private:
+        const PackedVisibilityGrid* grid_{};
+        std::size_t offset_{};
+    };
+
+    void assign(std::size_t bits, std::uint8_t value = 0u) {
+        size_ = bits;
+        words_.assign(wordCountFor(bits), value == 0u ? 0u : ~0ull);
+        maskTail();
+    }
+
+    std::size_t size() const noexcept { return size_; }
+    std::size_t wordCount() const noexcept { return words_.size(); }
+    std::size_t wordCapacity() const noexcept { return words_.capacity(); }
+
+    bool test(std::size_t offset) const noexcept {
+        if (offset >= size_) return false;
+        return (words_[offset / 64u] & (1ull << (offset % 64u))) != 0;
+    }
+
+    bool set(std::size_t offset) noexcept {
+        if (offset >= size_) return false;
+        auto& word = words_[offset / 64u];
+        const auto mask = 1ull << (offset % 64u);
+        const bool changed = (word & mask) == 0;
+        word |= mask;
+        return changed;
+    }
+
+    void clearAll() noexcept {
+        std::fill(words_.begin(), words_.end(), 0ull);
+    }
+
+    void exportBytes(std::vector<std::uint8_t>& output) const {
+        output.resize(size_);
+        for (std::size_t offset = 0; offset < size_; ++offset) {
+            output[offset] = test(offset) ? 1u : 0u;
+        }
+    }
+
+    const_iterator begin() const noexcept { return {this, 0}; }
+    const_iterator end() const noexcept { return {this, size_}; }
+
+private:
+    static std::size_t wordCountFor(std::size_t bits) noexcept {
+        return (bits + 63u) / 64u;
+    }
+
+    void maskTail() noexcept {
+        if (words_.empty() || size_ % 64u == 0u) return;
+        words_.back() &= (1ull << (size_ % 64u)) - 1ull;
+    }
+
+    std::size_t size_{};
+    std::vector<std::uint64_t> words_;
+};
+
 struct TeamVisibilityLayer final {
     std::uint32_t teamId{};
-    std::vector<std::uint8_t> current;
-    std::vector<std::uint8_t> explored;
+    PackedVisibilityGrid current;
+    PackedVisibilityGrid explored;
     std::uint32_t currentVisibleCells{};
     std::uint32_t exploredCells{};
 };
@@ -36,6 +135,22 @@ public:
     std::int32_t width() const noexcept { return width_; }
     std::int32_t height() const noexcept { return height_; }
     std::size_t layerCount() const noexcept { return layers_.size(); }
+    std::size_t offsetSetCount() const noexcept { return offsetSets_.size(); }
+
+    std::size_t packedWordCount() const noexcept {
+        std::size_t result = 0;
+        for (const auto& layer : layers_) {
+            result += layer.current.wordCount();
+            result += layer.explored.wordCount();
+        }
+        return result;
+    }
+
+    std::size_t offsetPointCapacity() const noexcept {
+        std::size_t result = 0;
+        for (const auto& set : offsetSets_) result += set.points.capacity();
+        return result;
+    }
 
     const std::vector<TeamVisibilityLayer>& layers() const noexcept {
         return layers_;
@@ -43,12 +158,12 @@ public:
 
     bool visible(std::uint32_t teamId, GridPoint point) const noexcept {
         const auto* layer = findLayer(teamId);
-        return layer && contains(point) && layer->current[index(point)] != 0;
+        return layer && contains(point) && layer->current.test(index(point));
     }
 
     bool explored(std::uint32_t teamId, GridPoint point) const noexcept {
         const auto* layer = findLayer(teamId);
-        return layer && contains(point) && layer->explored[index(point)] != 0;
+        return layer && contains(point) && layer->explored.test(index(point));
     }
 
     std::uint32_t currentVisibleCount(std::uint32_t teamId) const noexcept {
@@ -110,8 +225,8 @@ public:
             snapshot.teamId = layer.teamId;
             snapshot.currentVisibleCells = layer.currentVisibleCells;
             snapshot.exploredCells = layer.exploredCells;
-            snapshot.current = layer.current;
-            snapshot.explored = layer.explored;
+            layer.current.exportBytes(snapshot.current);
+            layer.explored.exportBytes(snapshot.explored);
             output.push_back(std::move(snapshot));
         }
     }
@@ -124,7 +239,6 @@ public:
             writer.writeU32(layer.teamId);
             writer.writeU32(static_cast<std::uint32_t>(layer.explored.size()));
             for (const auto value : layer.explored) {
-                if (value > 1u) return false;
                 writer.writeU8(value);
             }
         }
@@ -157,13 +271,16 @@ public:
                 return false;
             }
             layer.current.assign(cells, 0u);
-            layer.explored.resize(cells);
-            for (auto& value : layer.explored) {
+            layer.explored.assign(cells, 0u);
+            for (std::size_t offset = 0; offset < cells; ++offset) {
+                std::uint8_t value = 0;
                 if (!reader.readU8(value) || value > 1u) return false;
-                if (value != 0u &&
-                    layer.exploredCells !=
+                if (value != 0u) {
+                    layer.explored.set(offset);
+                    if (layer.exploredCells !=
                         std::numeric_limits<std::uint32_t>::max()) {
-                    ++layer.exploredCells;
+                        ++layer.exploredCells;
+                    }
                 }
             }
             candidate.layers_.push_back(std::move(layer));
@@ -175,10 +292,10 @@ public:
     }
 
 private:
-    static bool pointLess(GridPoint a, GridPoint b) noexcept {
-        if (a.y != b.y) return a.y < b.y;
-        return a.x < b.x;
-    }
+    struct VisionOffsetSet final {
+        std::int32_t range{};
+        std::vector<GridPoint> points;
+    };
 
     bool contains(GridPoint point) const noexcept {
         return point.x >= 0 && point.y >= 0 &&
@@ -232,9 +349,41 @@ private:
 
     void clearCurrent() noexcept {
         for (auto& layer : layers_) {
-            std::fill(layer.current.begin(), layer.current.end(), 0u);
+            layer.current.clearAll();
             layer.currentVisibleCells = 0;
         }
+    }
+
+    const std::vector<GridPoint>& offsetsFor(std::int32_t range) {
+        auto found = std::lower_bound(
+            offsetSets_.begin(),
+            offsetSets_.end(),
+            range,
+            [](const VisionOffsetSet& set, std::int32_t value) {
+                return set.range < value;
+            });
+        if (found != offsetSets_.end() && found->range == range) {
+            return found->points;
+        }
+
+        VisionOffsetSet set;
+        set.range = range;
+        const auto diameter = static_cast<std::size_t>(range * 2 + 1);
+        set.points.reserve(diameter * diameter);
+        const auto squaredRange =
+            static_cast<std::int64_t>(range) * range;
+        for (std::int32_t y = -range; y <= range; ++y) {
+            for (std::int32_t x = -range; x <= range; ++x) {
+                const auto squaredDistance =
+                    static_cast<std::int64_t>(x) * x +
+                    static_cast<std::int64_t>(y) * y;
+                if (squaredDistance <= squaredRange) {
+                    set.points.push_back({x, y});
+                }
+            }
+        }
+        found = offsetSets_.insert(found, std::move(set));
+        return found->points;
     }
 
     static bool insideFootprint(
@@ -284,19 +433,15 @@ private:
         TeamVisibilityLayer& layer,
         GridPoint point) noexcept {
         const auto offset = index(point);
-        if (layer.current[offset] == 0u) {
-            layer.current[offset] = 1u;
-            if (layer.currentVisibleCells !=
+        if (layer.current.set(offset) &&
+            layer.currentVisibleCells !=
                 std::numeric_limits<std::uint32_t>::max()) {
-                ++layer.currentVisibleCells;
-            }
+            ++layer.currentVisibleCells;
         }
-        if (layer.explored[offset] == 0u) {
-            layer.explored[offset] = 1u;
-            if (layer.exploredCells !=
+        if (layer.explored.set(offset) &&
+            layer.exploredCells !=
                 std::numeric_limits<std::uint32_t>::max()) {
-                ++layer.exploredCells;
-            }
+            ++layer.exploredCells;
         }
     }
 
@@ -310,25 +455,14 @@ private:
         const auto boundedRange = std::min<std::int32_t>(
             std::max<std::int32_t>(0, range),
             std::max(width_, height_));
-        const auto minimumX = std::max<std::int32_t>(0, source.x - boundedRange);
-        const auto maximumX = std::min<std::int32_t>(
-            width_ - 1, source.x + boundedRange);
-        const auto minimumY = std::max<std::int32_t>(0, source.y - boundedRange);
-        const auto maximumY = std::min<std::int32_t>(
-            height_ - 1, source.y + boundedRange);
-        const auto squaredRange =
-            static_cast<std::int64_t>(boundedRange) * boundedRange;
-
-        for (std::int32_t y = minimumY; y <= maximumY; ++y) {
-            for (std::int32_t x = minimumX; x <= maximumX; ++x) {
-                const auto dx = static_cast<std::int64_t>(x) - source.x;
-                const auto dy = static_cast<std::int64_t>(y) - source.y;
-                if (dx * dx + dy * dy > squaredRange) continue;
-                const GridPoint target{x, y};
-                if (lineVisible(
-                        navigation, source, target, ownFootprint)) {
-                    markVisible(layer, target);
-                }
+        const auto& offsets = offsetsFor(boundedRange);
+        for (const auto offset : offsets) {
+            const GridPoint target{
+                source.x + offset.x,
+                source.y + offset.y};
+            if (!contains(target)) continue;
+            if (lineVisible(navigation, source, target, ownFootprint)) {
+                markVisible(layer, target);
             }
         }
     }
@@ -336,6 +470,7 @@ private:
     std::int32_t width_{};
     std::int32_t height_{};
     std::vector<TeamVisibilityLayer> layers_;
+    std::vector<VisionOffsetSet> offsetSets_;
 };
 
 class VisionSystem final {
