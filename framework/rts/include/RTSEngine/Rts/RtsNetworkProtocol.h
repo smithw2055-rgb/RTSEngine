@@ -1,9 +1,11 @@
 #pragma once
 
+#include <RTSEngine/Network/Transport.h>
 #include <RTSEngine/Rts/RtsLockstepArchive.h>
 #include <rts/foundation/BinaryArchive.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <utility>
