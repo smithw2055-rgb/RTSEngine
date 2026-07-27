@@ -32,20 +32,36 @@ public:
         const ecs::SystemContext& context,
         CombatDeathSystemDependencies dependencies) {
         dependencies.deathSideEffects.clear();
+        DeathContext deathContext{&world, &context, dependencies};
         dependencies.combat.advance<Position>(
             context,
             dependencies.structuralCommands,
             world,
-            [&world, &context, &dependencies](
-                ecs::Entity victim,
-                ecs::Entity killer) {
-                handleDeath(
-                    world, context, victim, killer, dependencies);
-            });
+            &deathContext,
+            &handleDeathCallback);
         forwardEvents(dependencies);
     }
 
 private:
+    struct DeathContext final {
+        ecs::World* world{};
+        const ecs::SystemContext* context{};
+        CombatDeathSystemDependencies dependencies;
+    };
+
+    static void handleDeathCallback(
+        void* rawContext,
+        ecs::Entity victim,
+        ecs::Entity killer) {
+        auto& value = *static_cast<DeathContext*>(rawContext);
+        handleDeath(
+            *value.world,
+            *value.context,
+            victim,
+            killer,
+            value.dependencies);
+    }
+
     static void handleDeath(
         ecs::World& world,
         const ecs::SystemContext& context,
