@@ -14,7 +14,7 @@ namespace rts::gameplay {
 
 class RtsGameSessionArchive final {
 public:
-    static constexpr std::uint32_t kMagic = 0x31534752u; // "RGS1"
+    static constexpr std::uint32_t kMagic = 0x31534752u;
     static constexpr std::uint16_t kVersion = 1u;
     static constexpr std::uint32_t kMaximumNestedBytes =
         160u * 1024u * 1024u;
@@ -25,6 +25,8 @@ public:
         const RtsGameSession& session) {
         foundation::CanonicalHash hash;
         hash.WriteU64(session.simulation_.snapshot().worldHash);
+        appendCommandStreamHash(
+            hash, session.simulation_.commandStreamState());
         appendRulesHash(
             hash,
             session.diplomacy_.entries(),
@@ -258,6 +260,28 @@ private:
             session.reservations_.begin(),
             session.reservations_.end(),
             RtsGameSession::reservationLess);
+    }
+
+    static void appendCommandStreamHash(
+        foundation::CanonicalHash& hash,
+        const TickCommandStream::State& state) {
+        hash.WriteU64(state.committedThrough);
+        hash.WriteU32(static_cast<std::uint32_t>(state.pending.size()));
+        for (const auto& command : state.pending) {
+            hash.WriteU64(command.targetTick);
+            hash.WriteU32(command.issuer);
+            hash.WriteU32(command.sequence);
+            hash.WriteU8(static_cast<std::uint8_t>(command.type));
+            hash.WriteU32(command.subject.index);
+            hash.WriteU32(command.subject.generation);
+            hash.WriteI32(command.targetX);
+            hash.WriteI32(command.targetY);
+            hash.WriteBool(command.append);
+            hash.WriteU32(command.definitionId);
+            hash.WriteU32(command.objectId);
+            hash.WriteU32(command.targetEntity.index);
+            hash.WriteU32(command.targetEntity.generation);
+        }
     }
 
     static std::uint64_t rulesHash(const RtsGameSession& session) {
