@@ -56,10 +56,10 @@ struct ProductionItem {
     ProductionId id{};
     std::uint32_t unitDefinitionId{};
     std::int32_t reservedCost{};
+    std::uint32_t supplyCost{};
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
     std::uint32_t baseRequiredTicks{1};
-    std::uint32_t supplyCost{};
 };
 
 struct ProductionQueue {
