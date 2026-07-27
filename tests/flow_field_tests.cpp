@@ -160,7 +160,7 @@ ScaleRun runScaleScenario() {
     }
 
     std::uint32_t sequence = 1;
-    ecs::Entity firstUnit;
+    rts::ecs::Entity firstUnit;
     for (std::int32_t y = 0; y < 25; ++y) {
         for (std::int32_t x = 0; x < 40; ++x) {
             const auto unit = simulation.createUnit({x, y}, {1});
