@@ -24,9 +24,8 @@ public:
     static std::uint64_t authoritativeHash(
         const RtsGameSession& session) {
         foundation::CanonicalHash hash;
-        hash.WriteU64(session.simulation_.snapshot().worldHash);
-        appendCommandStreamHash(
-            hash, session.simulation_.commandStreamState());
+        hash.WriteU64(
+            RtsSimulationArchive::authoritativeHash(session.simulation_));
         appendRulesHash(
             hash,
             session.diplomacy_.entries(),
@@ -182,8 +181,11 @@ public:
             !aiCandidate.restore(aiTeams) ||
             !validateProducers(producers) ||
             !validateSupply(supply) ||
-            rulesHash(relations, aiTeams, producers, supply) !=
-                storedRulesHash) {
+            rulesHash(
+                diplomacyCandidate.entries(),
+                aiCandidate.teams(),
+                producers,
+                supply) != storedRulesHash) {
             return false;
         }
 
@@ -260,28 +262,6 @@ private:
             session.reservations_.begin(),
             session.reservations_.end(),
             RtsGameSession::reservationLess);
-    }
-
-    static void appendCommandStreamHash(
-        foundation::CanonicalHash& hash,
-        const TickCommandStream::State& state) {
-        hash.WriteU64(state.committedThrough);
-        hash.WriteU32(static_cast<std::uint32_t>(state.pending.size()));
-        for (const auto& command : state.pending) {
-            hash.WriteU64(command.targetTick);
-            hash.WriteU32(command.issuer);
-            hash.WriteU32(command.sequence);
-            hash.WriteU8(static_cast<std::uint8_t>(command.type));
-            hash.WriteU32(command.subject.index);
-            hash.WriteU32(command.subject.generation);
-            hash.WriteI32(command.targetX);
-            hash.WriteI32(command.targetY);
-            hash.WriteBool(command.append);
-            hash.WriteU32(command.definitionId);
-            hash.WriteU32(command.objectId);
-            hash.WriteU32(command.targetEntity.index);
-            hash.WriteU32(command.targetEntity.generation);
-        }
     }
 
     static std::uint64_t rulesHash(const RtsGameSession& session) {
