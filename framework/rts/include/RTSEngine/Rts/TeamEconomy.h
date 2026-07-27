@@ -47,6 +47,8 @@ struct ResourceLedger final {
 
 struct ResourceDropOff final {
     ResourceTypeId resourceType{};
+    std::int32_t accessX{};
+    std::int32_t accessY{};
 };
 
 struct SupplyProvider final {
