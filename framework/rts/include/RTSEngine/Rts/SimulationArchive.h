@@ -19,7 +19,7 @@ namespace rts::gameplay {
 
 class RtsSimulationArchive final {
 public:
-    static constexpr std::uint32_t kMagic = 0x31535452u; // "RTS1"
+    static constexpr std::uint32_t kMagic = 0x31535452u;
     static constexpr std::uint16_t kVersion = 3u;
     static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumWorldBytes = 128u * 1024u * 1024u;
@@ -79,8 +79,7 @@ public:
         writer.writeU32(simulation.playerTeamId_);
         writer.writeU64(simulation.lastCompletedTick_);
         writer.writeBool(simulation.hasStepped_);
-        writer.writeU64(
-            simulation.hasStepped_ ? simulation.snapshot_.worldHash : 0u);
+        writer.writeU64(currentWorldHash(simulation));
         return writer.take();
     }
 
@@ -287,6 +286,30 @@ private:
     static bool registerSchemas(ecs::ComponentSchemaRegistry& schemas) {
         return RegisterVisionComponentSchema(schemas) &&
                RegisterRtsComponentSchemas(schemas);
+    }
+
+    static std::uint64_t currentWorldHash(
+        const RtsSimulation& simulation) {
+        if (!simulation.hasStepped_) return 0u;
+        WorldSnapshot current;
+        SnapshotBuilder::build(
+            simulation.world_,
+            simulation.lastCompletedTick_,
+            {simulation.resources_,
+             simulation.modifiers_,
+             simulation.navigation_,
+             simulation.commands_,
+             current,
+             &simulation.vision_});
+        return FinalizeRtsAuthoritativeWorldHash(
+            current.worldHash,
+            simulation.world_.entityRegistryHash(),
+            simulation.requiredPathStart_,
+            simulation.requiredPathGoal_,
+            simulation.building_.nextConstructionId(),
+            simulation.nextProductionId_,
+            simulation.playerTeamId_,
+            kVersion);
     }
 
     static void writeGridPoint(
