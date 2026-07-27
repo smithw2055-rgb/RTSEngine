@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <vector>
 
 namespace rts::gameplay {
@@ -17,14 +18,50 @@ namespace rts::gameplay {
 struct EconomyCommandDependencies {
     ecs::EntityCommandBuffer& structuralCommands;
     BaseBuildingRuntime& building;
-    ResourceLedger& resources;
+    TeamEconomyRuntime& economies;
     GameplayModifierSystem& modifiers;
     const DefinitionCatalog<BuildingDefinition>& buildingDefinitions;
     const DefinitionCatalog<UnitDefinition>& unitDefinitions;
+    NavigationGrid& navigation;
     GridPoint requiredPathStart;
     GridPoint requiredPathGoal;
     ProductionId& nextProductionId;
     std::vector<DomainEvent>& events;
+};
+
+class EconomySupplySystem final {
+public:
+    static void rebuild(
+        const ecs::World& world,
+        TeamEconomyRuntime& economies,
+        const DefinitionCatalog<BuildingDefinition>& buildingDefinitions) {
+        economies.beginSupplyRebuild();
+        world.eachRef<Building, Team>(
+            [&](ecs::Entity,
+                const Building& building,
+                const Team& team) {
+                const auto* definition =
+                    buildingDefinitions.find(building.definitionId);
+                if (definition) {
+                    economies.addSupplyCapacity(
+                        team.id, definition->supplyProvided);
+                }
+            });
+        world.eachRef<UnitSupply, Team>(
+            [&](ecs::Entity,
+                const UnitSupply& supply,
+                const Team& team) {
+                economies.addSupplyUsed(team.id, supply.amount);
+            });
+        world.eachRef<ProductionQueue, Team>(
+            [&](ecs::Entity,
+                const ProductionQueue& queue,
+                const Team& team) {
+                for (const auto& item : queue.items) {
+                    economies.addSupplyReserved(team.id, item.supplyCost);
+                }
+            });
+    }
 };
 
 class EconomyCommandSystem final {
@@ -56,7 +93,7 @@ public:
             cancelProduction(world, context, command, dependencies);
             break;
         case CommandType::SetRally:
-            setRally(world, context, command, dependencies.events);
+            setRally(world, context, command, dependencies);
             break;
         default:
             break;
@@ -184,19 +221,52 @@ private:
         auto* queue = world.try_get<ProductionQueue>(command.subject);
         const auto* building = world.try_get<Building>(command.subject);
         const auto* ownerTeam = world.try_get<Team>(command.subject);
-        const auto* definition =
+        const auto* unitDefinition =
             dependencies.unitDefinitions.find(command.definitionId);
         if (!queue || !building || !building->producer || !ownerTeam) {
             reject(context, command, CommandRejectionReason::MissingCapability,
                    dependencies.events);
             return;
         }
-        if (!definition || definition->id == 0 || definition->cost < 0) {
+        const auto* buildingDefinition =
+            dependencies.buildingDefinitions.find(building->definitionId);
+        if (!buildingDefinition || !buildingDefinition->producer) {
             reject(context, command, CommandRejectionReason::InvalidDefinition,
                    dependencies.events);
             return;
         }
-        if (!dependencies.resources.reserve(definition->cost)) {
+        if (queue->items.size() >=
+            buildingDefinition->productionQueueCapacity) {
+            reject(context, command, CommandRejectionReason::QueueFull,
+                   dependencies.events);
+            return;
+        }
+        if (!buildingDefinition->trainableUnits.empty() &&
+            std::find(
+                buildingDefinition->trainableUnits.begin(),
+                buildingDefinition->trainableUnits.end(),
+                command.definitionId) ==
+                buildingDefinition->trainableUnits.end()) {
+            reject(context, command, CommandRejectionReason::UnsupportedUnit,
+                   dependencies.events);
+            return;
+        }
+        if (!unitDefinition || unitDefinition->id == 0 ||
+            unitDefinition->cost < 0) {
+            reject(context, command, CommandRejectionReason::InvalidDefinition,
+                   dependencies.events);
+            return;
+        }
+        if (!dependencies.economies.reserveSupply(
+                ownerTeam->id, unitDefinition->supplyCost)) {
+            reject(context, command, CommandRejectionReason::SupplyBlocked,
+                   dependencies.events);
+            return;
+        }
+        if (!dependencies.economies.reserveResources(
+                ownerTeam->id, unitDefinition->cost)) {
+            dependencies.economies.releaseReservedSupply(
+                ownerTeam->id, unitDefinition->supplyCost);
             reject(context, command,
                    CommandRejectionReason::InsufficientResources,
                    dependencies.events);
@@ -205,13 +275,14 @@ private:
 
         const ProductionId id = ++dependencies.nextProductionId;
         const auto baseTicks =
-            std::max<std::uint32_t>(1, definition->trainTicks);
+            std::max<std::uint32_t>(1, unitDefinition->trainTicks);
         const auto requiredTicks =
             dependencies.modifiers.productionTicks(ownerTeam->id, baseTicks);
         queue->items.push_back(
             {id,
-             definition->id,
-             definition->cost,
+             unitDefinition->id,
+             unitDefinition->cost,
+             unitDefinition->supplyCost,
              0,
              requiredTicks,
              baseTicks});
@@ -220,7 +291,7 @@ private:
              DomainEventType::ProductionAccepted,
              command.subject,
              id,
-             definition->id});
+             unitDefinition->id});
     }
 
     static void cancelProduction(
@@ -240,7 +311,8 @@ private:
         }
 
         auto* queue = world.try_get<ProductionQueue>(command.subject);
-        if (!queue) {
+        const auto* team = world.try_get<Team>(command.subject);
+        if (!queue || !team) {
             reject(context, command, CommandRejectionReason::MissingCapability,
                    dependencies.events);
             return;
@@ -256,7 +328,10 @@ private:
                    dependencies.events);
             return;
         }
-        dependencies.resources.release(iterator->reservedCost);
+        dependencies.economies.releaseResources(
+            team->id, iterator->reservedCost);
+        dependencies.economies.releaseReservedSupply(
+            team->id, iterator->supplyCost);
         queue->items.erase(iterator);
         dependencies.events.push_back(
             {context.tick,
@@ -270,24 +345,32 @@ private:
         ecs::World& world,
         const ecs::SystemContext& context,
         const TickCommand& command,
-        std::vector<DomainEvent>& events) {
+        EconomyCommandDependencies dependencies) {
         if (!world.alive(command.subject)) {
             reject(context, command, CommandRejectionReason::InvalidEntity,
-                   events);
+                   dependencies.events);
             return;
         }
         if (!owns(world, command.subject, command.issuer)) {
-            reject(context, command, CommandRejectionReason::NotOwner, events);
+            reject(context, command, CommandRejectionReason::NotOwner,
+                   dependencies.events);
+            return;
+        }
+        const GridPoint target{command.targetX, command.targetY};
+        if (!dependencies.navigation.contains(target) ||
+            dependencies.navigation.blocked(target)) {
+            reject(context, command, CommandRejectionReason::InvalidTarget,
+                   dependencies.events);
             return;
         }
         auto* rally = world.try_get<RallyPoint>(command.subject);
         if (!rally) {
             reject(context, command, CommandRejectionReason::MissingCapability,
-                   events);
+                   dependencies.events);
             return;
         }
-        rally->point = {command.targetX, command.targetY};
-        events.push_back(
+        rally->point = target;
+        dependencies.events.push_back(
             {context.tick,
              DomainEventType::RallyPointChanged,
              command.subject,
@@ -331,9 +414,10 @@ public:
 
 struct ProductionSystemDependencies {
     ecs::EntityCommandBuffer& structuralCommands;
-    ResourceLedger& resources;
+    TeamEconomyRuntime& economies;
     const GameplayModifierSystem& modifiers;
     const DefinitionCatalog<UnitDefinition>& unitDefinitions;
+    const NavigationGrid& navigation;
     std::vector<DomainEvent>& events;
 };
 
@@ -343,15 +427,18 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         ProductionSystemDependencies dependencies) {
-        world.eachRef<Building, ProductionQueue, RallyPoint>(
+        world.eachRef<Building, ProductionQueue, RallyPoint, Team>(
             [&](ecs::Entity entity,
                 Building&,
                 ProductionQueue& queue,
-                RallyPoint& rally) {
+                RallyPoint& rally,
+                Team& team) {
                 if (queue.items.empty()) return;
 
                 auto& item = queue.items.front();
-                ++item.progressTicks;
+                if (item.progressTicks < item.requiredTicks) {
+                    ++item.progressTicks;
+                }
                 if (item.progressTicks < item.requiredTicks) return;
 
                 const auto* definition =
@@ -359,7 +446,10 @@ public:
                 if (!definition) {
                     const auto rejectedId = item.id;
                     const auto rejectedDefinition = item.unitDefinitionId;
-                    dependencies.resources.release(item.reservedCost);
+                    dependencies.economies.releaseResources(
+                        team.id, item.reservedCost);
+                    dependencies.economies.releaseReservedSupply(
+                        team.id, item.supplyCost);
                     queue.items.erase(queue.items.begin());
                     dependencies.events.push_back(
                         {context.tick,
@@ -370,10 +460,22 @@ public:
                     return;
                 }
 
-                dependencies.resources.commit(item.reservedCost);
+                GridPoint spawn;
+                if (!resolveSpawn(
+                        world,
+                        dependencies.navigation,
+                        rally.point,
+                        spawn)) {
+                    return;
+                }
+                if (!dependencies.economies.commitResources(
+                        team.id, item.reservedCost) ||
+                    !dependencies.economies.commitSupply(
+                        team.id, item.supplyCost)) {
+                    return;
+                }
+
                 const auto producedId = item.id;
-                const auto* ownerTeam = world.try_get<Team>(entity);
-                const auto teamId = ownerTeam ? ownerTeam->id : 0;
                 const auto deferred =
                     dependencies.structuralCommands.create(context);
                 EntityFactory::queueUnit(
@@ -381,11 +483,12 @@ public:
                     dependencies.structuralCommands,
                     dependencies.modifiers,
                     deferred,
-                    Position{rally.point.x, rally.point.y},
+                    Position{spawn.x, spawn.y},
                     definition->cellsPerTick,
-                    teamId,
+                    team.id,
                     definition->combat,
-                    definition->visionRange);
+                    definition->visionRange,
+                    definition->supplyCost);
                 queue.items.erase(queue.items.begin());
                 dependencies.events.push_back(
                     {context.tick,
@@ -394,6 +497,50 @@ public:
                      producedId,
                      definition->id});
             });
+    }
+
+private:
+    static bool occupiedByUnit(
+        const ecs::World& world,
+        GridPoint point) {
+        bool occupied = false;
+        world.eachRef<Position, MovementAgent>(
+            [&](ecs::Entity,
+                const Position& position,
+                const MovementAgent&) {
+                if (position.x == point.x && position.y == point.y) {
+                    occupied = true;
+                }
+            });
+        return occupied;
+    }
+
+    static bool resolveSpawn(
+        const ecs::World& world,
+        const NavigationGrid& navigation,
+        GridPoint rally,
+        GridPoint& output) {
+        static constexpr GridPoint offsets[] = {
+            {0, 0},
+            {0, -1}, {1, 0}, {0, 1}, {-1, 0},
+            {0, -2}, {1, -1}, {2, 0}, {1, 1},
+            {0, 2}, {-1, 1}, {-2, 0}, {-1, -1},
+            {0, -3}, {1, -2}, {2, -1}, {3, 0},
+            {2, 1}, {1, 2}, {0, 3}, {-1, 2},
+            {-2, 1}, {-3, 0}, {-2, -1}, {-1, -2}
+        };
+        for (const auto offset : offsets) {
+            const GridPoint candidate{
+                rally.x + offset.x, rally.y + offset.y};
+            if (!navigation.contains(candidate) ||
+                navigation.blocked(candidate) ||
+                occupiedByUnit(world, candidate)) {
+                continue;
+            }
+            output = candidate;
+            return true;
+        }
+        return false;
     }
 };
 
