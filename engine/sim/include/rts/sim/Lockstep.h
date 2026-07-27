@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <tuple>
@@ -93,13 +94,13 @@ public:
 
     bool start(std::uint64_t firstTick) {
         if (started_ || config_.sessionId == 0) return false;
-        const auto players = static_cast<std::size_t>(std::count_if(
+        const auto activePlayers = std::count_if(
             peers_.begin(), peers_.end(),
             [](const LockstepPeer& peer) {
                 return peer.active &&
                        peer.role == LockstepPeerRole::Player;
-            }));
-        if (players == 0) return false;
+            });
+        if (activePlayers == 0) return false;
         std::sort(
             peers_.begin(), peers_.end(),
             [](const LockstepPeer& first, const LockstepPeer& second) {
@@ -128,7 +129,7 @@ public:
         return confirmedThrough_;
     }
     std::uint64_t predictionDepth() const noexcept {
-        return simulatedThrough_ >= confirmedThrough_
+        return simulatedThrough_ > confirmedThrough_
             ? simulatedThrough_ - confirmedThrough_
             : 0;
     }
@@ -186,28 +187,12 @@ public:
                 : LockstepFrameSubmitResult::Conflict;
         }
 
+        const auto receivedTick = frame.tick;
         const bool lateNonEmpty =
-            frame.tick < simulatedThrough_ && !frame.commands.empty();
+            receivedTick < simulatedThrough_ && !frame.commands.empty();
         frames_.insert(found, std::move(frame));
         if (lateNonEmpty) {
-            rollbackFrom_ = std::min(
-                rollbackFrom_, frames_[static_cast<std::size_t>(
-                    std::distance(frames_.begin(),
-                                  lowerFrameIndexValue(
-                                      frames_, rollbackFrom_)))].tick);
-        }
-        if (lateNonEmpty) {
-            const auto inserted = lowerFrame(
-                frames_[static_cast<std::size_t>(
-                    std::distance(frames_.begin(),
-                                  lowerFrameIndexValue(
-                                      frames_, rollbackFrom_)))].tick,
-                frame.peerId);
-            (void)inserted;
-        }
-        if (lateNonEmpty) {
-            rollbackFrom_ = std::min(
-                rollbackFrom_, frame.tick);
+            rollbackFrom_ = std::min(rollbackFrom_, receivedTick);
         }
         advanceConfirmedThrough();
         return LockstepFrameSubmitResult::Accepted;
@@ -299,9 +284,7 @@ public:
     bool rollbackRequired() const noexcept {
         return rollbackFrom_ != kNoRollbackTick;
     }
-
     std::uint64_t rollbackFrom() const noexcept { return rollbackFrom_; }
-
     void clearRollback() noexcept { rollbackFrom_ = kNoRollbackTick; }
 
     template<class ValidateFrame, class EqualCommand>
@@ -413,17 +396,6 @@ private:
                 frame->commands.begin(),
                 frame->commands.end());
         }
-    }
-
-    static FrameConstIterator lowerFrameIndexValue(
-        const std::vector<Frame>& frames,
-        std::uint64_t tick) noexcept {
-        return std::lower_bound(
-            frames.begin(), frames.end(),
-            frameIdentity(tick, 0),
-            [](const Frame& frame, const auto& identity) {
-                return frameIdentity(frame) < identity;
-            });
     }
 
     LockstepCoordinatorConfig config_;
