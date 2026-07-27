@@ -193,7 +193,7 @@ inline bool ReadTickCommand(
         !reader.readU32(command.targetEntity.generation)) {
         return false;
     }
-    if (rawType > static_cast<std::uint8_t>(CommandType::HoldPosition)) {
+    if (rawType > static_cast<std::uint8_t>(CommandType::Gather)) {
         return false;
     }
     command.type = static_cast<CommandType>(rawType);
