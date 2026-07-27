@@ -113,22 +113,34 @@ public:
     }
 
     SessionCommandResult submitDetailed(TickCommand command) {
+        const bool production = command.type == CommandType::Train;
+        const TrainReservation reservation{
+            command.targetTick,
+            command.issuer,
+            command.sequence,
+            command.subject,
+            command.definitionId};
+
+        if (production) {
+            const auto existing = findReservation(reservation);
+            if (existing != reservations_.end()) {
+                return translate(
+                    simulation_.submitDetailed(std::move(command)));
+            }
+        }
+
         if (command.type == CommandType::Attack) {
             const auto result = validateAttack(command);
             if (result != SessionCommandResult::Accepted) return result;
         }
-        if (command.type == CommandType::Train) {
+        if (production) {
             const auto result = validateProduction(command);
             if (result != SessionCommandResult::Accepted) return result;
         }
 
-        const bool production = command.type == CommandType::Train;
-        const TrainReservation reservation{
-            command.targetTick, command.issuer, command.sequence, command.subject};
         const auto result = translate(
             simulation_.submitDetailed(std::move(command)));
-        if (production && result == SessionCommandResult::Accepted &&
-            !hasReservation(reservation)) {
+        if (production && result == SessionCommandResult::Accepted) {
             insertReservation(reservation);
         }
         return result;
@@ -204,28 +216,32 @@ private:
         std::uint32_t teamId{};
         std::uint32_t sequence{};
         ecs::Entity producer{};
+        std::uint32_t unitDefinitionId{};
     };
 
     using ProducerIterator = std::vector<ProducerPolicy>::iterator;
     using ProducerConstIterator = std::vector<ProducerPolicy>::const_iterator;
     using SupplyIterator = std::vector<TeamSupplyLimit>::iterator;
     using SupplyConstIterator = std::vector<TeamSupplyLimit>::const_iterator;
+    using ReservationIterator = std::vector<TrainReservation>::iterator;
+    using ReservationConstIterator = std::vector<TrainReservation>::const_iterator;
 
-    static auto reservationKey(const TrainReservation& value) noexcept {
-        return std::tie(
-            value.targetTick, value.teamId, value.sequence, value.producer);
+    static auto reservationIdentity(const TrainReservation& value) noexcept {
+        return std::tie(value.targetTick, value.teamId, value.sequence);
     }
     static bool reservationLess(const TrainReservation& first,
                                 const TrainReservation& second) noexcept {
-        return reservationKey(first) < reservationKey(second);
+        return reservationIdentity(first) < reservationIdentity(second);
     }
 
-    bool hasReservation(const TrainReservation& value) const noexcept {
+    ReservationConstIterator findReservation(
+        const TrainReservation& value) const noexcept {
         const auto found = std::lower_bound(
             reservations_.begin(), reservations_.end(), value, reservationLess);
         return found != reservations_.end() &&
-               !reservationLess(value, *found) &&
-               !reservationLess(*found, value);
+               reservationIdentity(*found) == reservationIdentity(value)
+            ? found
+            : reservations_.end();
     }
     void insertReservation(TrainReservation value) {
         reservations_.insert(
