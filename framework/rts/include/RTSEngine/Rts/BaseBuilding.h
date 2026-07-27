@@ -163,45 +163,47 @@ public:
                         ecs::EntityCommandBuffer& commands,
                         ecs::World& world,
                         ConstructionId id) {
-        for (const auto entity :
-             world.view<ConstructionSite, BuildingFootprint>()) {
-            const auto* site = world.try_get<ConstructionSite>(entity);
-            const auto* footprint =
-                world.try_get<BuildingFootprint>(entity);
-            if (!site || !footprint || site->id != id) continue;
-            releaseFootprint(*footprint);
-            ledger_.release(site->reservedCost);
-            commands.destroy(context, entity);
-            return BuildFailure::None;
-        }
-        return BuildFailure::UnknownConstruction;
+        BuildFailure result = BuildFailure::UnknownConstruction;
+        world.each<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity) {
+                if (result == BuildFailure::None) return;
+                const auto* site = world.try_get<ConstructionSite>(entity);
+                const auto* footprint =
+                    world.try_get<BuildingFootprint>(entity);
+                if (!site || !footprint || site->id != id) return;
+                releaseFootprint(*footprint);
+                ledger_.release(site->reservedCost);
+                commands.destroy(context, entity);
+                result = BuildFailure::None;
+            });
+        return result;
     }
 
     void advance(const ecs::SystemContext& context,
                  ecs::EntityCommandBuffer& commands,
                  ecs::World& world) {
-        for (const auto entity :
-             world.view<ConstructionSite, BuildingFootprint>()) {
-            auto* site = world.try_get<ConstructionSite>(entity);
-            const auto* footprint =
-                world.try_get<BuildingFootprint>(entity);
-            if (!site || !footprint) continue;
-            ++site->progressTicks;
-            if (site->progressTicks < site->requiredTicks) continue;
+        world.each<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity) {
+                auto* site = world.try_get<ConstructionSite>(entity);
+                const auto* footprint =
+                    world.try_get<BuildingFootprint>(entity);
+                if (!site || !footprint) return;
+                ++site->progressTicks;
+                if (site->progressTicks < site->requiredTicks) return;
 
-            ledger_.commit(site->reservedCost);
-            commands.add(
-                context, entity,
-                Building{site->definitionId, site->producer});
-            if (site->producer) {
-                commands.add(context, entity, ProductionQueue{});
-                commands.add(context, entity, RallyPoint{
-                    {footprint->origin.x + footprint->width,
-                     footprint->origin.y + footprint->height / 2}
-                });
-            }
-            commands.remove<ConstructionSite>(context, entity);
-        }
+                ledger_.commit(site->reservedCost);
+                commands.add(
+                    context, entity,
+                    Building{site->definitionId, site->producer});
+                if (site->producer) {
+                    commands.add(context, entity, ProductionQueue{});
+                    commands.add(context, entity, RallyPoint{
+                        {footprint->origin.x + footprint->width,
+                         footprint->origin.y + footprint->height / 2}
+                    });
+                }
+                commands.remove<ConstructionSite>(context, entity);
+            });
     }
 
     BuildFailure validatePlacement(const BuildingFootprint& footprint,
@@ -218,7 +220,9 @@ public:
         }
 
         NavigationGrid preview = navigation_;
-        for (const auto cell : cells) preview.setBlocked(cell, true);
+        if (!preview.setBlockedBatch(cells, true)) {
+            return BuildFailure::OutOfBounds;
+        }
         if (requiredPathStart == requiredPathGoal) {
             return preview.blocked(requiredPathStart)
                 ? BuildFailure::BlocksRequiredPath
@@ -267,9 +271,8 @@ private:
     }
 
     void setBlocked(const BuildingFootprint& footprint, bool blocked) {
-        for (const auto cell : footprintCells(footprint)) {
-            navigation_.setBlocked(cell, blocked);
-        }
+        (void)navigation_.setBlockedBatch(
+            footprintCells(footprint), blocked);
     }
 
     ResourceLedger& ledger_;
