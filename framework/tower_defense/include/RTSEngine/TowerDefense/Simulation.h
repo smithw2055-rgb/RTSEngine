@@ -13,6 +13,10 @@
 #include <utility>
 #include <vector>
 
+namespace rts::roguelite {
+class RunSimulation;
+}
+
 namespace rts::tower_defense {
 
 class TowerDefenseSimulationArchive;
@@ -93,6 +97,12 @@ struct TowerDefenseSnapshot {
 
 class TowerDefenseSimulation {
 public:
+    class RuntimeAuthority final {
+    private:
+        constexpr RuntimeAuthority() noexcept = default;
+        friend class ::rts::roguelite::RunSimulation;
+    };
+
     TowerDefenseSimulation(std::int32_t width = 32,
                            std::int32_t height = 32,
                            std::uint64_t rootSeed = 1);
@@ -196,11 +206,12 @@ public:
     }
 
     bool registerWave(WaveDefinition wave) {
-        if (configurationFrozen()) return false;
-        const auto copy = wave;
-        if (!director_.registerWave(std::move(wave))) return false;
-        replaceById(waveDefinitions_, copy);
-        return true;
+        return !configurationFrozen() &&
+               registerWaveUnchecked(std::move(wave));
+    }
+
+    bool registerRuntimeWave(RuntimeAuthority, WaveDefinition wave) {
+        return registerWaveUnchecked(std::move(wave));
     }
 
     bool registerReward(RewardDefinition reward) {
@@ -262,7 +273,13 @@ public:
     }
 
     bool submit(TickCommand command) {
+        if (isRuntimeIssuer(command.issuer)) return false;
         return commands_.submit(std::move(command));
+    }
+
+    bool submitRuntime(RuntimeAuthority, TickCommand command) {
+        return isRuntimeIssuer(command.issuer) &&
+               commands_.submit(std::move(command));
     }
 
     bool submitRts(gameplay::TickCommand command) {
@@ -346,6 +363,13 @@ private:
         } else {
             values.insert(iterator, std::move(value));
         }
+    }
+
+    bool registerWaveUnchecked(WaveDefinition wave) {
+        const auto copy = wave;
+        if (!director_.registerWave(std::move(wave))) return false;
+        replaceById(waveDefinitions_, copy);
+        return true;
     }
 
     const gameplay::UnitDefinition* unitDefinition(
@@ -756,6 +780,10 @@ private:
             hash.WriteBool(enemy.resolved);
         }
         snapshot_.worldHash = hash.Value();
+    }
+
+    static bool isRuntimeIssuer(std::uint32_t issuer) noexcept {
+        return (issuer & 0xc0000000u) == 0xc0000000u;
     }
 
     static std::uint32_t internalIssuer(WaveId waveId) noexcept {
