@@ -167,6 +167,43 @@ void testFutureRuntimeFieldsChangeWorldHash() {
     require(first.snapshot().worldHash != second.snapshot().worldHash);
 }
 
+void testHiddenTargetsCannotBeCommandedOrAutoAcquired() {
+    gameplay::RtsSimulation simulation(10, 5);
+    const auto attacker = simulation.createUnit(
+        {1, 2}, {1}, 1, {20, 0, 5, 6, 1, 0}, 6);
+    const auto hidden = simulation.createUnit(
+        {5, 2}, {1}, 2, {20, 0, 0, 0, 1, 0}, 3);
+    require(attacker.valid() && hidden.valid());
+    require(simulation.setBlocked({3, 2}, true));
+
+    gameplay::TickCommand attack;
+    attack.targetTick = 0;
+    attack.issuer = 1;
+    attack.sequence = 1;
+    attack.type = gameplay::CommandType::Attack;
+    attack.subject = attacker;
+    attack.targetEntity = hidden;
+    require(simulation.submit(attack));
+    require(simulation.step(0));
+
+    const auto* health = simulation.world().try_get<gameplay::Health>(hidden);
+    const auto* target =
+        simulation.world().try_get<gameplay::CombatTarget>(attacker);
+    require(health && health->current == 20);
+    require(target && !target->entity.valid());
+
+    bool rejectedForVisibility = false;
+    for (const auto& event : simulation.events()) {
+        if (event.type == gameplay::DomainEventType::CommandRejected &&
+            event.entity == attacker &&
+            event.reason == static_cast<std::uint32_t>(
+                gameplay::CommandRejectionReason::TargetNotVisible)) {
+            rejectedForVisibility = true;
+        }
+    }
+    require(rejectedForVisibility);
+}
+
 } // namespace
 
 int main() {
@@ -177,6 +214,7 @@ int main() {
     testReplayRejectsConflictingDuplicates();
     testEntityAllocationStateChangesCanonicalHash();
     testFutureRuntimeFieldsChangeWorldHash();
+    testHiddenTargetsCannotBeCommandedOrAutoAcquired();
     std::cout << "authoritative session boundary tests passed\n";
     return 0;
 }
