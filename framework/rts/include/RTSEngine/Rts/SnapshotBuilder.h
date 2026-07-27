@@ -14,7 +14,8 @@
 namespace rts::gameplay {
 
 struct SnapshotBuilderDependencies {
-    const ResourceLedger& resources;
+    const TeamEconomyRuntime& economies;
+    std::uint32_t playerTeamId{};
     const GameplayModifierSystem& modifiers;
     const NavigationGrid& navigation;
     const TickCommandStream& commands;
@@ -30,7 +31,9 @@ public:
         SnapshotBuilderDependencies dependencies) {
         auto& snapshot = dependencies.snapshot;
         snapshot.tick = tick;
-        snapshot.resources = dependencies.resources;
+        snapshot.resources = dependencies.economies.resources(
+            dependencies.playerTeamId);
+        dependencies.economies.buildSnapshot(snapshot.teamEconomies);
         snapshot.teamModifiers = dependencies.modifiers.entries();
         snapshot.commandCommittedThrough =
             dependencies.commands.committedThrough();
@@ -48,9 +51,7 @@ public:
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
-        hash.WriteI32(dependencies.resources.available);
-        hash.WriteI32(dependencies.resources.reserved);
-        hash.WriteI32(dependencies.resources.spent);
+        dependencies.economies.appendHash(hash);
         dependencies.modifiers.appendHash(hash);
         hash.WriteU64(dependencies.commands.committedThrough());
         hash.WriteU32(static_cast<std::uint32_t>(
@@ -112,6 +113,9 @@ private:
         if (const auto* team = world.try_get<Team>(entity)) {
             snapshot.teamId = team->id;
         }
+        if (const auto* supply = world.try_get<UnitSupply>(entity)) {
+            snapshot.supplyCost = supply->amount;
+        }
         if (const auto* health = world.try_get<Health>(entity)) {
             snapshot.healthCurrent = health->current;
             snapshot.healthMaximum = health->maximum;
@@ -141,6 +145,10 @@ private:
         const auto* team = world.try_get<Team>(entity);
         hash.WriteBool(team != nullptr);
         if (team) hash.WriteU32(team->id);
+
+        const auto* supply = world.try_get<UnitSupply>(entity);
+        hash.WriteBool(supply != nullptr);
+        if (supply) hash.WriteU32(supply->amount);
 
         const auto* health = world.try_get<Health>(entity);
         hash.WriteBool(health != nullptr);
@@ -239,6 +247,7 @@ private:
         hash.WriteI32(agent.pathGoal.y);
         hash.WriteBool(agent.hasPathGoal);
         hash.WriteBool(agent.combatPath);
+        hash.WriteBool(agent.flowFieldPath);
         hashEntity(hash, agent.chaseTarget);
         hash.WriteI32(agent.chaseTargetPosition.x);
         hash.WriteI32(agent.chaseTargetPosition.y);
@@ -260,6 +269,7 @@ private:
                 const MovementAgent& agent) {
                 const bool moving =
                     !agent.path.empty() ||
+                    agent.flowFieldPath ||
                     !queue.pending.empty() ||
                     agent.combatPath;
 
@@ -362,6 +372,7 @@ private:
                         hash.WriteU32(item.id);
                         hash.WriteU32(item.unitDefinitionId);
                         hash.WriteI32(item.reservedCost);
+                        hash.WriteU32(item.supplyCost);
                         hash.WriteU32(item.progressTicks);
                         hash.WriteU32(item.requiredTicks);
                         hash.WriteU32(item.baseRequiredTicks);
