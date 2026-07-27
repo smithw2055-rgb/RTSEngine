@@ -19,13 +19,17 @@ public:
         MoveSpeed speed,
         std::uint32_t teamId,
         const CombatStats& combat,
-        std::int32_t visionRange = 6) {
+        std::int32_t visionRange = 6,
+        std::uint32_t supplyCost = 0) {
         const auto entity = world.create();
         world.emplace<Position>(entity, position);
         world.emplace<MoveSpeed>(entity, speed);
         world.emplace<OrderQueue>(entity, OrderQueue{});
         world.emplace<MovementAgent>(entity, MovementAgent{});
         world.emplace<Team>(entity, Team{teamId});
+        if (supplyCost != 0) {
+            world.emplace<UnitSupply>(entity, UnitSupply{supplyCost});
+        }
         world.emplace<VisionSource>(
             entity,
             VisionSource{std::max<std::int32_t>(0, visionRange)});
@@ -45,7 +49,8 @@ public:
         std::int32_t baseMoveSpeed,
         std::uint32_t teamId,
         const CombatStats& combat,
-        std::int32_t visionRange = 6) {
+        std::int32_t visionRange = 6,
+        std::uint32_t supplyCost = 0) {
         const auto resolvedSpeed = std::max<std::int32_t>(
             0,
             ScaleGameplayValue(
@@ -56,6 +61,9 @@ public:
         commands.add(context, target, OrderQueue{});
         commands.add(context, target, MovementAgent{});
         commands.add(context, target, Team{teamId});
+        if (supplyCost != 0) {
+            commands.add(context, target, UnitSupply{supplyCost});
+        }
         commands.add(
             context,
             target,
