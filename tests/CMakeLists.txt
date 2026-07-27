@@ -62,6 +62,10 @@ add_executable(rts_team_economy_tests rts_team_economy_tests.cpp)
 target_link_libraries(rts_team_economy_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_team_economy_tests COMMAND rts_team_economy_tests)
 
+add_executable(rts_technology_tests rts_technology_tests.cpp)
+target_link_libraries(rts_technology_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_technology_tests COMMAND rts_technology_tests)
+
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
     RTSEngine::Rts
@@ -107,7 +111,7 @@ add_executable(rts_combat_tests combat_tests.cpp)
 target_link_libraries(rts_combat_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_tests COMMAND rts_combat_tests)
 
-add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
+add_executable(rts_combat_integration_tests combat_integration_tests.cpp)
 target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 
