@@ -1,7 +1,6 @@
 #pragma once
 
 #include <RTSEngine/Ecs/World.h>
-#include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/MovementReservations.h>
 #include <RTSEngine/Rts/OrderSystem.h>
 #include <RTSEngine/Rts/RuntimeTelemetry.h>
@@ -16,29 +15,24 @@ namespace rts::gameplay {
 
 struct MovementSystemDependencies {
     const NavigationGrid& navigation;
-    GridFlowFieldCache& flowFields;
     MovementReservationRuntime& reservations;
     std::vector<DomainEvent>& events;
     RuntimeTelemetry* telemetry{};
 
     MovementSystemDependencies(
         const NavigationGrid& navigationValue,
-        GridFlowFieldCache& flowFieldsValue,
         MovementReservationRuntime& reservationsValue,
         std::vector<DomainEvent>& eventsValue)
         : navigation(navigationValue),
-          flowFields(flowFieldsValue),
           reservations(reservationsValue),
           events(eventsValue) {}
 
     MovementSystemDependencies(
         const NavigationGrid& navigationValue,
-        GridFlowFieldCache& flowFieldsValue,
         MovementReservationRuntime& reservationsValue,
         RuntimeTelemetry& telemetryValue,
         std::vector<DomainEvent>& eventsValue)
         : navigation(navigationValue),
-          flowFields(flowFieldsValue),
           reservations(reservationsValue),
           events(eventsValue),
           telemetry(&telemetryValue) {}
@@ -88,7 +82,9 @@ public:
 
 private:
     static bool active(const MovementAgent& agent) noexcept {
-        return agent.flowFieldPath || !agent.path.empty();
+        return (agent.flowFieldPath && agent.hasPathGoal &&
+                agent.flowContext && agent.flowSample) ||
+               !agent.path.empty();
     }
 
     static void rebuildOccupancy(
@@ -111,13 +107,14 @@ private:
     static bool resolveDestination(
         Position position,
         MovementAgent& agent,
-        MovementSystemDependencies dependencies,
+        const NavigationGrid& navigation,
         GridPoint& destination) {
         if (agent.flowFieldPath) {
             const GridPoint current{position.x, position.y};
-            if (current == agent.pathGoal) return false;
-            return dependencies.flowFields.sample(
-                dependencies.navigation,
+            if (current == agent.pathGoal || !agent.flowSample) return false;
+            return agent.flowSample(
+                agent.flowContext,
+                navigation,
                 agent.pathGoal,
                 current,
                 destination);
@@ -156,7 +153,10 @@ private:
 
                 GridPoint destination;
                 if (!resolveDestination(
-                        position, agent, dependencies, destination) ||
+                        position,
+                        agent,
+                        dependencies.navigation,
+                        destination) ||
                     !dependencies.navigation.contains(destination) ||
                     dependencies.navigation.blocked(destination)) {
                     clearPathForReplan(agent);
@@ -331,6 +331,8 @@ private:
         agent.hasPathGoal = false;
         agent.combatPath = false;
         agent.flowFieldPath = false;
+        agent.flowContext = nullptr;
+        agent.flowSample = nullptr;
         agent.chaseTarget = {};
         agent.chaseTargetPosition = {};
     }
@@ -355,6 +357,9 @@ private:
 
                 const bool completedCombatPath = agent.combatPath;
                 OrderSystem::clearPath(agent);
+                agent.flowFieldPath = false;
+                agent.flowContext = nullptr;
+                agent.flowSample = nullptr;
                 agent.blockedTicks = 0;
                 if (completedCombatPath) return;
 
