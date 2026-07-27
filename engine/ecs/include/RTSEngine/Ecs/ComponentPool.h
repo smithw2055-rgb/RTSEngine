@@ -106,6 +106,7 @@ public:
     virtual std::type_index cppType() const noexcept = 0;
     virtual void remove(Entity entity) = 0;
     virtual std::size_t size() const noexcept = 0;
+    virtual const std::vector<Entity>& entities() const noexcept = 0;
     virtual std::vector<Entity> orderedEntities() const = 0;
     virtual const void* value(Entity entity) const noexcept = 0;
 };
@@ -123,6 +124,10 @@ public:
 
     std::size_t size() const noexcept override {
         return pool.size();
+    }
+
+    const std::vector<Entity>& entities() const noexcept override {
+        return pool.entities();
     }
 
     std::vector<Entity> orderedEntities() const override {
