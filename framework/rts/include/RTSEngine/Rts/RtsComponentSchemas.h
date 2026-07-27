@@ -142,7 +142,6 @@ inline bool RegisterRtsComponentSchemas(
                 count > kMaximumPersistentVectorEntries) {
                 return false;
             }
-            value.pending.clear();
             value.pending.resize(count);
             for (auto& order : value.pending) {
                 std::uint8_t rawType = 0;
@@ -188,7 +187,6 @@ inline bool RegisterRtsComponentSchemas(
                 count > kMaximumPersistentVectorEntries) {
                 return false;
             }
-            value.path.clear();
             value.path.resize(count);
             for (auto& point : value.path) {
                 if (!ReadGridPoint(reader, point)) return false;
@@ -205,6 +203,9 @@ inline bool RegisterRtsComponentSchemas(
                 return false;
             }
             value.nextPoint = static_cast<std::size_t>(nextPoint);
+            value.flowFieldPath = false;
+            value.flowContext = nullptr;
+            value.flowSample = nullptr;
             value.blockedTicks = 0;
             value.yieldOrdinal = 0;
             if (version == 2u &&
@@ -450,13 +451,14 @@ inline bool RegisterRtsComponentSchemas(
         }) && ok;
 
     ok = schemas.registerSchema<ProductionQueue>(
-        0x52545310u, 1u, "rts.ProductionQueue",
+        0x52545310u, 2u, "rts.ProductionQueue",
         [](foundation::BinaryWriter& writer, const ProductionQueue& value) {
             writer.writeU32(static_cast<std::uint32_t>(value.items.size()));
             for (const auto& item : value.items) {
                 writer.writeU32(item.id);
                 writer.writeU32(item.unitDefinitionId);
                 writer.writeI32(item.reservedCost);
+                writer.writeU32(item.supplyCost);
                 writer.writeU32(item.progressTicks);
                 writer.writeU32(item.requiredTicks);
                 writer.writeU32(item.baseRequiredTicks);
@@ -466,17 +468,23 @@ inline bool RegisterRtsComponentSchemas(
            ecs::ComponentSchemaVersion version,
            ProductionQueue& value) {
             std::uint32_t count = 0;
-            if (version != 1u || !reader.readU32(count) ||
+            if ((version != 1u && version != 2u) ||
+                !reader.readU32(count) ||
                 count > kMaximumPersistentVectorEntries) {
                 return false;
             }
-            value.items.clear();
             value.items.resize(count);
             for (auto& item : value.items) {
                 if (!reader.readU32(item.id) ||
                     !reader.readU32(item.unitDefinitionId) ||
-                    !reader.readI32(item.reservedCost) ||
-                    !reader.readU32(item.progressTicks) ||
+                    !reader.readI32(item.reservedCost)) {
+                    return false;
+                }
+                item.supplyCost = 0;
+                if (version >= 2u && !reader.readU32(item.supplyCost)) {
+                    return false;
+                }
+                if (!reader.readU32(item.progressTicks) ||
                     !reader.readU32(item.requiredTicks) ||
                     !reader.readU32(item.baseRequiredTicks) || item.id == 0 ||
                     item.unitDefinitionId == 0 || item.reservedCost < 0 ||
@@ -492,6 +500,7 @@ inline bool RegisterRtsComponentSchemas(
                 hash.WriteU32(item.id);
                 hash.WriteU32(item.unitDefinitionId);
                 hash.WriteI32(item.reservedCost);
+                hash.WriteU32(item.supplyCost);
                 hash.WriteU32(item.progressTicks);
                 hash.WriteU32(item.requiredTicks);
                 hash.WriteU32(item.baseRequiredTicks);
@@ -510,6 +519,20 @@ inline bool RegisterRtsComponentSchemas(
         },
         [](foundation::CanonicalHash& hash, const RallyPoint& value) {
             HashGridPoint(hash, value.point);
+        }) && ok;
+
+    ok = schemas.registerSchema<UnitSupply>(
+        0x52545312u, 1u, "rts.UnitSupply",
+        [](foundation::BinaryWriter& writer, const UnitSupply& value) {
+            writer.writeU32(value.amount);
+        },
+        [](foundation::BinaryReader& reader,
+           ecs::ComponentSchemaVersion version,
+           UnitSupply& value) {
+            return version == 1u && reader.readU32(value.amount);
+        },
+        [](foundation::CanonicalHash& hash, const UnitSupply& value) {
+            hash.WriteU32(value.amount);
         }) && ok;
 
     if (ok) schemas.freeze();
