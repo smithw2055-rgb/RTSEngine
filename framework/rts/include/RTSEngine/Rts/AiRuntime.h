@@ -61,7 +61,9 @@ private:
         Position position{};
     };
 
-    auto lowerBound(std::uint32_t teamId) noexcept {
+    using Iterator = std::vector<AiTeamState>::iterator;
+
+    Iterator lowerBound(std::uint32_t teamId) noexcept {
         return std::lower_bound(
             teams_.begin(), teams_.end(), teamId,
             [](const AiTeamState& state, std::uint32_t value) {
