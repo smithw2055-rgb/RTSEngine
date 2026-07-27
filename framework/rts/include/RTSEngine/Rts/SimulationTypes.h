@@ -70,7 +70,7 @@ struct UnitDefinition {
     std::int32_t cellsPerTick{1};
     CombatStats combat{};
     std::int32_t visionRange{6};
-    std::uint32_t supplyCost{1};
+    std::uint32_t supplyCost{};
 };
 
 enum class CommandType : std::uint8_t {
