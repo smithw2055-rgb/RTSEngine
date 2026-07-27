@@ -25,6 +25,11 @@ public:
     static constexpr std::uint32_t kMaximumWorldBytes = 128u * 1024u * 1024u;
     static constexpr std::uint32_t kMaximumModifierEntries = 4096u;
 
+    static std::uint64_t authoritativeHash(
+        const RtsSimulation& simulation) {
+        return currentWorldHash(simulation);
+    }
+
     static std::vector<std::uint8_t> encode(
         const RtsSimulation& simulation) {
         if (!simulation.structuralCommands_.empty()) return {};
