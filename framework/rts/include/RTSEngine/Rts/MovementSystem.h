@@ -67,9 +67,8 @@ public:
                     std::max<std::int32_t>(1, speed.cellsPerTick));
             });
 
-        // Build occupancy once at Tick start. Each substep rebuilds only after
-        // accepted moves, leaving a current map for the next substep. This cuts
-        // the previous two full occupancy scans per substep to one.
+        // Occupancy is rebuilt once per Tick. Accepted simultaneous moves are
+        // committed in two phases so later substeps reuse the current map.
         rebuildOccupancy(
             world, dependencies.reservations, *dependencies.telemetry);
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
@@ -145,24 +144,34 @@ private:
             });
 
         reservations.arbitrate();
-        std::uint32_t accepted = 0;
+        std::uint32_t resolvedAccepted = 0;
         for (std::size_t index = 0;
              index < reservations.intentCount(); ++index) {
-            if (!reservations.accepted(index)) continue;
-            ++accepted;
-            const auto& intent = reservations.intent(index);
-            auto* position = world.try_get<Position>(intent.entity);
-            auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!position || !agent ||
-                position->x != intent.source.x ||
-                position->y != intent.source.y ||
-                agent->nextPoint >= agent->path.size()) {
-                continue;
+            if (reservations.accepted(index)) ++resolvedAccepted;
+        }
+        const auto committedAccepted = reservations.commitAcceptedMoves();
+        const bool occupancyCommitValid =
+            committedAccepted == resolvedAccepted;
+        std::uint32_t accepted = 0;
+        if (occupancyCommitValid) {
+            for (std::size_t index = 0;
+                 index < reservations.intentCount(); ++index) {
+                if (!reservations.accepted(index)) continue;
+                const auto& intent = reservations.intent(index);
+                auto* position = world.try_get<Position>(intent.entity);
+                auto* agent = world.try_get<MovementAgent>(intent.entity);
+                if (!position || !agent ||
+                    position->x != intent.source.x ||
+                    position->y != intent.source.y ||
+                    agent->nextPoint >= agent->path.size()) {
+                    continue;
+                }
+                position->x = intent.destination.x;
+                position->y = intent.destination.y;
+                ++agent->nextPoint;
+                agent->blockedTicks = 0;
+                ++accepted;
             }
-            position->x = intent.destination.x;
-            position->y = intent.destination.y;
-            ++agent->nextPoint;
-            agent->blockedTicks = 0;
         }
         dependencies.telemetry->recordReservationBatch(
             static_cast<std::uint32_t>(reservations.intentCount()),
@@ -192,10 +201,6 @@ private:
             }
         }
 
-        // Synchronize the occupancy map once after the simultaneous movement
-        // commit. Yield recovery then updates this map incrementally.
-        rebuildOccupancy(
-            world, reservations, *dependencies.telemetry);
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
