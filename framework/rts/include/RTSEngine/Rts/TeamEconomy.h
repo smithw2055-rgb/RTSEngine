@@ -45,6 +45,14 @@ struct ResourceLedger final {
     }
 };
 
+struct ResourceDropOff final {
+    ResourceTypeId resourceType{};
+};
+
+struct SupplyProvider final {
+    std::uint32_t capacity{};
+};
+
 struct TeamResourceAccount final {
     std::uint32_t teamId{};
     ResourceTypeId resourceType{};
