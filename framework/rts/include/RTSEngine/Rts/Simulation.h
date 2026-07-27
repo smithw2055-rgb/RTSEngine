@@ -56,6 +56,14 @@ public:
 
     bool registerBuilding(BuildingDefinition definition) {
         if (configurationFrozen()) return false;
+        std::sort(
+            definition.trainableUnits.begin(),
+            definition.trainableUnits.end());
+        definition.trainableUnits.erase(
+            std::unique(
+                definition.trainableUnits.begin(),
+                definition.trainableUnits.end()),
+            definition.trainableUnits.end());
         buildingDefinitions_.replace(std::move(definition));
         return true;
     }
@@ -72,8 +80,15 @@ public:
         return configurationFrozen_ || hasStepped_;
     }
 
-    void setResources(std::int32_t available) noexcept {
-        resources_.available = std::max<std::int32_t>(0, available);
+    void setResources(std::int32_t available) {
+        (void)economies_.setResources(playerTeamId_, available);
+    }
+
+    bool setTeamResources(
+        std::uint32_t teamId,
+        std::int32_t available) {
+        if (configurationFrozen() || teamId == 0) return false;
+        return economies_.setResources(teamId, available);
     }
 
     bool setRequiredRoute(GridPoint start, GridPoint goal) noexcept {
@@ -83,8 +98,9 @@ public:
         return true;
     }
 
-    bool setPlayerTeam(std::uint32_t teamId) noexcept {
+    bool setPlayerTeam(std::uint32_t teamId) {
         if (configurationFrozen() || teamId == 0) return false;
+        if (!economies_.ensure(teamId)) return false;
         playerTeamId_ = teamId;
         return true;
     }
@@ -121,10 +137,17 @@ public:
         MoveSpeed speed,
         std::uint32_t teamId = 1,
         CombatStats combat = {},
-        std::int32_t visionRange = 6) {
+        std::int32_t visionRange = 6,
+        std::uint32_t supplyCost = 0) {
         if (configurationFrozen()) return {};
+        economies_.ensure(teamId);
         return createUnitUnchecked(
-            position, speed, teamId, combat, visionRange);
+            position,
+            speed,
+            teamId,
+            combat,
+            visionRange,
+            supplyCost);
     }
 
     sim::CommandSubmitResult submitDetailed(TickCommand command) {
@@ -173,7 +196,11 @@ public:
     }
 
     const ResourceLedger& resources() const noexcept {
-        return resources_;
+        return economies_.resources(playerTeamId_);
+    }
+
+    const TeamEconomyRuntime& economies() const noexcept {
+        return economies_;
     }
 
     sim::AuthoritativeStepValidation validateStep(
@@ -264,7 +291,8 @@ private:
         MoveSpeed speed,
         std::uint32_t teamId,
         CombatStats combat,
-        std::int32_t visionRange) {
+        std::int32_t visionRange,
+        std::uint32_t supplyCost = 0) {
         return EntityFactory::createUnit(
             world_,
             modifiers_,
@@ -272,7 +300,8 @@ private:
             speed,
             teamId,
             combat,
-            visionRange);
+            visionRange,
+            supplyCost);
     }
 
     ecs::Entity createUnitInternal(
@@ -281,8 +310,9 @@ private:
         std::uint32_t teamId,
         CombatStats combat,
         std::int32_t visionRange) {
+        economies_.ensure(teamId);
         return createUnitUnchecked(
-            position, speed, teamId, combat, visionRange);
+            position, speed, teamId, combat, visionRange, 0);
     }
 
     sim::CommandSubmitResult submitInternalDetailed(TickCommand command) {
@@ -324,10 +354,11 @@ private:
         return {
             structuralCommands_,
             building_,
-            resources_,
+            economies_,
             modifiers_,
             buildingDefinitions_,
             unitDefinitions_,
+            navigation_,
             requiredPathStart_,
             requiredPathGoal_,
             nextProductionId_,
@@ -348,6 +379,16 @@ private:
     }
 
     void installSystems() {
+        scheduler_.add(
+            ecs::Stage::Command,
+            -200,
+            80,
+            [this](ecs::World& world,
+                   const ecs::SystemContext&) {
+                EconomySupplySystem::rebuild(
+                    world, economies_, buildingDefinitions_);
+            });
+
         scheduler_.add(
             ecs::Stage::Command,
             0,
@@ -423,9 +464,10 @@ private:
                     world,
                     context,
                     {structuralCommands_,
-                     resources_,
+                     economies_,
                      modifiers_,
                      unitDefinitions_,
+                     navigation_,
                      events_});
             });
 
@@ -453,11 +495,20 @@ private:
                     {combat_,
                      structuralCommands_,
                      building_,
-                     resources_,
+                     economies_,
                      modifiers_,
-                     playerTeamId_,
                      events_,
                      deathSideEffects_});
+            });
+
+        scheduler_.add(
+            ecs::Stage::Snapshot,
+            -20,
+            380,
+            [this](ecs::World& world,
+                   const ecs::SystemContext&) {
+                EconomySupplySystem::rebuild(
+                    world, economies_, buildingDefinitions_);
             });
 
         scheduler_.add(
@@ -487,7 +538,8 @@ private:
                 SnapshotBuilder::build(
                     world,
                     context.tick,
-                    {resources_,
+                    {economies_,
+                     playerTeamId_,
                      modifiers_,
                      navigation_,
                      commands_,
@@ -512,7 +564,7 @@ private:
     GridFlowFieldCache flowFields_;
     RuntimeTelemetry telemetry_;
     MovementReservationRuntime movement_;
-    ResourceLedger resources_;
+    TeamEconomyRuntime economies_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
     GameplayModifierSystem modifiers_;
