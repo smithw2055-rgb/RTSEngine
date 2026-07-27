@@ -146,17 +146,19 @@ public:
                     return;
                 }
 
-                if (hasReusableRegularPath(
-                        agent,
-                        goal,
-                        dependencies.navigation.revision())) {
-                    return;
-                }
-
-                const GridPoint start{position.x, position.y};
                 const bool useFlowField =
                     dependencies.flowFields.demandCount(goal) >=
                     kFlowFieldThreshold;
+                if (hasReusableRegularPath(
+                        agent,
+                        goal,
+                        dependencies.navigation.revision(),
+                        useFlowField)) {
+                    return;
+                }
+
+                dependencies.telemetry.recordPathRequest();
+                const GridPoint start{position.x, position.y};
                 agent.pathRevision = dependencies.navigation.revision();
 
                 if (useFlowField) {
@@ -225,10 +227,9 @@ private:
             [&](ecs::Entity entity,
                 const Position& position,
                 const OrderQueue& queue,
-                const MovementAgent& agent) {
+                const MovementAgent&) {
                 const auto* directive =
                     world.try_get<CombatDirective>(entity);
-
                 dependencies.telemetry.recordNavigationAgent();
                 if (queue.pending.empty() ||
                     (directive &&
@@ -237,28 +238,24 @@ private:
                 }
 
                 const auto goal = queue.pending.front().target;
-                if ((position.x == goal.x && position.y == goal.y) ||
-                    hasReusableRegularPath(
-                        agent,
-                        goal,
-                        dependencies.navigation.revision())) {
-                    return;
-                }
+                if (position.x == goal.x && position.y == goal.y) return;
                 dependencies.flowFields.addDemand(goal);
-                dependencies.telemetry.recordPathRequest();
             });
     }
 
     static bool hasReusableRegularPath(
         const MovementAgent& agent,
         GridPoint goal,
-        std::uint64_t navigationRevision) noexcept {
-        const bool reusableFlow =
-            agent.flowFieldPath && agent.flowContext && agent.flowSample;
-        return (reusableFlow || !agent.path.empty()) &&
-               agent.hasPathGoal && agent.pathGoal == goal &&
-               agent.pathRevision == navigationRevision &&
-               !agent.combatPath;
+        std::uint64_t navigationRevision,
+        bool useFlowField) noexcept {
+        if (!agent.hasPathGoal || agent.pathGoal != goal ||
+            agent.pathRevision != navigationRevision || agent.combatPath) {
+            return false;
+        }
+        if (useFlowField) {
+            return agent.flowFieldPath && agent.flowContext && agent.flowSample;
+        }
+        return !agent.flowFieldPath && !agent.path.empty();
     }
 
     static void failRegularPath(
@@ -272,6 +269,7 @@ private:
             queue.pending.erase(queue.pending.begin());
         }
         OrderSystem::clearPath(agent);
+        clearFlowBinding(agent);
         OrderSystem::applyFrontOrderMode(world, entity, queue);
         dependencies.telemetry.recordPathFailure();
         dependencies.events.push_back(
@@ -312,6 +310,7 @@ private:
             directive.forcedTarget = {};
             if (target) target->entity = {};
             OrderSystem::clearPath(agent);
+            clearFlowBinding(agent);
             dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::AttackTargetLost,
@@ -329,6 +328,7 @@ private:
             targetPosition->x, targetPosition->y};
         if (ManhattanDistance(start, targetPoint) <= weapon->range) {
             OrderSystem::clearPath(agent);
+            clearFlowBinding(agent);
             return;
         }
 
@@ -354,6 +354,7 @@ private:
             directive.forcedTarget = {};
             target->entity = {};
             OrderSystem::clearPath(agent);
+            clearFlowBinding(agent);
             dependencies.telemetry.recordPathFailure();
             dependencies.events.push_back(
                 {context.tick,
