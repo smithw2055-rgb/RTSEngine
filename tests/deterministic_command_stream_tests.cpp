@@ -21,6 +21,9 @@ using Stream = rts::sim::DeterministicCommandStream<Command>;
 
 void testOrderingAndDuplicates() {
     Stream stream;
+    require(stream.reserveTick(5, 8));
+    require(stream.pending() == 0);
+    require(stream.bucketCount() == 1);
     require(stream.submit({5, 2, 2, 22}));
     require(stream.submit({5, 1, 2, 12}));
     require(stream.submit({5, 1, 1, 11}));
@@ -34,6 +37,7 @@ void testOrderingAndDuplicates() {
 
     const auto commands = stream.consume(5);
     require(commands.size() == 3);
+    require(commands.capacity() >= 8);
     require(commands[0].issuer == 1 && commands[0].sequence == 1);
     require(commands[0].payload == 11);
     require(commands[1].issuer == 1 && commands[1].sequence == 2);
@@ -41,6 +45,7 @@ void testOrderingAndDuplicates() {
     require(stream.pending() == 0);
     require(stream.bucketCount() == 0);
     require(stream.committedThrough() == 6);
+    require(!stream.reserveTick(4, 1));
     require(stream.submitDetailed({4, 3, 1, 0}) ==
             rts::sim::CommandSubmitResult::Late);
 }
