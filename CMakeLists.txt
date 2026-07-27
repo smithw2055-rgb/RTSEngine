@@ -69,6 +69,7 @@ if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/roguelite_demo)
     add_subdirectory(apps/scale_benchmark)
     add_subdirectory(apps/desktop_demo)
+    add_subdirectory(apps/multiplayer_demo)
 endif()
 
 if(RTSENGINE_BUILD_TESTS)
