@@ -2,6 +2,7 @@
 
 #include <RTSEngine/Ecs/Entity.h>
 #include <rts/foundation/BinaryArchive.h>
+#include <rts/foundation/CanonicalHash.h>
 
 #include <cstdint>
 #include <utility>
@@ -29,6 +30,7 @@ public:
             free_.pop_back();
             alive_[index] = 1;
         } else {
+            if (generations_.size() >= kMaximumEntities) return {};
             index = static_cast<std::uint32_t>(generations_.size());
             generations_.push_back(1);
             alive_.push_back(1);
@@ -64,6 +66,19 @@ public:
 
     std::uint32_t capacity() const noexcept {
         return static_cast<std::uint32_t>(generations_.size());
+    }
+
+    std::uint64_t canonicalHash() const noexcept {
+        foundation::CanonicalHash hash;
+        hash.WriteString("ecs.entity-registry.v1");
+        hash.WriteU32(static_cast<std::uint32_t>(generations_.size()));
+        for (std::size_t index = 0; index < generations_.size(); ++index) {
+            hash.WriteU32(generations_[index]);
+            hash.WriteBool(alive_[index] != 0);
+        }
+        hash.WriteU32(static_cast<std::uint32_t>(free_.size()));
+        for (const auto index : free_) hash.WriteU32(index);
+        return hash.Value();
     }
 
     EntityRegistryState snapshot() const {
@@ -112,7 +127,8 @@ public:
                           EntityRegistryState& state,
                           std::uint32_t maximumEntities = kMaximumEntities) {
         std::uint32_t capacity = 0;
-        if (!reader.readU32(capacity) || capacity == 0 || capacity > maximumEntities) {
+        if (!reader.readU32(capacity) || capacity == 0 ||
+            capacity > maximumEntities) {
             return false;
         }
 
