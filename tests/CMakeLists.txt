@@ -66,6 +66,10 @@ add_executable(rts_technology_tests rts_technology_tests.cpp)
 target_link_libraries(rts_technology_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_technology_tests COMMAND rts_technology_tests)
 
+add_executable(rts_lockstep_tests rts_lockstep_tests.cpp)
+target_link_libraries(rts_lockstep_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_lockstep_tests COMMAND rts_lockstep_tests)
+
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
     RTSEngine::Rts
