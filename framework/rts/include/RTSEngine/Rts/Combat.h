@@ -93,6 +93,12 @@ class CombatRuntime {
 public:
     using DeathCallback =
         std::function<void(ecs::Entity victim, ecs::Entity killer)>;
+    using VisibilityCallback = bool(*)(
+        const void* context,
+        std::uint32_t observerTeam,
+        ecs::Entity target,
+        std::int32_t targetX,
+        std::int32_t targetY);
 
     CombatRuntime(
         std::int32_t worldWidth = 64,
@@ -103,6 +109,18 @@ public:
         damage_.reserve(count);
         deaths_.reserve(count);
         events_.reserve(count * 2u);
+    }
+
+    void setVisibilityFilter(
+        const void* context,
+        VisibilityCallback callback) noexcept {
+        visibilityContext_ = context;
+        visibilityCallback_ = callback;
+    }
+
+    void clearVisibilityFilter() noexcept {
+        visibilityContext_ = nullptr;
+        visibilityCallback_ = nullptr;
     }
 
     template<class Position>
@@ -149,17 +167,28 @@ private:
         return dx + dy;
     }
 
+    bool visible(
+        std::uint32_t observerTeam,
+        ecs::Entity target,
+        std::int32_t x,
+        std::int32_t y) const noexcept {
+        return !visibilityCallback_ ||
+               visibilityCallback_(
+                   visibilityContext_, observerTeam, target, x, y);
+    }
+
     template<class Position>
-    static bool validEnemy(
+    bool validVisibleEnemy(
         const ecs::World& world,
         ecs::Entity entity,
-        std::uint32_t teamId) {
+        std::uint32_t teamId) const {
         if (!world.alive(entity)) return false;
         const auto* position = world.try_get<Position>(entity);
         const auto* team = world.try_get<Team>(entity);
         const auto* health = world.try_get<Health>(entity);
         return position && team && health && health->current > 0 &&
-               team->id != teamId;
+               team->id != teamId &&
+               visible(teamId, entity, position->x, position->y);
     }
 
     template<class Position>
@@ -201,7 +230,7 @@ private:
 
                 if (directive &&
                     directive->mode == CombatMode::AttackTarget) {
-                    if (validEnemy<Position>(
+                    if (validVisibleEnemy<Position>(
                             world, directive->forcedTarget, team->id)) {
                         if (target->entity != directive->forcedTarget) {
                             target->entity = directive->forcedTarget;
@@ -220,7 +249,8 @@ private:
                 }
 
                 bool keep = false;
-                if (validEnemy<Position>(world, target->entity, team->id)) {
+                if (validVisibleEnemy<Position>(
+                        world, target->entity, team->id)) {
                     const auto* targetPosition =
                         world.try_get<Position>(target->entity);
                     keep = targetPosition &&
@@ -243,7 +273,7 @@ private:
                     [&](const SpatialIndexEntry& candidateEntry) {
                         const auto candidate = candidateEntry.entity;
                         if (candidate == entity ||
-                            !validEnemy<Position>(
+                            !validVisibleEnemy<Position>(
                                 world, candidate, team->id)) {
                             return;
                         }
@@ -276,15 +306,16 @@ private:
         const ecs::SystemContext& context,
         ecs::World& world) {
         std::uint32_t sequence = 0;
-        world.each<Position, Health, Weapon, CombatTarget>(
+        world.each<Position, Team, Health, Weapon, CombatTarget>(
             [&](ecs::Entity entity) {
                 const auto* position = world.try_get<Position>(entity);
+                const auto* team = world.try_get<Team>(entity);
                 const auto* health = world.try_get<Health>(entity);
                 auto* weapon = world.try_get<Weapon>(entity);
                 auto* target = world.try_get<CombatTarget>(entity);
                 const auto* directive =
                     world.try_get<CombatDirective>(entity);
-                if (!position || !health || !weapon || !target ||
+                if (!position || !team || !health || !weapon || !target ||
                     health->current <= 0) {
                     return;
                 }
@@ -306,6 +337,11 @@ private:
                     directive->forcedTarget == target->entity;
                 if (!targetPosition || !targetHealth ||
                     targetHealth->current <= 0 ||
+                    !visible(
+                        team->id,
+                        target->entity,
+                        targetPosition->x,
+                        targetPosition->y) ||
                     distance(
                         position->x,
                         position->y,
@@ -404,6 +440,8 @@ private:
     std::vector<DamageRequest> damage_;
     std::vector<DeathRecord> deaths_;
     std::vector<CombatEvent> events_;
+    const void* visibilityContext_{};
+    VisibilityCallback visibilityCallback_{};
 };
 
 } // namespace rts::gameplay
