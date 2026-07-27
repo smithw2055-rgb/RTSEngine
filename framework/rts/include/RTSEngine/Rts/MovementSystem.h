@@ -1,6 +1,7 @@
 #pragma once
 
 #include <RTSEngine/Ecs/World.h>
+#include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/MovementReservations.h>
 #include <RTSEngine/Rts/OrderSystem.h>
 #include <RTSEngine/Rts/RuntimeTelemetry.h>
@@ -15,24 +16,29 @@ namespace rts::gameplay {
 
 struct MovementSystemDependencies {
     const NavigationGrid& navigation;
+    GridFlowFieldCache& flowFields;
     MovementReservationRuntime& reservations;
     std::vector<DomainEvent>& events;
     RuntimeTelemetry* telemetry{};
 
     MovementSystemDependencies(
         const NavigationGrid& navigationValue,
+        GridFlowFieldCache& flowFieldsValue,
         MovementReservationRuntime& reservationsValue,
         std::vector<DomainEvent>& eventsValue)
         : navigation(navigationValue),
+          flowFields(flowFieldsValue),
           reservations(reservationsValue),
           events(eventsValue) {}
 
     MovementSystemDependencies(
         const NavigationGrid& navigationValue,
+        GridFlowFieldCache& flowFieldsValue,
         MovementReservationRuntime& reservationsValue,
         RuntimeTelemetry& telemetryValue,
         std::vector<DomainEvent>& eventsValue)
         : navigation(navigationValue),
+          flowFields(flowFieldsValue),
           reservations(reservationsValue),
           events(eventsValue),
           telemetry(&telemetryValue) {}
@@ -60,15 +66,13 @@ public:
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
-                if (agent.path.empty()) return;
+                if (!active(agent)) return;
                 dependencies.telemetry->recordMovementAgent();
                 maximumSteps = std::max(
                     maximumSteps,
                     std::max<std::int32_t>(1, speed.cellsPerTick));
             });
 
-        // Occupancy is rebuilt once per Tick. Accepted simultaneous moves are
-        // committed in two phases so later substeps reuse the current map.
         rebuildOccupancy(
             world, dependencies.reservations, *dependencies.telemetry);
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
@@ -83,6 +87,10 @@ public:
     }
 
 private:
+    static bool active(const MovementAgent& agent) noexcept {
+        return agent.flowFieldPath || !agent.path.empty();
+    }
+
     static void rebuildOccupancy(
         const ecs::World& world,
         MovementReservationRuntime& reservations,
@@ -100,6 +108,27 @@ private:
             reservations.maximumCellOccupancy());
     }
 
+    static bool resolveDestination(
+        Position position,
+        MovementAgent& agent,
+        MovementSystemDependencies dependencies,
+        GridPoint& destination) {
+        if (agent.flowFieldPath) {
+            const GridPoint current{position.x, position.y};
+            if (current == agent.pathGoal) return false;
+            return dependencies.flowFields.sample(
+                dependencies.navigation,
+                agent.pathGoal,
+                current,
+                destination);
+        }
+        if (agent.path.empty() || agent.nextPoint >= agent.path.size()) {
+            return false;
+        }
+        destination = agent.path[agent.nextPoint];
+        return true;
+    }
+
     static void runSubstep(
         ecs::World& world,
         const ecs::SystemContext& context,
@@ -114,15 +143,21 @@ private:
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
-                if (agent.path.empty() ||
-                    agent.nextPoint >= agent.path.size() ||
+                if (!active(agent) ||
                     step >= std::max<std::int32_t>(1, speed.cellsPerTick) ||
                     shouldPauseForCombat(world, entity, position)) {
                     return;
                 }
 
-                const auto destination = agent.path[agent.nextPoint];
-                if (!dependencies.navigation.contains(destination) ||
+                if (agent.flowFieldPath &&
+                    GridPoint{position.x, position.y} == agent.pathGoal) {
+                    return;
+                }
+
+                GridPoint destination;
+                if (!resolveDestination(
+                        position, agent, dependencies, destination) ||
+                    !dependencies.navigation.contains(destination) ||
                     dependencies.navigation.blocked(destination)) {
                     clearPathForReplan(agent);
                     agent.blockedTicks = 0;
@@ -162,13 +197,12 @@ private:
                 auto* agent = world.try_get<MovementAgent>(intent.entity);
                 if (!position || !agent ||
                     position->x != intent.source.x ||
-                    position->y != intent.source.y ||
-                    agent->nextPoint >= agent->path.size()) {
+                    position->y != intent.source.y || !active(*agent)) {
                     continue;
                 }
                 position->x = intent.destination.x;
                 position->y = intent.destination.y;
-                ++agent->nextPoint;
+                if (!agent->flowFieldPath) ++agent->nextPoint;
                 agent->blockedTicks = 0;
                 ++accepted;
             }
@@ -181,7 +215,7 @@ private:
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!agent || agent->path.empty()) continue;
+            if (!agent || !active(*agent)) continue;
             if (agent->blockedTicks !=
                 std::numeric_limits<std::uint32_t>::max()) {
                 ++agent->blockedTicks;
@@ -205,7 +239,7 @@ private:
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
             auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!position || !agent || agent->path.empty() ||
+            if (!position || !agent || !active(*agent) ||
                 agent->blockedTicks < kYieldThreshold) {
                 continue;
             }
@@ -296,6 +330,7 @@ private:
         agent.nextPoint = 0;
         agent.hasPathGoal = false;
         agent.combatPath = false;
+        agent.flowFieldPath = false;
         agent.chaseTarget = {};
         agent.chaseTargetPosition = {};
     }
@@ -307,13 +342,16 @@ private:
         std::vector<DomainEvent>& events) {
         world.eachRef<Position, OrderQueue, MovementAgent>(
             [&](ecs::Entity entity,
-                Position&,
+                Position& position,
                 OrderQueue& queue,
                 MovementAgent& agent) {
-                if (agent.path.empty() ||
-                    agent.nextPoint != agent.path.size()) {
-                    return;
-                }
+                const bool flowCompleted =
+                    agent.flowFieldPath && agent.hasPathGoal &&
+                    GridPoint{position.x, position.y} == agent.pathGoal;
+                const bool regularCompleted =
+                    !agent.flowFieldPath && !agent.path.empty() &&
+                    agent.nextPoint == agent.path.size();
+                if (!flowCompleted && !regularCompleted) return;
 
                 const bool completedCombatPath = agent.combatPath;
                 OrderSystem::clearPath(agent);
