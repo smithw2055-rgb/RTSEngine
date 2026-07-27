@@ -8,8 +8,9 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
       vision_(width, height),
       influence_(width, height),
       movement_(width, height),
-      building_(resources_, navigation_),
+      building_(economies_, navigation_),
       combat_(width, height) {
+    economies_.ensure(playerTeamId_);
     combat_.setVisibilityFilter(
         &vision_,
         [](const void* context,
