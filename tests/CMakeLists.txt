@@ -57,6 +57,10 @@ add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
 
+add_executable(rts_game_session_tests rts_game_session_tests.cpp)
+target_link_libraries(rts_game_session_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_game_session_tests COMMAND rts_game_session_tests)
+
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
     RTSEngine::Rts
