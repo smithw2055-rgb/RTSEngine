@@ -37,8 +37,8 @@ public:
     static void synchronizeTeamModifiers(
         ecs::World& world,
         NavigationSystemDependencies dependencies) {
-        world.each<Team, TunableStats>(
-            [&](ecs::Entity entity) {
+        world.eachRef<Team, TunableStats>(
+            [&](ecs::Entity entity, Team&, TunableStats&) {
                 dependencies.modifiers.applyEntity<MoveSpeed>(world, entity);
             });
     }
@@ -47,25 +47,22 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         NavigationSystemDependencies dependencies) {
-        world.each<ConstructionSite, BuildingFootprint>(
-            [&](ecs::Entity entity) {
-                const auto* site = world.try_get<ConstructionSite>(entity);
-                const auto* footprint =
-                    world.try_get<BuildingFootprint>(entity);
-                if (!site || !footprint) return;
-
+        world.eachRef<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity,
+                ConstructionSite& site,
+                BuildingFootprint& footprint) {
                 if (!world.try_get<Position>(entity)) {
                     dependencies.structuralCommands.add(
                         context,
                         entity,
-                        Position{footprint->origin.x, footprint->origin.y});
+                        Position{footprint.origin.x, footprint.origin.y});
                 }
                 if (!world.try_get<Team>(entity)) {
                     dependencies.structuralCommands.add(
-                        context, entity, Team{site->ownerTeam});
+                        context, entity, Team{site.ownerTeam});
                 }
                 const auto* definition =
-                    dependencies.buildingDefinitions.find(site->definitionId);
+                    dependencies.buildingDefinitions.find(site.definitionId);
                 if (definition && !world.try_get<TunableStats>(entity)) {
                     EntityFactory::queueCombatProfile(
                         context,
@@ -75,7 +72,7 @@ public:
                         definition->combat,
                         true,
                         0,
-                        site->ownerTeam);
+                        site.ownerTeam);
                 }
             });
     }
@@ -92,14 +89,12 @@ public:
                 demand.count >= kFlowFieldThreshold);
         }
 
-        world.each<Position, OrderQueue, MovementAgent>(
-            [&](ecs::Entity entity) {
-                auto* position = world.try_get<Position>(entity);
-                auto* queue = world.try_get<OrderQueue>(entity);
-                auto* agent = world.try_get<MovementAgent>(entity);
-                auto* directive =
-                    world.try_get<CombatDirective>(entity);
-                if (!position || !queue || !agent) return;
+        world.eachRef<Position, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity,
+                Position& position,
+                OrderQueue& queue,
+                MovementAgent& agent) {
+                auto* directive = world.try_get<CombatDirective>(entity);
 
                 if (directive &&
                     directive->mode == CombatMode::AttackTarget) {
@@ -107,14 +102,14 @@ public:
                         world,
                         context,
                         entity,
-                        *position,
-                        *agent,
+                        position,
+                        agent,
                         *directive,
                         dependencies);
                     return;
                 }
 
-                if (queue->pending.empty()) {
+                if (queue.pending.empty()) {
                     if (directive &&
                         (directive->mode == CombatMode::PassiveMove ||
                          directive->mode == CombatMode::AttackMove)) {
@@ -127,21 +122,21 @@ public:
                     directive->mode != CombatMode::HoldPosition) {
                     directive->forcedTarget = {};
                     directive->mode =
-                        queue->pending.front().type == OrderType::AttackMove
+                        queue.pending.front().type == OrderType::AttackMove
                             ? CombatMode::AttackMove
                             : CombatMode::PassiveMove;
                 }
 
-                if (agent->pathRevision !=
+                if (agent.pathRevision !=
                     dependencies.navigation.revision()) {
-                    OrderSystem::clearPath(*agent);
+                    OrderSystem::clearPath(agent);
                 }
 
-                const auto goal = queue->pending.front().target;
-                if (position->x == goal.x && position->y == goal.y) {
-                    queue->pending.erase(queue->pending.begin());
-                    OrderSystem::clearPath(*agent);
-                    OrderSystem::applyFrontOrderMode(world, entity, *queue);
+                const auto goal = queue.pending.front().target;
+                if (position.x == goal.x && position.y == goal.y) {
+                    queue.pending.erase(queue.pending.begin());
+                    OrderSystem::clearPath(agent);
+                    OrderSystem::applyFrontOrderMode(world, entity, queue);
                     dependencies.events.push_back(
                         {context.tick,
                          DomainEventType::MoveCompleted,
@@ -152,35 +147,34 @@ public:
                 }
 
                 if (hasReusableRegularPath(
-                        *agent,
+                        agent,
                         goal,
                         dependencies.navigation.revision())) {
                     return;
                 }
 
-                const GridPoint start{position->x, position->y};
+                const GridPoint start{position.x, position.y};
                 const bool useFlowField =
                     dependencies.flowFields.demandCount(goal) >=
                     kFlowFieldThreshold;
-                agent->pathRevision = dependencies.navigation.revision();
+                agent.pathRevision = dependencies.navigation.revision();
 
                 if (useFlowField) {
                     const auto& field = dependencies.flowFields.resolve(
                         dependencies.navigation, goal);
-                    if (!dependencies.flowFields.extractPath(
-                            field, start, agent->path)) {
+                    if (!dependencies.flowFields.assignDirect(field, start)) {
                         failRegularPath(
                             world,
                             context,
                             entity,
-                            *queue,
-                            *agent,
+                            queue,
+                            agent,
                             dependencies);
                         return;
                     }
-                    assignExtractedPath(*agent, goal, false);
+                    assignFlowField(agent, goal);
                     dependencies.telemetry.recordFlowAssignment(
-                        agent->path.size());
+                        static_cast<std::uint64_t>(field.distance(start)));
                 } else {
                     const auto& path = dependencies.pathCache.resolve(
                         dependencies.navigation,
@@ -192,12 +186,12 @@ public:
                             world,
                             context,
                             entity,
-                            *queue,
-                            *agent,
+                            queue,
+                            agent,
                             dependencies);
                         return;
                     }
-                    assignPath(*agent, path, goal, false);
+                    assignPath(agent, path, goal, false);
                     dependencies.telemetry.recordPathCacheAssignment(
                         path.points.size());
                 }
@@ -216,26 +210,25 @@ private:
         const ecs::World& world,
         NavigationSystemDependencies dependencies) {
         dependencies.flowFields.beginDemands();
-        world.each<Position, OrderQueue, MovementAgent>(
-            [&](ecs::Entity entity) {
-                const auto* position = world.try_get<Position>(entity);
-                const auto* queue = world.try_get<OrderQueue>(entity);
-                const auto* agent = world.try_get<MovementAgent>(entity);
+        world.eachRef<Position, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity,
+                const Position& position,
+                const OrderQueue& queue,
+                const MovementAgent& agent) {
                 const auto* directive =
                     world.try_get<CombatDirective>(entity);
-                if (!position || !queue || !agent) return;
 
                 dependencies.telemetry.recordNavigationAgent();
-                if (queue->pending.empty() ||
+                if (queue.pending.empty() ||
                     (directive &&
                      directive->mode == CombatMode::AttackTarget)) {
                     return;
                 }
 
-                const auto goal = queue->pending.front().target;
-                if ((position->x == goal.x && position->y == goal.y) ||
+                const auto goal = queue.pending.front().target;
+                if ((position.x == goal.x && position.y == goal.y) ||
                     hasReusableRegularPath(
-                        *agent,
+                        agent,
                         goal,
                         dependencies.navigation.revision())) {
                     return;
@@ -249,8 +242,8 @@ private:
         const MovementAgent& agent,
         GridPoint goal,
         std::uint64_t navigationRevision) noexcept {
-        return !agent.path.empty() && agent.hasPathGoal &&
-               agent.pathGoal == goal &&
+        return (agent.flowFieldPath || !agent.path.empty()) &&
+               agent.hasPathGoal && agent.pathGoal == goal &&
                agent.pathRevision == navigationRevision &&
                !agent.combatPath;
     }
@@ -388,6 +381,20 @@ private:
         agent.pathGoal = goal;
         agent.hasPathGoal = true;
         agent.combatPath = combatPath;
+        agent.flowFieldPath = false;
+    }
+
+    static void assignFlowField(
+        MovementAgent& agent,
+        GridPoint goal) {
+        agent.path.clear();
+        agent.nextPoint = 0;
+        agent.pathGoal = goal;
+        agent.hasPathGoal = true;
+        agent.combatPath = false;
+        agent.flowFieldPath = true;
+        agent.chaseTarget = {};
+        agent.chaseTargetPosition = {};
     }
 
     static void assignPath(
