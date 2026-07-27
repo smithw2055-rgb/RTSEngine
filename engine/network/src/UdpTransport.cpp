@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cstring>
+#include <limits>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -31,9 +33,11 @@ constexpr std::size_t kUdpEnvelopeOverhead = 40u;
 
 #if defined(_WIN32)
 using NativeSocket = SOCKET;
+using SocketLength = int;
 constexpr NativeSocket kInvalidSocket = INVALID_SOCKET;
 #else
 using NativeSocket = int;
+using SocketLength = socklen_t;
 constexpr NativeSocket kInvalidSocket = -1;
 #endif
 
@@ -94,7 +98,7 @@ WinsockRuntime& Winsock() {
 
 struct ResolvedAddress final {
     sockaddr_storage storage{};
-    socklen_t length{};
+    SocketLength length{};
 };
 
 bool ResolveAddress(
@@ -115,11 +119,15 @@ bool ResolveAddress(
     }
     const auto cleanup = [&]() { freeaddrinfo(result); };
     for (auto* current = result; current; current = current->ai_next) {
-        if (current->ai_addrlen > sizeof(output.storage)) continue;
+        if (current->ai_addrlen > sizeof(output.storage) ||
+            current->ai_addrlen > static_cast<decltype(current->ai_addrlen)>(
+                std::numeric_limits<SocketLength>::max())) {
+            continue;
+        }
         std::memcpy(
             &output.storage, current->ai_addr,
             static_cast<std::size_t>(current->ai_addrlen));
-        output.length = static_cast<socklen_t>(current->ai_addrlen);
+        output.length = static_cast<SocketLength>(current->ai_addrlen);
         cleanup();
         return true;
     }
@@ -214,7 +222,7 @@ bool UdpTransport::bind(UdpTransportConfig config) {
     }
 
     sockaddr_storage actual{};
-    socklen_t actualLength = sizeof(actual);
+    SocketLength actualLength = static_cast<SocketLength>(sizeof(actual));
     std::uint16_t port = config.bindAddress.port;
     if (getsockname(
             socket,
@@ -332,7 +340,8 @@ bool UdpTransport::poll(TransportDatagram& datagram) {
     std::vector<std::uint8_t> buffer(
         impl_->config.maximumPayloadBytes + kUdpEnvelopeOverhead);
     sockaddr_storage sourceAddress{};
-    socklen_t sourceLength = sizeof(sourceAddress);
+    SocketLength sourceLength = static_cast<SocketLength>(
+        sizeof(sourceAddress));
     const auto received = recvfrom(
         impl_->socket,
         reinterpret_cast<char*>(buffer.data()),
