@@ -1,4 +1,5 @@
 #include <RTSEngine/Roguelite/RunSimulation.h>
+#include <RTSEngine/Rts/Replay.h>
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/TowerDefense/Simulation.h>
 
@@ -93,6 +94,41 @@ void testRunRejectedTickDoesNotSplitNestedState() {
     require(!simulation.registerRun({1, {1}, {}}));
 }
 
+void testReplayRejectsConflictingDuplicates() {
+    gameplay::TickCommand first;
+    first.targetTick = 4;
+    first.issuer = 1;
+    first.sequence = 9;
+    first.type = gameplay::CommandType::Move;
+    first.subject = {3, 1};
+    first.targetX = 5;
+    first.targetY = 2;
+
+    auto identical = first;
+    gameplay::RtsReplay valid;
+    valid.firstTick = 0;
+    valid.lastTick = 4;
+    valid.commands = {first, identical};
+    require(gameplay::RtsReplayRecorder::normalize(valid));
+    require(valid.commands.size() == 1);
+    require(!gameplay::EncodeRtsReplay(valid).empty());
+
+    auto conflicting = first;
+    conflicting.targetX = 6;
+    gameplay::RtsReplay invalid;
+    invalid.firstTick = 0;
+    invalid.lastTick = 4;
+    invalid.commands = {first, conflicting};
+    require(!gameplay::RtsReplayRecorder::normalize(invalid));
+    require(gameplay::EncodeRtsReplay(invalid).empty());
+
+    gameplay::RtsReplay checkpointConflict;
+    checkpointConflict.firstTick = 2;
+    checkpointConflict.lastTick = 2;
+    checkpointConflict.checkpoints = {{2, 100}, {2, 101}};
+    require(!gameplay::RtsReplayRecorder::normalize(checkpointConflict));
+}
+
 } // namespace
 
 int main() {
@@ -100,6 +136,7 @@ int main() {
     testRtsConfigurationFreezesAfterStart();
     testTowerRejectedTickDoesNotSplitNestedState();
     testRunRejectedTickDoesNotSplitNestedState();
+    testReplayRejectsConflictingDuplicates();
     std::cout << "authoritative session boundary tests passed\n";
     return 0;
 }
