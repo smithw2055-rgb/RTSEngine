@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace rts::gameplay {
@@ -35,6 +36,27 @@ public:
                 1,
                 std::max<std::uint32_t>(1, thinkIntervalTicks),
                 fallbackObjective});
+        return true;
+    }
+
+    bool restore(std::vector<AiTeamState> teams) {
+        std::sort(
+            teams.begin(), teams.end(),
+            [](const AiTeamState& first, const AiTeamState& second) {
+                return first.teamId < second.teamId;
+            });
+        std::uint32_t previousTeam = 0;
+        bool hasPrevious = false;
+        for (const auto& team : teams) {
+            if (team.teamId == 0 || team.nextSequence == 0 ||
+                team.thinkIntervalTicks == 0 ||
+                (hasPrevious && team.teamId <= previousTeam)) {
+                return false;
+            }
+            previousTeam = team.teamId;
+            hasPrevious = true;
+        }
+        teams_ = std::move(teams);
         return true;
     }
 
