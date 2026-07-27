@@ -56,10 +56,10 @@ struct ProductionItem {
     ProductionId id{};
     std::uint32_t unitDefinitionId{};
     std::int32_t reservedCost{};
-    std::uint32_t supplyCost{};
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{1};
     std::uint32_t baseRequiredTicks{1};
+    std::uint32_t supplyCost{};
 };
 
 struct ProductionQueue {
@@ -91,7 +91,12 @@ public:
     BaseBuildingRuntime(
         TeamEconomyRuntime& economies,
         NavigationGrid& navigation)
-        : economies_(economies), navigation_(navigation) {}
+        : economies_(&economies), navigation_(navigation) {}
+
+    BaseBuildingRuntime(
+        ResourceLedger& ledger,
+        NavigationGrid& navigation)
+        : legacyLedger_(&ledger), navigation_(navigation) {}
 
     BuildResult begin(const ecs::SystemContext& context,
                       ecs::EntityCommandBuffer& commands,
@@ -101,7 +106,7 @@ public:
                       GridPoint requiredPathGoal,
                       std::uint32_t ownerTeam = 0,
                       std::uint32_t baseBuildTicks = 0) {
-        if (!valid(definition) || ownerTeam == 0) {
+        if (!valid(definition) || (economies_ && ownerTeam == 0)) {
             return {false, BuildFailure::InvalidDefinition, 0};
         }
 
@@ -112,7 +117,7 @@ public:
         if (placementFailure != BuildFailure::None) {
             return {false, placementFailure, 0};
         }
-        if (!economies_.reserveResources(ownerTeam, definition.cost)) {
+        if (!reserve(ownerTeam, definition.cost)) {
             return {false, BuildFailure::InsufficientResources, 0};
         }
 
@@ -150,7 +155,7 @@ public:
                 BuildingFootprint& footprint) {
                 if (result == BuildFailure::None || site.id != id) return;
                 releaseFootprint(footprint);
-                economies_.releaseResources(site.ownerTeam, site.reservedCost);
+                release(site.ownerTeam, site.reservedCost);
                 commands.destroy(context, entity);
                 result = BuildFailure::None;
             });
@@ -167,7 +172,7 @@ public:
                 ++site.progressTicks;
                 if (site.progressTicks < site.requiredTicks) return;
 
-                economies_.commitResources(site.ownerTeam, site.reservedCost);
+                commit(site.ownerTeam, site.reservedCost);
                 commands.add(
                     context, entity,
                     Building{site.definitionId, site.producer});
@@ -215,8 +220,9 @@ public:
         setBlocked(footprint, false);
     }
 
-    const ResourceLedger& ledger(std::uint32_t teamId) const noexcept {
-        return economies_.resources(teamId);
+    const ResourceLedger& ledger(std::uint32_t teamId = 0) const noexcept {
+        if (legacyLedger_) return *legacyLedger_;
+        return economies_->resources(teamId);
     }
 
     ConstructionId nextConstructionId() const noexcept {
@@ -228,6 +234,24 @@ public:
     }
 
 private:
+    bool reserve(std::uint32_t teamId, std::int32_t amount) {
+        return legacyLedger_
+            ? legacyLedger_->reserve(amount)
+            : economies_->reserveResources(teamId, amount);
+    }
+
+    bool commit(std::uint32_t teamId, std::int32_t amount) {
+        return legacyLedger_
+            ? legacyLedger_->commit(amount)
+            : economies_->commitResources(teamId, amount);
+    }
+
+    bool release(std::uint32_t teamId, std::int32_t amount) {
+        return legacyLedger_
+            ? legacyLedger_->release(amount)
+            : economies_->releaseResources(teamId, amount);
+    }
+
     static bool valid(const BuildingDefinition& definition) noexcept {
         return definition.id != 0 && definition.cost >= 0 &&
                definition.width > 0 && definition.height > 0 &&
@@ -255,7 +279,8 @@ private:
             footprintCells(footprint), blocked);
     }
 
-    TeamEconomyRuntime& economies_;
+    TeamEconomyRuntime* economies_{};
+    ResourceLedger* legacyLedger_{};
     NavigationGrid& navigation_;
     ConstructionId nextConstructionId_{};
 };
