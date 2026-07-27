@@ -44,14 +44,8 @@ public:
           transportChannel_(transportChannel),
           config_(sanitize(config)) {}
 
-    NetworkEndpointId remoteEndpoint() const noexcept {
-        return remoteEndpoint_;
-    }
-
-    NetworkChannelId transportChannel() const noexcept {
-        return transportChannel_;
-    }
-
+    NetworkEndpointId remoteEndpoint() const noexcept { return remoteEndpoint_; }
+    NetworkChannelId transportChannel() const noexcept { return transportChannel_; }
     std::size_t pendingCount() const noexcept { return pending_.size(); }
     const ReliableChannelStats& stats() const noexcept { return stats_; }
 
@@ -61,24 +55,19 @@ public:
             nextSendSequence_ == std::numeric_limits<std::uint64_t>::max()) {
             return false;
         }
-        pending_.push_back(
-            PendingMessage{nextSendSequence_++, std::move(payload), 0, 0});
+        pending_.push_back({nextSendSequence_++, std::move(payload), 0, 0});
         return true;
     }
 
     void flush(INetworkTransport& transport) {
-        if (!transport.open() ||
-            transport.localEndpoint() == 0 ||
-            transport.localEndpoint() == remoteEndpoint_) {
-            return;
-        }
+        if (!transport.open() || transport.localEndpoint() == 0 ||
+            transport.localEndpoint() == remoteEndpoint_) return;
 
         const auto now = transport.nowMs();
         if (ackDirty_) {
             const auto packet = encodePacket(PacketKind::Ack, 0, {});
             if (packet.size() <= transport.maximumPayloadBytes() &&
-                transport.send(
-                    remoteEndpoint_, transportChannel_, packet) ==
+                transport.send(remoteEndpoint_, transportChannel_, packet) ==
                     TransportSendResult::Accepted) {
                 ++stats_.packetsSent;
                 ackDirty_ = false;
@@ -89,16 +78,14 @@ public:
             const bool first = message.attempts == 0;
             const bool due = first ||
                 now >= message.lastSentAtMs + config_.resendIntervalMs;
-            if (!due) continue;
-            if (message.attempts >= config_.maximumAttempts) continue;
+            if (!due || message.attempts >= config_.maximumAttempts) continue;
             const auto packet = encodePacket(
                 PacketKind::Data, message.sequence, message.payload);
             if (packet.size() > transport.maximumPayloadBytes()) {
                 message.attempts = config_.maximumAttempts;
                 continue;
             }
-            if (transport.send(
-                    remoteEndpoint_, transportChannel_, packet) ==
+            if (transport.send(remoteEndpoint_, transportChannel_, packet) ==
                 TransportSendResult::Accepted) {
                 message.lastSentAtMs = now;
                 ++message.attempts;
@@ -126,23 +113,37 @@ public:
         const TransportDatagram& datagram,
         std::vector<ReliableMessage>& delivered) {
         if (datagram.source != remoteEndpoint_ ||
-            datagram.channel != transportChannel_) {
-            return false;
-        }
+            datagram.channel != transportChannel_) return false;
 
         Packet packet;
         if (!decodePacket(datagram.payload, packet)) return false;
         ++stats_.packetsReceived;
         acknowledge(packet.acknowledgement, packet.acknowledgementBits);
-
         if (packet.kind == PacketKind::Ack) return true;
+
         ackDirty_ = true;
-        if (!markReceived(packet.sequence)) {
+        if (packet.sequence < nextDeliverSequence_ ||
+            !markReceived(packet.sequence)) {
             ++stats_.duplicatesSuppressed;
             return true;
         }
-        delivered.push_back(
-            {datagram.source, packet.sequence, std::move(packet.payload)});
+        const auto found = std::lower_bound(
+            buffered_.begin(), buffered_.end(), packet.sequence,
+            [](const BufferedMessage& value, std::uint64_t sequence) {
+                return value.sequence < sequence;
+            });
+        buffered_.insert(
+            found,
+            BufferedMessage{packet.sequence, std::move(packet.payload)});
+        while (!buffered_.empty() &&
+               buffered_.front().sequence == nextDeliverSequence_) {
+            delivered.push_back(
+                {datagram.source,
+                 buffered_.front().sequence,
+                 std::move(buffered_.front().payload)});
+            buffered_.erase(buffered_.begin());
+            ++nextDeliverSequence_;
+        }
         return true;
     }
 
@@ -150,16 +151,18 @@ private:
     static constexpr std::uint32_t kMagic = 0x314C4552u;
     static constexpr std::uint16_t kVersion = 1u;
 
-    enum class PacketKind : std::uint8_t {
-        Data,
-        Ack
-    };
+    enum class PacketKind : std::uint8_t { Data, Ack };
 
     struct PendingMessage final {
         std::uint64_t sequence{};
         std::vector<std::uint8_t> payload;
         std::uint64_t lastSentAtMs{};
         std::uint32_t attempts{};
+    };
+
+    struct BufferedMessage final {
+        std::uint64_t sequence{};
+        std::vector<std::uint8_t> payload;
     };
 
     struct Packet final {
@@ -171,14 +174,10 @@ private:
     };
 
     static ReliableChannelConfig sanitize(ReliableChannelConfig value) noexcept {
-        value.resendIntervalMs = std::max<std::uint32_t>(
-            1u, value.resendIntervalMs);
-        value.maximumAttempts = std::max<std::uint32_t>(
-            1u, value.maximumAttempts);
-        value.maximumInFlight = std::max<std::size_t>(
-            1u, value.maximumInFlight);
-        value.maximumMessageBytes = std::max<std::size_t>(
-            1u, value.maximumMessageBytes);
+        value.resendIntervalMs = std::max<std::uint32_t>(1u, value.resendIntervalMs);
+        value.maximumAttempts = std::max<std::uint32_t>(1u, value.maximumAttempts);
+        value.maximumInFlight = std::max<std::size_t>(1u, value.maximumInFlight);
+        value.maximumMessageBytes = std::max<std::size_t>(1u, value.maximumMessageBytes);
         return value;
     }
 
@@ -208,10 +207,8 @@ private:
         std::uint8_t rawKind = 0;
         std::uint8_t reserved = 0;
         std::uint32_t payloadBytes = 0;
-        if (!reader.readU32(magic) ||
-            !reader.readU16(version) ||
-            !reader.readU8(rawKind) ||
-            !reader.readU8(reserved) ||
+        if (!reader.readU32(magic) || !reader.readU16(version) ||
+            !reader.readU8(rawKind) || !reader.readU8(reserved) ||
             !reader.readU64(packet.sequence) ||
             !reader.readU64(packet.acknowledgement) ||
             !reader.readU64(packet.acknowledgementBits) ||
@@ -221,9 +218,7 @@ private:
             payloadBytes > config_.maximumMessageBytes ||
             !reader.readBytes(
                 payloadBytes, packet.payload, config_.maximumMessageBytes) ||
-            !reader.atEnd()) {
-            return false;
-        }
+            !reader.atEnd()) return false;
         packet.kind = static_cast<PacketKind>(rawKind);
         return packet.kind == PacketKind::Data
             ? packet.sequence != 0
@@ -257,18 +252,13 @@ private:
         if (sequence == highestReceived_) return false;
         if (sequence > highestReceived_) {
             const auto distance = sequence - highestReceived_;
-            if (distance >= 64u) {
-                receivedBits_ = 0;
-            } else {
-                receivedBits_ <<= distance;
-            }
+            receivedBits_ = distance >= 64u ? 0u : receivedBits_ << distance;
             if (distance <= 64u) {
                 receivedBits_ |= std::uint64_t{1} << (distance - 1u);
             }
             highestReceived_ = sequence;
             return true;
         }
-
         const auto distance = highestReceived_ - sequence;
         if (distance == 0 || distance > 64u) return false;
         const auto mask = std::uint64_t{1} << (distance - 1u);
@@ -281,8 +271,10 @@ private:
     NetworkChannelId transportChannel_{};
     ReliableChannelConfig config_;
     std::vector<PendingMessage> pending_;
+    std::vector<BufferedMessage> buffered_;
     ReliableChannelStats stats_;
     std::uint64_t nextSendSequence_{1};
+    std::uint64_t nextDeliverSequence_{1};
     std::uint64_t highestReceived_{};
     std::uint64_t receivedBits_{};
     bool ackDirty_{};
