@@ -217,11 +217,11 @@ void testSupplyProviderAndSessionArchive() {
     const auto worker = session.createUnitDefinition(10, {2, 2}, 1);
     require(!worker.valid());
 
-    const auto bytes = EncodeRtsGameSession(session);
+    const auto bytes = RtsGameSessionArchive::encode(session);
     require(!bytes.empty());
     RtsGameSession restored(16, 8);
     registerHarvestContent(restored);
-    require(DecodeRtsGameSession(bytes, restored));
+    require(RtsGameSessionArchive::decode(bytes, restored));
     require(restored.supplyCapacity(1) == 2);
     require(RtsGameSessionArchive::authoritativeHash(session) ==
             RtsGameSessionArchive::authoritativeHash(restored));
