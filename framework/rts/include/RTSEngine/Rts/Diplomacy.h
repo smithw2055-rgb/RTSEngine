@@ -84,6 +84,9 @@ public:
     }
 
 private:
+    using Iterator = std::vector<DiplomaticRelationEntry>::iterator;
+    using ConstIterator = std::vector<DiplomaticRelationEntry>::const_iterator;
+
     static void normalize(
         std::uint32_t& firstTeam,
         std::uint32_t& secondTeam) noexcept {
@@ -98,7 +101,7 @@ private:
                 left.secondTeam < right.secondTeam);
     }
 
-    auto lowerBound(
+    Iterator lowerBound(
         std::uint32_t firstTeam,
         std::uint32_t secondTeam) noexcept {
         return std::lower_bound(
@@ -107,7 +110,7 @@ private:
             lessEntry);
     }
 
-    auto lowerBound(
+    ConstIterator lowerBound(
         std::uint32_t firstTeam,
         std::uint32_t secondTeam) const noexcept {
         return std::lower_bound(
