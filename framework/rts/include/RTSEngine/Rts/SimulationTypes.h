@@ -22,6 +22,10 @@ struct MoveSpeed {
     std::int32_t cellsPerTick{1};
 };
 
+struct UnitSupply final {
+    std::uint32_t amount{};
+};
+
 enum class OrderType : std::uint8_t {
     Move,
     AttackMove
@@ -66,6 +70,7 @@ struct UnitDefinition {
     std::int32_t cellsPerTick{1};
     CombatStats combat{};
     std::int32_t visionRange{6};
+    std::uint32_t supplyCost{1};
 };
 
 enum class CommandType : std::uint8_t {
@@ -105,7 +110,10 @@ enum class CommandRejectionReason : std::uint32_t {
     InvalidTarget,
     TargetNotVisible,
     InvalidDefinition,
-    InsufficientResources
+    InsufficientResources,
+    SupplyBlocked,
+    QueueFull,
+    UnsupportedUnit
 };
 
 enum class DomainEventType : std::uint8_t {
@@ -176,6 +184,7 @@ struct SnapshotEntity {
     std::uint32_t movementBlockedTicks{};
     std::uint32_t movementYieldOrdinal{};
     std::int32_t visionRange{};
+    std::uint32_t supplyCost{};
 };
 
 struct TeamVisibilitySnapshot final {
@@ -203,6 +212,7 @@ struct WorldSnapshot {
     std::uint64_t tick{};
     std::uint64_t worldHash{};
     ResourceLedger resources{};
+    std::vector<TeamEconomySnapshot> teamEconomies;
     std::uint64_t commandCommittedThrough{};
     std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
