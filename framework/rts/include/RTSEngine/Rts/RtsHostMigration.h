@@ -16,6 +16,12 @@
 
 namespace rts::gameplay {
 
+inline bool operator!=(
+    const RtsNetworkContentIdentity& first,
+    const RtsNetworkContentIdentity& second) noexcept {
+    return !(first == second);
+}
+
 struct RtsHostCandidate final {
     sim::LockstepPeerId peerId{};
     network::NetworkEndpointId endpoint{};
