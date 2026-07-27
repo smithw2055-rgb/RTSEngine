@@ -3,9 +3,11 @@
 #include <RTSEngine/Ecs/WorldArchive.h>
 #include <RTSEngine/Rts/AuthoritativeStateHash.h>
 #include <RTSEngine/Rts/Replay.h>
+#include <RTSEngine/Rts/ResearchStateHash.h>
 #include <RTSEngine/Rts/RtsComponentSchemas.h>
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/Rts/TeamEconomyComponentSchemas.h>
+#include <RTSEngine/Rts/TechTreeComponentSchemas.h>
 #include <RTSEngine/Rts/VisionComponentSchema.h>
 #include <rts/foundation/CanonicalHash.h>
 #include <rts/sim/SessionSchema.h>
@@ -21,12 +23,14 @@ namespace rts::gameplay {
 class RtsSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31535452u;
-    static constexpr std::uint16_t kVersion = 4u;
+    static constexpr std::uint16_t kVersion = 5u;
     static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumWorldBytes =
         128u * 1024u * 1024u;
     static constexpr std::uint32_t kMaximumModifierEntries = 4096u;
     static constexpr std::uint32_t kMaximumEconomyEntries = 65536u;
+    static constexpr std::uint32_t kMaximumTechTeams = 4096u;
+    static constexpr std::uint32_t kMaximumCompletedResearch = 65536u;
 
     static std::uint64_t authoritativeHash(
         const RtsSimulation& simulation) {
@@ -39,7 +43,6 @@ public:
 
         ecs::ComponentSchemaRegistry schemas;
         if (!registerSchemas(schemas)) return {};
-
         foundation::BinaryWriter worldWriter;
         if (!ecs::WorldArchive::write(
                 worldWriter, simulation.world_, schemas) ||
@@ -52,7 +55,8 @@ public:
             simulation.modifiers_.entries().size() >
                 kMaximumModifierEntries ||
             simulation.economy_.entries().size() >
-                kMaximumEconomyEntries) {
+                kMaximumEconomyEntries ||
+            simulation.tech_.states().size() > kMaximumTechTeams) {
             return {};
         }
 
@@ -79,6 +83,16 @@ public:
         }
 
         writer.writeU32(static_cast<std::uint32_t>(
+            simulation.tech_.states().size()));
+        for (const auto& state : simulation.tech_.states()) {
+            if (state.completed.size() > kMaximumCompletedResearch) return {};
+            writer.writeU32(state.teamId);
+            writer.writeU32(static_cast<std::uint32_t>(
+                state.completed.size()));
+            for (const auto id : state.completed) writer.writeU32(id);
+        }
+
+        writer.writeU32(static_cast<std::uint32_t>(
             simulation.modifiers_.entries().size()));
         for (const auto& entry : simulation.modifiers_.entries()) {
             writer.writeU32(entry.teamId);
@@ -97,6 +111,7 @@ public:
         writer.writeU32(simulation.building_.nextConstructionId());
         writer.writeU32(simulation.nextProductionId_);
         writer.writeU32(simulation.nextResourceNodeId_);
+        writer.writeU32(simulation.nextResearchId_);
         writer.writeU32(simulation.playerTeamId_);
         writer.writeU64(simulation.lastCompletedTick_);
         writer.writeBool(simulation.hasStepped_);
@@ -189,9 +204,7 @@ public:
                 account.reserved = static_cast<ResourceAmount>(reserved);
                 account.spent = static_cast<ResourceAmount>(spent);
             }
-            if (!economyCandidate.restore(std::move(accounts))) {
-                return false;
-            }
+            if (!economyCandidate.restore(std::move(accounts))) return false;
         } else if (!reader.readI32(legacyResources.available) ||
                    !reader.readI32(legacyResources.reserved) ||
                    !reader.readI32(legacyResources.spent) ||
@@ -199,6 +212,32 @@ public:
                    legacyResources.reserved < 0 ||
                    legacyResources.spent < 0) {
             return false;
+        }
+
+        TechTreeRuntime techCandidate;
+        if (version >= 5u) {
+            std::uint32_t teamCount = 0;
+            std::vector<TeamTechState> states;
+            if (!reader.readU32(teamCount) || teamCount > kMaximumTechTeams) {
+                return false;
+            }
+            states.resize(teamCount);
+            for (auto& state : states) {
+                std::uint32_t completedCount = 0;
+                if (!reader.readU32(state.teamId) ||
+                    !reader.readU32(completedCount) ||
+                    completedCount > kMaximumCompletedResearch) {
+                    return false;
+                }
+                state.completed.resize(completedCount);
+                for (auto& id : state.completed) {
+                    if (!reader.readU32(id) ||
+                        !simulation.researchDefinitions_.find(id)) {
+                        return false;
+                    }
+                }
+            }
+            if (!techCandidate.restore(std::move(states))) return false;
         }
 
         std::vector<TeamModifierEntry> modifierEntries;
@@ -235,15 +274,14 @@ public:
             }
         }
         TickCommandStream commandCandidate;
-        if (!commandCandidate.restore(std::move(commandState))) {
-            return false;
-        }
+        if (!commandCandidate.restore(std::move(commandState))) return false;
 
         GridPoint requiredStart;
         GridPoint requiredGoal;
         ConstructionId nextConstructionId = 0;
         ProductionId nextProductionId = 0;
         std::uint32_t nextResourceNodeId = 0;
+        ResearchQueueId nextResearchId = 0;
         std::uint32_t playerTeamId = 0;
         std::uint64_t lastCompletedTick = 0;
         bool hasStepped = false;
@@ -252,8 +290,8 @@ public:
             !readGridPoint(reader, requiredGoal) ||
             !reader.readU32(nextConstructionId) ||
             !reader.readU32(nextProductionId) ||
-            (version >= 4u &&
-             !reader.readU32(nextResourceNodeId)) ||
+            (version >= 4u && !reader.readU32(nextResourceNodeId)) ||
+            (version >= 5u && !reader.readU32(nextResearchId)) ||
             !reader.readU32(playerTeamId) ||
             !reader.readU64(lastCompletedTick) ||
             !reader.readBool(hasStepped) ||
@@ -295,9 +333,12 @@ public:
                 worldCandidate,
                 navigationCandidate,
                 economyCandidate,
+                techCandidate,
+                simulation.researchDefinitions_,
                 nextConstructionId,
                 nextProductionId,
                 nextResourceNodeId,
+                nextResearchId,
                 version)) {
             return false;
         }
@@ -324,6 +365,7 @@ public:
                  snapshotCandidate,
                  version >= 2u ? &visionCandidate : nullptr,
                  version});
+            snapshotCandidate.teamTech = techCandidate.states();
             snapshotCandidate.worldHash = FinalizeRtsAuthoritativeWorldHash(
                 snapshotCandidate.worldHash,
                 worldCandidate.entityRegistryHash(),
@@ -333,16 +375,18 @@ public:
                 nextProductionId,
                 playerTeamId,
                 version,
-                nextResourceNodeId);
-            if (snapshotCandidate.worldHash != storedWorldHash) {
-                return false;
-            }
+                nextResourceNodeId,
+                nextResearchId,
+                version >= 5u ? HashTechTreeState(techCandidate) : 0u,
+                version >= 5u ? HashResearchQueueState(worldCandidate) : 0u);
+            if (snapshotCandidate.worldHash != storedWorldHash) return false;
         }
 
         simulation.world_ = std::move(worldCandidate);
         simulation.navigation_ = std::move(navigationCandidate);
         simulation.vision_ = std::move(visionCandidate);
         simulation.economy_ = std::move(economyCandidate);
+        simulation.tech_ = std::move(techCandidate);
         simulation.modifiers_ = std::move(modifiersCandidate);
         simulation.commands_ = std::move(commandCandidate);
         simulation.requiredPathStart_ = requiredStart;
@@ -350,6 +394,7 @@ public:
         simulation.building_.restoreNextConstructionId(nextConstructionId);
         simulation.nextProductionId_ = nextProductionId;
         simulation.nextResourceNodeId_ = nextResourceNodeId;
+        simulation.nextResearchId_ = nextResearchId;
         simulation.playerTeamId_ = playerTeamId;
         simulation.lastCompletedTick_ = lastCompletedTick;
         simulation.hasStepped_ = hasStepped;
@@ -360,20 +405,21 @@ public:
         simulation.events_.clear();
         simulation.deathSideEffects_.clear();
         simulation.influence_.clear();
-        simulation.influenceWorldHash_ =
-            RtsSimulation::kInvalidDerivedHash;
+        simulation.influenceWorldHash_ = RtsSimulation::kInvalidDerivedHash;
         return true;
     }
 
 private:
-    struct TeamReservedAmount final {
+    struct ReservedAmount final {
         std::uint32_t teamId{};
+        ResourceTypeId resourceType{};
         ResourceAmount amount{};
     };
 
     static bool registerSchemas(
         ecs::ComponentSchemaRegistry& schemas) {
         return RegisterTeamEconomyComponentSchemas(schemas) &&
+               RegisterTechTreeComponentSchemas(schemas) &&
                RegisterVisionComponentSchema(schemas) &&
                RegisterRtsComponentSchemas(schemas);
     }
@@ -401,7 +447,10 @@ private:
             simulation.nextProductionId_,
             simulation.playerTeamId_,
             kVersion,
-            simulation.nextResourceNodeId_);
+            simulation.nextResourceNodeId_,
+            simulation.nextResearchId_,
+            HashTechTreeState(simulation.tech_),
+            HashResearchQueueState(simulation.world_));
     }
 
     static void writeGridPoint(
@@ -459,6 +508,20 @@ private:
         hash.WriteI32(value.bounty);
     }
 
+    static void hashDelta(
+        foundation::CanonicalHash& hash,
+        const TeamModifierDelta& value) {
+        hash.WriteI32(value.unitHealth);
+        hash.WriteI32(value.unitDamage);
+        hash.WriteI32(value.unitArmorAdd);
+        hash.WriteI32(value.unitMoveSpeed);
+        hash.WriteI32(value.buildingHealth);
+        hash.WriteI32(value.buildingDamage);
+        hash.WriteI32(value.constructionSpeed);
+        hash.WriteI32(value.productionSpeed);
+        hash.WriteI32(value.bountyMultiplier);
+    }
+
     static std::uint64_t contentHash(
         const RtsSimulation& simulation,
         std::uint16_t version) {
@@ -474,9 +537,7 @@ private:
             hash.WriteI32(definition.height);
             hash.WriteBool(definition.producer);
             hashCombatStats(hash, definition.combat);
-            if (version >= 2u) {
-                hash.WriteI32(definition.visionRange);
-            }
+            if (version >= 2u) hash.WriteI32(definition.visionRange);
             if (version >= 4u) {
                 hash.WriteU32(definition.dropOffResourceType);
                 hash.WriteU32(definition.supplyProvided);
@@ -491,9 +552,7 @@ private:
             hash.WriteU32(definition.trainTicks);
             hash.WriteI32(definition.cellsPerTick);
             hashCombatStats(hash, definition.combat);
-            if (version >= 2u) {
-                hash.WriteI32(definition.visionRange);
-            }
+            if (version >= 2u) hash.WriteI32(definition.visionRange);
             if (version >= 4u) {
                 hash.WriteBool(definition.worker);
                 hash.WriteU64(static_cast<std::uint64_t>(
@@ -503,34 +562,64 @@ private:
                 hash.WriteU32(definition.harvestTicks);
             }
         }
+        if (version >= 5u) {
+            hash.WriteU32(static_cast<std::uint32_t>(
+                simulation.researchDefinitions_.values().size()));
+            for (const auto& definition :
+                 simulation.researchDefinitions_.values()) {
+                hash.WriteU32(definition.id);
+                hash.WriteU32(definition.researchTicks);
+                hash.WriteU32(static_cast<std::uint32_t>(
+                    definition.costs.size()));
+                for (const auto& cost : definition.costs) {
+                    hash.WriteU32(cost.resourceType);
+                    hash.WriteU64(static_cast<std::uint64_t>(cost.amount));
+                }
+                PrerequisiteCatalog::appendPrerequisites(
+                    hash, definition.prerequisites);
+                hashDelta(hash, definition.modifiers);
+            }
+            simulation.buildingPrerequisites_.appendHash(hash);
+            simulation.unitPrerequisites_.appendHash(hash);
+        }
         return hash.Value();
     }
 
     static void addReserved(
-        std::vector<TeamReservedAmount>& values,
+        std::vector<ReservedAmount>& values,
         std::uint32_t teamId,
+        ResourceTypeId resourceType,
         ResourceAmount amount) {
         const auto found = std::lower_bound(
-            values.begin(), values.end(), teamId,
-            [](const TeamReservedAmount& value, std::uint32_t id) {
-                return value.teamId < id;
+            values.begin(), values.end(),
+            ReservedAmount{teamId, resourceType, 0},
+            [](const ReservedAmount& first, const ReservedAmount& second) {
+                return first.teamId < second.teamId ||
+                       (first.teamId == second.teamId &&
+                        first.resourceType < second.resourceType);
             });
-        if (found != values.end() && found->teamId == teamId) {
+        if (found != values.end() && found->teamId == teamId &&
+            found->resourceType == resourceType) {
             found->amount += amount;
         } else {
-            values.insert(found, {teamId, amount});
+            values.insert(found, {teamId, resourceType, amount});
         }
     }
 
     static ResourceAmount expectedReserved(
-        const std::vector<TeamReservedAmount>& values,
-        std::uint32_t teamId) {
+        const std::vector<ReservedAmount>& values,
+        std::uint32_t teamId,
+        ResourceTypeId resourceType) {
         const auto found = std::lower_bound(
-            values.begin(), values.end(), teamId,
-            [](const TeamReservedAmount& value, std::uint32_t id) {
-                return value.teamId < id;
+            values.begin(), values.end(),
+            ReservedAmount{teamId, resourceType, 0},
+            [](const ReservedAmount& first, const ReservedAmount& second) {
+                return first.teamId < second.teamId ||
+                       (first.teamId == second.teamId &&
+                        first.resourceType < second.resourceType);
             });
-        return found != values.end() && found->teamId == teamId
+        return found != values.end() && found->teamId == teamId &&
+               found->resourceType == resourceType
             ? found->amount
             : 0;
     }
@@ -539,26 +628,32 @@ private:
         const ecs::World& world,
         const NavigationGrid& navigation,
         const TeamEconomyRuntime& economy,
+        const TechTreeRuntime& tech,
+        const DefinitionCatalog<ResearchDefinition>& researchDefinitions,
         ConstructionId nextConstructionId,
         ProductionId nextProductionId,
         std::uint32_t nextResourceNodeId,
+        ResearchQueueId nextResearchId,
         std::uint16_t compatibilityVersion) {
         ResourceAmount totalReserved = 0;
         ConstructionId maximumConstructionId = 0;
         ProductionId maximumProductionId = 0;
         std::uint32_t maximumResourceNodeId = 0;
-        std::vector<TeamReservedAmount> reservedByTeam;
+        ResearchQueueId maximumResearchId = 0;
+        std::vector<ReservedAmount> reserved;
         std::vector<std::uint32_t> resourceNodeIds;
 
         for (const auto entity : world.view<ConstructionSite>()) {
             const auto* site = world.try_get<ConstructionSite>(entity);
-            if (!site || site->ownerTeam == 0 ||
-                site->reservedCost < 0) {
+            if (!site || site->ownerTeam == 0 || site->reservedCost < 0) {
                 return false;
             }
             totalReserved += site->reservedCost;
             addReserved(
-                reservedByTeam, site->ownerTeam, site->reservedCost);
+                reserved,
+                site->ownerTeam,
+                kPrimaryResourceType,
+                site->reservedCost);
             maximumConstructionId = std::max(
                 maximumConstructionId, site->id);
         }
@@ -572,27 +667,63 @@ private:
                 }
                 totalReserved += item.reservedCost;
                 addReserved(
-                    reservedByTeam, team->id, item.reservedCost);
+                    reserved,
+                    team->id,
+                    kPrimaryResourceType,
+                    item.reservedCost);
                 maximumProductionId = std::max(
                     maximumProductionId, item.id);
             }
         }
+        if (compatibilityVersion >= 5u) {
+            for (const auto entity : world.view<ResearchQueue>()) {
+                const auto* queue = world.try_get<ResearchQueue>(entity);
+                const auto* team = world.try_get<Team>(entity);
+                if (!queue || (!queue->items.empty() && !team)) return false;
+                for (const auto& item : queue->items) {
+                    if (!team || team->id == 0 || item.id == 0 ||
+                        item.researchDefinitionId == 0 ||
+                        !researchDefinitions.find(
+                            item.researchDefinitionId) ||
+                        tech.completed(team->id, item.researchDefinitionId) ||
+                        !ValidateResourceCosts(item.reservedCosts)) {
+                        return false;
+                    }
+                    maximumResearchId = std::max(
+                        maximumResearchId, item.id);
+                    for (const auto& cost : item.reservedCosts) {
+                        totalReserved += cost.amount;
+                        addReserved(
+                            reserved,
+                            team->id,
+                            cost.resourceType,
+                            cost.amount);
+                    }
+                }
+            }
+        }
 
         if (nextConstructionId < maximumConstructionId ||
-            nextProductionId < maximumProductionId) {
+            nextProductionId < maximumProductionId ||
+            nextResearchId < maximumResearchId) {
             return false;
         }
 
         ResourceAmount economyReserved = 0;
         for (const auto& account : economy.entries()) {
             economyReserved += account.reserved;
-            if (compatibilityVersion >= 4u &&
-                account.resourceType == kPrimaryResourceType &&
+            if (compatibilityVersion >= 5u &&
                 account.reserved != expectedReserved(
-                    reservedByTeam, account.teamId)) {
+                    reserved, account.teamId, account.resourceType)) {
                 return false;
             }
-            if (compatibilityVersion >= 4u &&
+            if (compatibilityVersion == 4u &&
+                account.resourceType == kPrimaryResourceType &&
+                account.reserved != expectedReserved(
+                    reserved, account.teamId, kPrimaryResourceType)) {
+                return false;
+            }
+            if (compatibilityVersion == 4u &&
                 account.resourceType != kPrimaryResourceType &&
                 account.reserved != 0) {
                 return false;
@@ -600,10 +731,9 @@ private:
         }
         if (economyReserved != totalReserved) return false;
         if (compatibilityVersion >= 4u) {
-            for (const auto& value : reservedByTeam) {
+            for (const auto& value : reserved) {
                 if (economy.reserved(
-                        value.teamId,
-                        kPrimaryResourceType) != value.amount) {
+                        value.teamId, value.resourceType) != value.amount) {
                     return false;
                 }
             }
@@ -630,15 +760,12 @@ private:
             const auto* dropOff = world.try_get<ResourceDropOff>(entity);
             const auto* team = world.try_get<Team>(entity);
             if (!dropOff || !team || team->id == 0 ||
-                !navigation.contains(
-                    {dropOff->accessX, dropOff->accessY}) ||
-                navigation.blocked(
-                    {dropOff->accessX, dropOff->accessY})) {
+                !navigation.contains({dropOff->accessX, dropOff->accessY}) ||
+                navigation.blocked({dropOff->accessX, dropOff->accessY})) {
                 return false;
             }
         }
-        for (const auto entity :
-             world.view<ConstructionEconomyFeatures>()) {
+        for (const auto entity : world.view<ConstructionEconomyFeatures>()) {
             const auto* features =
                 world.try_get<ConstructionEconomyFeatures>(entity);
             if (!features) return false;
@@ -682,7 +809,6 @@ private:
                 return false;
             }
         }
-
         for (const auto entity : world.view<OrderQueue>()) {
             const auto* queue = world.try_get<OrderQueue>(entity);
             if (!queue) return false;
@@ -692,9 +818,7 @@ private:
         }
         for (const auto entity : world.view<MovementAgent>()) {
             const auto* agent = world.try_get<MovementAgent>(entity);
-            if (!agent || agent->nextPoint > agent->path.size()) {
-                return false;
-            }
+            if (!agent || agent->nextPoint > agent->path.size()) return false;
             for (const auto point : agent->path) {
                 if (!navigation.contains(point)) return false;
             }
