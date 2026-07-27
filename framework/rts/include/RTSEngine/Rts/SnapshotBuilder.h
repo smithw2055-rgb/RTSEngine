@@ -21,6 +21,7 @@ struct SnapshotBuilderDependencies {
     const TickCommandStream& commands;
     WorldSnapshot& snapshot;
     const VisionRuntime* vision{};
+    std::uint16_t schemaVersion{4u};
 };
 
 class SnapshotBuilder final {
@@ -51,7 +52,15 @@ public:
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
-        dependencies.economies.appendHash(hash);
+        if (dependencies.schemaVersion >= 4u) {
+            dependencies.economies.appendHash(hash);
+        } else {
+            const auto& resources = dependencies.economies.resources(
+                dependencies.playerTeamId);
+            hash.WriteI32(resources.available);
+            hash.WriteI32(resources.reserved);
+            hash.WriteI32(resources.spent);
+        }
         dependencies.modifiers.appendHash(hash);
         hash.WriteU64(dependencies.commands.committedThrough());
         hash.WriteU32(static_cast<std::uint32_t>(
@@ -69,9 +78,24 @@ public:
         }
 
         const bool includeVision = dependencies.vision != nullptr;
-        appendUnits(world, hash, snapshot, includeVision);
-        appendConstruction(world, hash, snapshot, includeVision);
-        appendBuildings(world, hash, snapshot, includeVision);
+        appendUnits(
+            world,
+            hash,
+            snapshot,
+            includeVision,
+            dependencies.schemaVersion);
+        appendConstruction(
+            world,
+            hash,
+            snapshot,
+            includeVision,
+            dependencies.schemaVersion);
+        appendBuildings(
+            world,
+            hash,
+            snapshot,
+            includeVision,
+            dependencies.schemaVersion);
 
         std::sort(
             snapshot.entities.begin(),
@@ -141,14 +165,17 @@ private:
     static void hashCombat(
         foundation::CanonicalHash& hash,
         const ecs::World& world,
-        ecs::Entity entity) {
+        ecs::Entity entity,
+        std::uint16_t schemaVersion) {
         const auto* team = world.try_get<Team>(entity);
         hash.WriteBool(team != nullptr);
         if (team) hash.WriteU32(team->id);
 
-        const auto* supply = world.try_get<UnitSupply>(entity);
-        hash.WriteBool(supply != nullptr);
-        if (supply) hash.WriteU32(supply->amount);
+        if (schemaVersion >= 4u) {
+            const auto* supply = world.try_get<UnitSupply>(entity);
+            hash.WriteBool(supply != nullptr);
+            if (supply) hash.WriteU32(supply->amount);
+        }
 
         const auto* health = world.try_get<Health>(entity);
         hash.WriteBool(health != nullptr);
@@ -225,7 +252,8 @@ private:
         const OrderQueue& queue,
         const MovementAgent& agent,
         bool moving,
-        bool includeVision) {
+        bool includeVision,
+        std::uint16_t schemaVersion) {
         hashEntity(hash, entity);
         hash.WriteI32(position.x);
         hash.WriteI32(position.y);
@@ -247,13 +275,12 @@ private:
         hash.WriteI32(agent.pathGoal.y);
         hash.WriteBool(agent.hasPathGoal);
         hash.WriteBool(agent.combatPath);
-        hash.WriteBool(agent.flowFieldPath);
         hashEntity(hash, agent.chaseTarget);
         hash.WriteI32(agent.chaseTargetPosition.x);
         hash.WriteI32(agent.chaseTargetPosition.y);
         hash.WriteU32(agent.blockedTicks);
         hash.WriteU32(agent.yieldOrdinal);
-        hashCombat(hash, world, entity);
+        hashCombat(hash, world, entity, schemaVersion);
         if (includeVision) hashVision(hash, world, entity);
     }
 
@@ -261,7 +288,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        std::uint16_t schemaVersion) {
         world.eachRef<Position, OrderQueue, MovementAgent>(
             [&](ecs::Entity entity,
                 const Position& position,
@@ -295,7 +323,8 @@ private:
                     queue,
                     agent,
                     moving,
-                    includeVision);
+                    includeVision,
+                    schemaVersion);
             });
     }
 
@@ -303,7 +332,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        std::uint16_t schemaVersion) {
         world.eachRef<ConstructionSite, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const ConstructionSite& site,
@@ -331,7 +361,7 @@ private:
                 hash.WriteBool(site.producer);
                 hash.WriteU32(site.ownerTeam);
                 hashFootprint(hash, footprint);
-                hashCombat(hash, world, entity);
+                hashCombat(hash, world, entity, schemaVersion);
                 if (includeVision) hashVision(hash, world, entity);
             });
     }
@@ -340,7 +370,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        std::uint16_t schemaVersion) {
         world.eachRef<Building, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const Building& building,
@@ -372,7 +403,9 @@ private:
                         hash.WriteU32(item.id);
                         hash.WriteU32(item.unitDefinitionId);
                         hash.WriteI32(item.reservedCost);
-                        hash.WriteU32(item.supplyCost);
+                        if (schemaVersion >= 4u) {
+                            hash.WriteU32(item.supplyCost);
+                        }
                         hash.WriteU32(item.progressTicks);
                         hash.WriteU32(item.requiredTicks);
                         hash.WriteU32(item.baseRequiredTicks);
@@ -384,7 +417,7 @@ private:
                     hash.WriteI32(rally->point.x);
                     hash.WriteI32(rally->point.y);
                 }
-                hashCombat(hash, world, entity);
+                hashCombat(hash, world, entity, schemaVersion);
                 if (includeVision) hashVision(hash, world, entity);
             });
     }
