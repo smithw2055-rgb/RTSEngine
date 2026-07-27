@@ -3,6 +3,8 @@
 #include <RTSEngine/Network/LoopbackTransport.h>
 #include <RTSEngine/Rts/RtsMultiplayerRuntime.h>
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <utility>
 #include <vector>
@@ -96,34 +98,33 @@ public:
     bool advanceTick(
         std::vector<gameplay::TickCommand> hostCommands = {},
         std::vector<gameplay::TickCommand> clientCommands = {}) {
-        if (!started_ ||
+        if (!started_ || !host_.lockstep() || !client_.lockstep() ||
             !host_.submitLocal(std::move(hostCommands)) ||
             !client_.submitLocal(std::move(clientCommands))) {
             return false;
         }
 
+        const auto hostStart = host_.lockstep()->coordinator().simulatedThrough();
+        const auto clientStart =
+            client_.lockstep()->coordinator().simulatedThrough();
+        if (hostStart != clientStart ||
+            hostStart == std::numeric_limits<std::uint64_t>::max()) {
+            return false;
+        }
+        const auto targetNextTick = hostStart + 1u;
+
         for (std::uint32_t attempt = 0; attempt < 5000u; ++attempt) {
             pump(1u);
-            const auto hostResult = host_.advanceOne();
-            const auto clientResult = client_.advanceOne();
-            const bool hostAdvanced =
-                hostResult == gameplay::RtsLockstepAdvanceResult::Advanced ||
-                hostResult ==
-                    gameplay::RtsLockstepAdvanceResult::AdvancedAfterRollback;
-            const bool clientAdvanced =
-                clientResult == gameplay::RtsLockstepAdvanceResult::Advanced ||
-                clientResult ==
-                    gameplay::RtsLockstepAdvanceResult::AdvancedAfterRollback;
-            if (hostAdvanced && clientAdvanced) {
+            if (!advanceToward(host_, targetNextTick) ||
+                !advanceToward(client_, targetNextTick)) {
+                return false;
+            }
+            if (host_.lockstep()->coordinator().simulatedThrough() >=
+                    targetNextTick &&
+                client_.lockstep()->coordinator().simulatedThrough() >=
+                    targetNextTick) {
                 pump(1u);
                 return hashesMatch();
-            }
-            if ((hostResult != gameplay::RtsLockstepAdvanceResult::WaitingForInput &&
-                 !hostAdvanced) ||
-                (clientResult != gameplay::RtsLockstepAdvanceResult::WaitingForInput &&
-                 !clientAdvanced) ||
-                hostAdvanced != clientAdvanced) {
-                return false;
             }
         }
         return false;
@@ -162,9 +163,25 @@ private:
         value.fragmentPayloadBytes = 700u;
         value.reliability.resendIntervalMs = 10u;
         value.reliability.maximumAttempts = 100u;
-        value.reliability.maximumInFlight = 512u;
+        value.reliability.maximumInFlight = 64u;
         value.reliability.maximumMessageBytes = 900u;
         return value;
+    }
+
+    template<class Runtime>
+    static bool advanceToward(
+        Runtime& runtime,
+        std::uint64_t targetNextTick) {
+        if (!runtime.lockstep()) return false;
+        if (runtime.lockstep()->coordinator().simulatedThrough() >=
+            targetNextTick) {
+            return true;
+        }
+        const auto result = runtime.advanceOne();
+        return result == gameplay::RtsLockstepAdvanceResult::Advanced ||
+               result ==
+                   gameplay::RtsLockstepAdvanceResult::AdvancedAfterRollback ||
+               result == gameplay::RtsLockstepAdvanceResult::WaitingForInput;
     }
 
     template<class Predicate>
