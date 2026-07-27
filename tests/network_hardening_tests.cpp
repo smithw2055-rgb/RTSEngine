@@ -140,15 +140,15 @@ void testConnectionQuality() {
 
     const auto first = tracker.beginPing(1);
     require(first != 0);
-    require(tracker.acknowledge(first, 41));
-    require(tracker.snapshot().smoothedRttMs == 40);
+    require(tracker.acknowledge(first, 21));
+    require(tracker.snapshot().smoothedRttMs == 20);
     require(tracker.snapshot().grade ==
             network::ConnectionQualityGrade::Excellent);
     require(!tracker.preferReliableDelivery());
 
-    const auto second = tracker.beginPing(51);
+    const auto second = tracker.beginPing(31);
     require(second != 0);
-    tracker.expire(82);
+    tracker.expire(62);
     require(tracker.snapshot().pingsLost == 1);
     require(tracker.snapshot().lossPermille == 500);
     require(tracker.snapshot().grade ==
