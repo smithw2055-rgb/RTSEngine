@@ -6,7 +6,6 @@ add_executable(rts_foundation_tests foundation_tests.cpp)
 target_link_libraries(rts_foundation_tests PRIVATE RTSEngine::Sim)
 add_test(NAME rts_foundation_tests COMMAND rts_foundation_tests)
 
-
 add_executable(rts_platform_input_tests platform_input_tests.cpp)
 target_link_libraries(rts_platform_input_tests PRIVATE RTSEngine::Platform)
 add_test(NAME rts_platform_input_tests COMMAND rts_platform_input_tests)
@@ -14,7 +13,6 @@ add_test(NAME rts_platform_input_tests COMMAND rts_platform_input_tests)
 add_executable(rts_platform_render_tests platform_render_tests.cpp)
 target_link_libraries(rts_platform_render_tests PRIVATE RTSEngine::Render)
 add_test(NAME rts_platform_render_tests COMMAND rts_platform_render_tests)
-
 
 add_executable(rts_desktop_controller_tests desktop_controller_tests.cpp)
 target_link_libraries(rts_desktop_controller_tests PRIVATE RTSEngine::RtsPresentation)
@@ -31,7 +29,6 @@ add_test(NAME rts_snapshot_interpolation_tests COMMAND rts_snapshot_interpolatio
 add_executable(rts_assets_runtime_tests assets_runtime_tests.cpp)
 target_link_libraries(rts_assets_runtime_tests PRIVATE RTSEngine::Assets)
 add_test(NAME rts_assets_runtime_tests COMMAND rts_assets_runtime_tests)
-
 
 add_executable(rts_screen_ui_tests screen_ui_tests.cpp)
 target_link_libraries(rts_screen_ui_tests PRIVATE RTSEngine::Presentation)
@@ -53,9 +50,51 @@ add_executable(rts_ecs_persistence_tests ecs_persistence_tests.cpp)
 target_link_libraries(rts_ecs_persistence_tests PRIVATE RTSEngine::Ecs)
 add_test(NAME rts_ecs_persistence_tests COMMAND rts_ecs_persistence_tests)
 
+add_executable(rts_network_transport_tests network_transport_tests.cpp)
+target_link_libraries(rts_network_transport_tests PRIVATE RTSEngine::Network)
+add_test(NAME rts_network_transport_tests COMMAND rts_network_transport_tests)
+
+add_executable(rts_network_hardening_tests network_hardening_tests.cpp)
+target_link_libraries(rts_network_hardening_tests PRIVATE
+    RTSEngine::Network
+    RTSEngine::Foundation
+)
+add_test(NAME rts_network_hardening_tests COMMAND rts_network_hardening_tests)
+
 add_executable(rts_simulation_tests rts_simulation_tests.cpp)
 target_link_libraries(rts_simulation_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_simulation_tests COMMAND rts_simulation_tests)
+
+add_executable(rts_game_session_tests rts_game_session_tests.cpp)
+target_link_libraries(rts_game_session_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_game_session_tests COMMAND rts_game_session_tests)
+
+add_executable(rts_team_economy_tests rts_team_economy_tests.cpp)
+target_link_libraries(rts_team_economy_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_team_economy_tests COMMAND rts_team_economy_tests)
+
+add_executable(rts_technology_tests rts_technology_tests.cpp)
+target_link_libraries(rts_technology_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_technology_tests COMMAND rts_technology_tests)
+
+add_executable(rts_lockstep_tests rts_lockstep_tests.cpp)
+target_link_libraries(rts_lockstep_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_lockstep_tests COMMAND rts_lockstep_tests)
+
+add_executable(rts_multiplayer_runtime_tests rts_multiplayer_runtime_tests.cpp)
+target_link_libraries(rts_multiplayer_runtime_tests PRIVATE
+    RTSEngine::RtsDesktop
+    RTSEngine::Rts
+    RTSEngine::Network
+)
+add_test(NAME rts_multiplayer_runtime_tests COMMAND rts_multiplayer_runtime_tests)
+
+add_executable(rts_online_hardening_tests rts_online_hardening_tests.cpp)
+target_link_libraries(rts_online_hardening_tests PRIVATE
+    RTSEngine::Rts
+    RTSEngine::Network
+)
+add_test(NAME rts_online_hardening_tests COMMAND rts_online_hardening_tests)
 
 add_executable(rts_authoritative_session_tests authoritative_session_tests.cpp)
 target_link_libraries(rts_authoritative_session_tests PRIVATE
