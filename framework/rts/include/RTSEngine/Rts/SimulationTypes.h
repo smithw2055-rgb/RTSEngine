@@ -4,6 +4,7 @@
 #include <RTSEngine/Rts/BaseBuilding.h>
 #include <RTSEngine/Rts/GameplayModifiers.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/TechTree.h>
 #include <RTSEngine/Rts/VisionTypes.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
@@ -66,6 +67,10 @@ struct UnitDefinition {
     std::int32_t cellsPerTick{1};
     CombatStats combat{};
     std::int32_t visionRange{6};
+    bool worker{};
+    ResourceAmount cargoCapacity{};
+    ResourceAmount harvestAmount{1};
+    std::uint32_t harvestTicks{1};
 };
 
 enum class CommandType : std::uint8_t {
@@ -78,7 +83,10 @@ enum class CommandType : std::uint8_t {
     SetRally,
     Attack,
     AttackMove,
-    HoldPosition
+    HoldPosition,
+    Gather,
+    Research,
+    CancelResearch
 };
 
 struct TickCommand {
@@ -105,7 +113,12 @@ enum class CommandRejectionReason : std::uint32_t {
     InvalidTarget,
     TargetNotVisible,
     InvalidDefinition,
-    InsufficientResources
+    InsufficientResources,
+    ResourceUnavailable,
+    NoDropOff,
+    PrerequisiteMissing,
+    AlreadyCompleted,
+    AlreadyQueued
 };
 
 enum class DomainEventType : std::uint8_t {
@@ -136,7 +149,16 @@ enum class DomainEventType : std::uint8_t {
     BountyAwarded,
     MoveBlocked,
     MoveYielded,
-    CommandRejected
+    CommandRejected,
+    GatherAccepted,
+    GatherRejected,
+    ResourceHarvested,
+    ResourceDeposited,
+    ResourceDepleted,
+    ResearchAccepted,
+    ResearchRejected,
+    ResearchCancelled,
+    ResearchCompleted
 };
 
 struct DomainEvent {
@@ -152,7 +174,8 @@ struct DomainEvent {
 enum class SnapshotKind : std::uint8_t {
     Unit,
     Construction,
-    Building
+    Building,
+    ResourceNode
 };
 
 struct SnapshotEntity {
@@ -166,6 +189,7 @@ struct SnapshotEntity {
     std::uint32_t progressTicks{};
     std::uint32_t requiredTicks{};
     std::uint32_t productionQueueSize{};
+    std::uint32_t researchQueueSize{};
     std::uint32_t teamId{};
     std::int32_t healthCurrent{};
     std::int32_t healthMaximum{};
@@ -176,6 +200,10 @@ struct SnapshotEntity {
     std::uint32_t movementBlockedTicks{};
     std::uint32_t movementYieldOrdinal{};
     std::int32_t visionRange{};
+    ResourceTypeId resourceType{};
+    ResourceAmount resourceAmount{};
+    ResourceAmount cargoAmount{};
+    ResourceAmount cargoCapacity{};
 };
 
 struct TeamVisibilitySnapshot final {
@@ -203,6 +231,8 @@ struct WorldSnapshot {
     std::uint64_t tick{};
     std::uint64_t worldHash{};
     ResourceLedger resources{};
+    std::vector<TeamResourceAccount> teamResources;
+    std::vector<TeamTechState> teamTech;
     std::uint64_t commandCommittedThrough{};
     std::uint32_t pendingCommands{};
     std::vector<TeamModifierEntry> teamModifiers;
