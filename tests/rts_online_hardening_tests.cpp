@@ -267,11 +267,6 @@ bool pumpUntil(
     return predicate();
 }
 
-bool advanced(gameplay::RtsLockstepAdvanceResult result) {
-    return result == gameplay::RtsLockstepAdvanceResult::Advanced ||
-           result == gameplay::RtsLockstepAdvanceResult::AdvancedAfterRollback;
-}
-
 void testAuthenticatedEncryptedRuntimeAndMigration() {
     network::LoopbackNetworkConfig networkConfig;
     networkConfig.baseLatencyMs = 2;
@@ -377,18 +372,22 @@ void testAuthenticatedEncryptedRuntimeAndMigration() {
             hub,
             nowMs,
             [&]() {
-                const auto hostResult = host.advanceOne();
-                const auto clientResult = client.advanceOne();
-                const auto hostTick = host.lockstep()
+                auto hostTick = host.lockstep()
                     ? host.lockstep()->coordinator().simulatedThrough()
                     : 0;
-                const auto clientTick = client.lockstep()
+                auto clientTick = client.lockstep()
+                    ? client.lockstep()->coordinator().simulatedThrough()
+                    : 0;
+                if (hostTick < targetNextTick) (void)host.advanceOne();
+                if (clientTick < targetNextTick) (void)client.advanceOne();
+                hostTick = host.lockstep()
+                    ? host.lockstep()->coordinator().simulatedThrough()
+                    : 0;
+                clientTick = client.lockstep()
                     ? client.lockstep()->coordinator().simulatedThrough()
                     : 0;
                 return hostTick >= targetNextTick &&
-                       clientTick >= targetNextTick &&
-                       (advanced(hostResult) || hostTick >= targetNextTick) &&
-                       (advanced(clientResult) || clientTick >= targetNextTick);
+                       clientTick >= targetNextTick;
             },
             host,
             client));
@@ -533,18 +532,22 @@ void testDedicatedServerHasNoLocalPlayer() {
             hub,
             nowMs,
             [&]() {
-                const auto serverResult = server.advanceOne();
-                const auto firstResult = first.advanceOne();
-                const auto secondResult = second.advanceOne();
-                (void)serverResult;
-                (void)firstResult;
-                (void)secondResult;
-                return server.host().lockstep()->coordinator().simulatedThrough() >=
-                           targetNextTick &&
-                       first.lockstep()->coordinator().simulatedThrough() >=
-                           targetNextTick &&
-                       second.lockstep()->coordinator().simulatedThrough() >=
-                           targetNextTick;
+                auto serverTick =
+                    server.host().lockstep()->coordinator().simulatedThrough();
+                auto firstTick =
+                    first.lockstep()->coordinator().simulatedThrough();
+                auto secondTick =
+                    second.lockstep()->coordinator().simulatedThrough();
+                if (serverTick < targetNextTick) (void)server.advanceOne();
+                if (firstTick < targetNextTick) (void)first.advanceOne();
+                if (secondTick < targetNextTick) (void)second.advanceOne();
+                serverTick =
+                    server.host().lockstep()->coordinator().simulatedThrough();
+                firstTick = first.lockstep()->coordinator().simulatedThrough();
+                secondTick = second.lockstep()->coordinator().simulatedThrough();
+                return serverTick >= targetNextTick &&
+                       firstTick >= targetNextTick &&
+                       secondTick >= targetNextTick;
             },
             server,
             first,
