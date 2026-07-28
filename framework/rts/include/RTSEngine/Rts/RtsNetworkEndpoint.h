@@ -32,6 +32,7 @@ struct RtsNetworkEndpointConfig final {
     network::ReliableChannelConfig reliability;
     network::TrafficLimitConfig inboundTraffic;
     network::TrafficLimitConfig outboundTraffic;
+    bool reliableLockstepFallback{true};
 };
 
 struct RtsReceivedNetworkMessage final {
@@ -153,6 +154,10 @@ public:
         auto peer = lowerPeer(destination);
         if (peer == peers_.end() || peer->endpoint != destination) return false;
 
+        const bool reliableFallback =
+            delivery == RtsNetworkDelivery::Unreliable &&
+            config_.reliableLockstepFallback &&
+            envelope.kind == RtsNetworkMessageKind::LockstepFrame;
         auto bytes = EncodeRtsNetworkEnvelope(envelope);
         if (bytes.empty() || bytes.size() > config_.maximumMessageBytes) {
             return false;
@@ -164,24 +169,27 @@ public:
         }
         if (!peer->outbound.allow(transport_.nowMs(), bytes.size())) return false;
 
+        bool lowLatencyAccepted = false;
         if (delivery == RtsNetworkDelivery::Unreliable) {
-            return bytes.size() <= transport_.maximumPayloadBytes() &&
-                   transport_.send(
-                       destination,
-                       config_.unreliableChannel,
-                       bytes) == network::TransportSendResult::Accepted;
+            lowLatencyAccepted =
+                bytes.size() <= transport_.maximumPayloadBytes() &&
+                transport_.send(
+                    destination,
+                    config_.unreliableChannel,
+                    bytes) == network::TransportSendResult::Accepted;
+            if (!reliableFallback) return lowLatencyAccepted;
         }
 
         if (nextMessageId_ == 0 ||
             nextMessageId_ == std::numeric_limits<std::uint64_t>::max()) {
-            return false;
+            return lowLatencyAccepted;
         }
         auto fragments = fragmenter_.split(nextMessageId_++, bytes);
         if (fragments.empty() ||
             peer->queuedFragments.size() - peer->nextQueuedFragment +
                     fragments.size() >
                 config_.maximumQueuedFragments) {
-            return false;
+            return lowLatencyAccepted;
         }
         peer->queuedFragments.insert(
             peer->queuedFragments.end(),
@@ -220,10 +228,10 @@ public:
                     reassembled_.empty()) {
                     continue;
                 }
-                RtsNetworkEnvelope envelope;
-                if (decodeWire(*peer, reassembled_, envelope)) {
+                RtsNetworkEnvelope decoded;
+                if (decodeWire(*peer, reassembled_, decoded)) {
                     received_.push_back(
-                        {datagram.source, std::move(envelope)});
+                        {datagram.source, std::move(decoded)});
                 }
             }
         }
