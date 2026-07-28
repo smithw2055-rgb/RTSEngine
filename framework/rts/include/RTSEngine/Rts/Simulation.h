@@ -11,6 +11,7 @@
 #include <RTSEngine/Rts/EntityFactory.h>
 #include <RTSEngine/Rts/FlowField.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/Influence.h>
 #include <RTSEngine/Rts/MovementSystem.h>
 #include <RTSEngine/Rts/Navigation.h>
@@ -20,6 +21,8 @@
 #include <RTSEngine/Rts/RuntimeTelemetry.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
+#include <RTSEngine/Rts/TeamEconomy.h>
+#include <RTSEngine/Rts/TechTree.h>
 #include <RTSEngine/Rts/Vision.h>
 #include <rts/sim/AuthoritativeStep.h>
 
@@ -66,6 +69,41 @@ public:
         return true;
     }
 
+    bool registerResearch(ResearchDefinition definition) {
+        if (configurationFrozen() || definition.id == 0 ||
+            definition.researchTicks == 0) {
+            return false;
+        }
+        NormalizeResourceCosts(definition.costs);
+        NormalizePrerequisites(definition.prerequisites);
+        if (!ValidateResourceCosts(definition.costs) ||
+            !ValidatePrerequisites(definition.prerequisites) ||
+            std::binary_search(
+                definition.prerequisites.research.begin(),
+                definition.prerequisites.research.end(),
+                definition.id)) {
+            return false;
+        }
+        researchDefinitions_.replace(std::move(definition));
+        return true;
+    }
+
+    bool setBuildingPrerequisites(
+        std::uint32_t definitionId,
+        PrerequisiteSet prerequisites) {
+        return !configurationFrozen() &&
+               buildingPrerequisites_.set(
+                   definitionId, std::move(prerequisites));
+    }
+
+    bool setUnitPrerequisites(
+        std::uint32_t definitionId,
+        PrerequisiteSet prerequisites) {
+        return !configurationFrozen() &&
+               unitPrerequisites_.set(
+                   definitionId, std::move(prerequisites));
+    }
+
     void freezeConfiguration() noexcept { configurationFrozen_ = true; }
 
     bool configurationFrozen() const noexcept {
@@ -73,7 +111,18 @@ public:
     }
 
     void setResources(std::int32_t available) noexcept {
-        resources_.available = std::max<std::int32_t>(0, available);
+        (void)economy_.setAvailable(
+            playerTeamId_,
+            kPrimaryResourceType,
+            std::max<std::int32_t>(0, available));
+    }
+
+    bool setTeamResource(
+        std::uint32_t teamId,
+        ResourceTypeId resourceType,
+        ResourceAmount available) {
+        if (configurationFrozen()) return false;
+        return economy_.setAvailable(teamId, resourceType, available);
     }
 
     bool setRequiredRoute(GridPoint start, GridPoint goal) noexcept {
@@ -92,6 +141,7 @@ public:
     void reserveMovementAgents(std::size_t count) {
         movement_.reserveAgents(count);
         combat_.reserveCombatants(count);
+        harvesting_.reserveWorkers(count);
     }
 
     void reserveTickScratch(
@@ -116,6 +166,14 @@ public:
         return modifiers_.profile(teamId);
     }
 
+    bool researchCompleted(
+        std::uint32_t teamId,
+        ResearchDefinitionId researchId) const noexcept {
+        return tech_.completed(teamId, researchId);
+    }
+
+    const TechTreeRuntime& techTree() const noexcept { return tech_; }
+
     ecs::Entity createUnit(
         Position position,
         MoveSpeed speed,
@@ -125,6 +183,34 @@ public:
         if (configurationFrozen()) return {};
         return createUnitUnchecked(
             position, speed, teamId, combat, visionRange);
+    }
+
+    ecs::Entity createUnitDefinition(
+        std::uint32_t definitionId,
+        Position position,
+        std::uint32_t teamId = 1) {
+        if (configurationFrozen() || teamId == 0) return {};
+        const auto* definition = unitDefinitions_.find(definitionId);
+        if (!definition) return {};
+        return EntityFactory::createUnitDefinition(
+            world_, modifiers_, position, teamId, *definition);
+    }
+
+    ecs::Entity createResourceNode(
+        Position position,
+        ResourceTypeId resourceType,
+        ResourceAmount amount) {
+        if (configurationFrozen() || resourceType == 0 || amount <= 0 ||
+            !navigation_.contains({position.x, position.y}) ||
+            navigation_.blocked({position.x, position.y})) {
+            return {};
+        }
+        const auto entity = world_.create();
+        world_.emplace<Position>(entity, position);
+        world_.emplace<ResourceNode>(
+            entity,
+            ResourceNode{++nextResourceNodeId_, resourceType, amount});
+        return entity;
     }
 
     sim::CommandSubmitResult submitDetailed(TickCommand command) {
@@ -143,37 +229,34 @@ public:
         return navigation_.setBlocked(point, blocked);
     }
 
-    const NavigationGrid& navigation() const noexcept {
-        return navigation_;
-    }
-
-    const VisionRuntime& vision() const noexcept {
-        return vision_;
-    }
+    const NavigationGrid& navigation() const noexcept { return navigation_; }
+    const VisionRuntime& vision() const noexcept { return vision_; }
 
     const InfluenceRuntime& influence() const {
         refreshDerivedInfluence();
         return influence_;
     }
 
-    const GridPathCache& pathCache() const noexcept {
-        return pathCache_;
-    }
-
-    const GridFlowFieldCache& flowFields() const noexcept {
-        return flowFields_;
-    }
+    const GridPathCache& pathCache() const noexcept { return pathCache_; }
+    const GridFlowFieldCache& flowFields() const noexcept { return flowFields_; }
 
     const MovementReservationRuntime& movementReservations() const noexcept {
         return movement_;
     }
 
-    const RuntimeTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    const RuntimeTelemetry& telemetry() const noexcept { return telemetry_; }
 
     const ResourceLedger& resources() const noexcept {
-        return resources_;
+        compatibilityResources_ = economy_.legacyLedger(playerTeamId_);
+        return compatibilityResources_;
+    }
+
+    const TeamEconomyRuntime& teamEconomy() const noexcept { return economy_; }
+
+    ResourceAmount resourceAvailable(
+        std::uint32_t teamId,
+        ResourceTypeId resourceType) const noexcept {
+        return economy_.available(teamId, resourceType);
     }
 
     sim::AuthoritativeStepValidation validateStep(
@@ -185,7 +268,8 @@ public:
     RtsStepResult stepDetailed(std::uint64_t tick) {
         const auto validation = validateStep(tick);
         if (!validation) {
-            return validation.failure == sim::AuthoritativeStepFailure::StaleTick
+            return validation.failure ==
+                       sim::AuthoritativeStepFailure::StaleTick
                 ? RtsStepResult::StaleTick
                 : RtsStepResult::NonSequentialTick;
         }
@@ -221,10 +305,7 @@ public:
         return snapshot_;
     }
 
-    const std::vector<DomainEvent>& events() const noexcept {
-        return events_;
-    }
-
+    const std::vector<DomainEvent>& events() const noexcept { return events_; }
     const ecs::World& world() const noexcept { return world_; }
 
     TickCommandStream::State commandStreamState() const {
@@ -324,13 +405,18 @@ private:
         return {
             structuralCommands_,
             building_,
-            resources_,
+            economy_,
+            tech_,
             modifiers_,
             buildingDefinitions_,
             unitDefinitions_,
+            researchDefinitions_,
+            buildingPrerequisites_,
+            unitPrerequisites_,
             requiredPathStart_,
             requiredPathGoal_,
             nextProductionId_,
+            nextResearchId_,
             events_};
     }
 
@@ -355,7 +441,11 @@ private:
             [this](ecs::World& world,
                    const ecs::SystemContext& context) {
                 for (const auto& command : activeCommands_) {
-                    if (OrderSystem::handles(command.type)) {
+                    HarvestCommandSystem::observeStop(world, command);
+                    if (HarvestCommandSystem::handles(command.type)) {
+                        HarvestCommandSystem::process(
+                            world, context, command, events_);
+                    } else if (OrderSystem::handles(command.type)) {
                         OrderSystem::process(
                             world, context, command, {events_, &vision_});
                     } else if (EconomyCommandSystem::handles(command.type)) {
@@ -372,8 +462,7 @@ private:
             ecs::Stage::Navigation,
             -20,
             180,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 NavigationSystem::synchronizeTeamModifiers(
                     world, navigationDependencies());
             });
@@ -423,9 +512,25 @@ private:
                     world,
                     context,
                     {structuralCommands_,
-                     resources_,
+                     economy_,
                      modifiers_,
                      unitDefinitions_,
+                     events_});
+            });
+
+        scheduler_.add(
+            ecs::Stage::Simulation,
+            15,
+            315,
+            [this](ecs::World& world,
+                   const ecs::SystemContext& context) {
+                ResearchSystem::run(
+                    world,
+                    context,
+                    {economy_,
+                     tech_,
+                     modifiers_,
+                     researchDefinitions_,
                      events_});
             });
 
@@ -442,6 +547,16 @@ private:
             });
 
         scheduler_.add(
+            ecs::Stage::Simulation,
+            30,
+            330,
+            [this](ecs::World& world,
+                   const ecs::SystemContext& context) {
+                harvesting_.advance(
+                    world, context, economy_, events_);
+            });
+
+        scheduler_.add(
             ecs::Stage::Combat,
             0,
             350,
@@ -453,9 +568,8 @@ private:
                     {combat_,
                      structuralCommands_,
                      building_,
-                     resources_,
+                     economy_,
                      modifiers_,
-                     playerTeamId_,
                      events_,
                      deathSideEffects_});
             });
@@ -464,8 +578,7 @@ private:
             ecs::Stage::Snapshot,
             -10,
             390,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 VisionSystem::run(world, navigation_, vision_);
             });
 
@@ -473,8 +586,7 @@ private:
             ecs::Stage::Snapshot,
             -5,
             395,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 InfluenceSystem::run(world, vision_, influence_);
             });
 
@@ -487,12 +599,14 @@ private:
                 SnapshotBuilder::build(
                     world,
                     context.tick,
-                    {resources_,
+                    {economy_,
+                     playerTeamId_,
                      modifiers_,
                      navigation_,
                      commands_,
                      snapshot_,
                      &vision_});
+                snapshot_.teamTech = tech_.states();
                 snapshot_.influenceWidth = influence_.width();
                 snapshot_.influenceHeight = influence_.height();
                 influence_.buildSnapshot(snapshot_.influence);
@@ -512,9 +626,11 @@ private:
     GridFlowFieldCache flowFields_;
     RuntimeTelemetry telemetry_;
     MovementReservationRuntime movement_;
-    ResourceLedger resources_;
+    TeamEconomyRuntime economy_;
+    TechTreeRuntime tech_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
+    HarvestingRuntime harvesting_;
     GameplayModifierSystem modifiers_;
     std::vector<TickCommand> activeCommands_;
     std::vector<ConstructionId> completingConstructions_;
@@ -523,11 +639,17 @@ private:
     mutable WorldSnapshot snapshot_;
     DefinitionCatalog<BuildingDefinition> buildingDefinitions_;
     DefinitionCatalog<UnitDefinition> unitDefinitions_;
+    DefinitionCatalog<ResearchDefinition> researchDefinitions_;
+    PrerequisiteCatalog buildingPrerequisites_;
+    PrerequisiteCatalog unitPrerequisites_;
     GridPoint requiredPathStart_{0, 0};
     GridPoint requiredPathGoal_{0, 0};
     ProductionId nextProductionId_{};
+    ResearchQueueId nextResearchId_{};
+    std::uint32_t nextResourceNodeId_{};
     std::uint32_t playerTeamId_{1};
     std::uint64_t lastCompletedTick_{};
+    mutable ResourceLedger compatibilityResources_{};
     mutable std::uint64_t influenceWorldHash_{kInvalidDerivedHash};
     bool configurationFrozen_{};
     bool hasStepped_{};

@@ -4,6 +4,7 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/Combat.h>
 #include <RTSEngine/Rts/Navigation.h>
+#include <RTSEngine/Rts/TeamEconomy.h>
 #include <RTSEngine/Rts/VisionTypes.h>
 
 #include <algorithm>
@@ -15,33 +16,6 @@ namespace rts::gameplay {
 using ConstructionId = std::uint32_t;
 using ProductionId = std::uint32_t;
 
-struct ResourceLedger {
-    std::int32_t available{};
-    std::int32_t reserved{};
-    std::int32_t spent{};
-
-    bool reserve(std::int32_t amount) noexcept {
-        if (amount < 0 || available < amount) return false;
-        available -= amount;
-        reserved += amount;
-        return true;
-    }
-
-    bool commit(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) return false;
-        reserved -= amount;
-        spent += amount;
-        return true;
-    }
-
-    bool release(std::int32_t amount) noexcept {
-        if (amount < 0 || reserved < amount) return false;
-        reserved -= amount;
-        available += amount;
-        return true;
-    }
-};
-
 struct BuildingDefinition {
     std::uint32_t id{};
     std::int32_t cost{};
@@ -51,6 +25,8 @@ struct BuildingDefinition {
     bool producer{};
     CombatStats combat{};
     std::int32_t visionRange{8};
+    ResourceTypeId dropOffResourceType{};
+    std::uint32_t supplyProvided{};
 };
 
 struct BuildingFootprint {
@@ -111,7 +87,15 @@ struct BuildResult {
 class BaseBuildingRuntime {
 public:
     BaseBuildingRuntime(ResourceLedger& ledger, NavigationGrid& navigation)
-        : ledger_(ledger), navigation_(navigation) {}
+        : legacyLedger_(&ledger), navigation_(navigation) {}
+
+    BaseBuildingRuntime(
+        TeamEconomyRuntime& economy,
+        NavigationGrid& navigation,
+        std::uint32_t compatibilityTeam = 1)
+        : economy_(&economy),
+          navigation_(navigation),
+          compatibilityTeam_(compatibilityTeam) {}
 
     BuildResult begin(const ecs::SystemContext& context,
                       ecs::EntityCommandBuffer& commands,
@@ -121,7 +105,10 @@ public:
                       GridPoint requiredPathGoal,
                       std::uint32_t ownerTeam = 0,
                       std::uint32_t baseBuildTicks = 0) {
-        if (!valid(definition)) {
+        const auto resolvedOwner = ownerTeam == 0
+            ? compatibilityTeam_
+            : ownerTeam;
+        if (!valid(definition) || resolvedOwner == 0) {
             return {false, BuildFailure::InvalidDefinition, 0};
         }
 
@@ -132,7 +119,13 @@ public:
         if (placementFailure != BuildFailure::None) {
             return {false, placementFailure, 0};
         }
-        if (!ledger_.reserve(definition.cost)) {
+
+        GridPoint dropOffAccess{};
+        if (definition.dropOffResourceType != 0 &&
+            !findDropOffAccess(footprint, dropOffAccess)) {
+            return {false, BuildFailure::Occupied, 0};
+        }
+        if (!reserve(resolvedOwner, definition.cost)) {
             return {false, BuildFailure::InsufficientResources, 0};
         }
 
@@ -153,9 +146,19 @@ public:
             0,
             requiredTicks,
             definition.producer,
-            ownerTeam,
-            sourceTicks
-        });
+            resolvedOwner,
+            sourceTicks});
+        if (definition.dropOffResourceType != 0 ||
+            definition.supplyProvided != 0) {
+            commands.add(
+                context,
+                deferred,
+                ConstructionEconomyFeatures{
+                    definition.dropOffResourceType,
+                    dropOffAccess.x,
+                    dropOffAccess.y,
+                    definition.supplyProvided});
+        }
         return {true, BuildFailure::None, id};
     }
 
@@ -170,7 +173,7 @@ public:
                 BuildingFootprint& footprint) {
                 if (result == BuildFailure::None || site.id != id) return;
                 releaseFootprint(footprint);
-                ledger_.release(site.reservedCost);
+                release(site.ownerTeam, site.reservedCost);
                 commands.destroy(context, entity);
                 result = BuildFailure::None;
             });
@@ -187,7 +190,7 @@ public:
                 ++site.progressTicks;
                 if (site.progressTicks < site.requiredTicks) return;
 
-                ledger_.commit(site.reservedCost);
+                commit(site.ownerTeam, site.reservedCost);
                 commands.add(
                     context, entity,
                     Building{site.definitionId, site.producer});
@@ -195,8 +198,28 @@ public:
                     commands.add(context, entity, ProductionQueue{});
                     commands.add(context, entity, RallyPoint{
                         {footprint.origin.x + footprint.width,
-                         footprint.origin.y + footprint.height / 2}
-                    });
+                         footprint.origin.y + footprint.height / 2}});
+                }
+                const auto* features =
+                    world.try_get<ConstructionEconomyFeatures>(entity);
+                if (features && features->dropOffResourceType != 0) {
+                    commands.add(
+                        context,
+                        entity,
+                        ResourceDropOff{
+                            features->dropOffResourceType,
+                            features->dropOffAccessX,
+                            features->dropOffAccessY});
+                }
+                if (features && features->supplyProvided != 0) {
+                    commands.add(
+                        context,
+                        entity,
+                        SupplyProvider{features->supplyProvided});
+                }
+                if (features) {
+                    commands.remove<ConstructionEconomyFeatures>(
+                        context, entity);
                 }
                 commands.remove<ConstructionSite>(context, entity);
             });
@@ -235,7 +258,13 @@ public:
         setBlocked(footprint, false);
     }
 
-    const ResourceLedger& ledger() const noexcept { return ledger_; }
+    const ResourceLedger& ledger() const noexcept {
+        if (legacyLedger_) return *legacyLedger_;
+        legacyView_ = economy_
+            ? economy_->legacyLedger(compatibilityTeam_)
+            : ResourceLedger{};
+        return legacyView_;
+    }
 
     ConstructionId nextConstructionId() const noexcept {
         return nextConstructionId_;
@@ -250,6 +279,63 @@ private:
         return definition.id != 0 && definition.cost >= 0 &&
                definition.width > 0 && definition.height > 0 &&
                definition.visionRange >= 0;
+    }
+
+    bool reserve(std::uint32_t teamId, std::int32_t amount) {
+        return economy_
+            ? economy_->reserve(teamId, kPrimaryResourceType, amount)
+            : legacyLedger_ && legacyLedger_->reserve(amount);
+    }
+
+    bool commit(std::uint32_t teamId, std::int32_t amount) {
+        return economy_
+            ? economy_->commit(teamId, kPrimaryResourceType, amount)
+            : legacyLedger_ && legacyLedger_->commit(amount);
+    }
+
+    bool release(std::uint32_t teamId, std::int32_t amount) {
+        return economy_
+            ? economy_->release(teamId, kPrimaryResourceType, amount)
+            : legacyLedger_ && legacyLedger_->release(amount);
+    }
+
+    bool findDropOffAccess(
+        const BuildingFootprint& footprint,
+        GridPoint& result) const {
+        std::vector<GridPoint> candidates;
+        candidates.reserve(static_cast<std::size_t>(
+            (footprint.width + footprint.height) * 2 + 1));
+        candidates.push_back(
+            {footprint.origin.x + footprint.width,
+             footprint.origin.y + footprint.height / 2});
+        for (std::int32_t y = 0; y < footprint.height; ++y) {
+            candidates.push_back(
+                {footprint.origin.x + footprint.width,
+                 footprint.origin.y + y});
+        }
+        for (std::int32_t x = footprint.width - 1; x >= 0; --x) {
+            candidates.push_back(
+                {footprint.origin.x + x,
+                 footprint.origin.y + footprint.height});
+        }
+        for (std::int32_t y = footprint.height - 1; y >= 0; --y) {
+            candidates.push_back(
+                {footprint.origin.x - 1,
+                 footprint.origin.y + y});
+        }
+        for (std::int32_t x = 0; x < footprint.width; ++x) {
+            candidates.push_back(
+                {footprint.origin.x + x,
+                 footprint.origin.y - 1});
+        }
+        for (const auto candidate : candidates) {
+            if (navigation_.contains(candidate) &&
+                !navigation_.blocked(candidate)) {
+                result = candidate;
+                return true;
+            }
+        }
+        return false;
     }
 
     static std::vector<GridPoint> footprintCells(
@@ -271,8 +357,11 @@ private:
             footprintCells(footprint), blocked);
     }
 
-    ResourceLedger& ledger_;
+    TeamEconomyRuntime* economy_{};
+    ResourceLedger* legacyLedger_{};
     NavigationGrid& navigation_;
+    std::uint32_t compatibilityTeam_{1};
+    mutable ResourceLedger legacyView_{};
     ConstructionId nextConstructionId_{};
 };
 

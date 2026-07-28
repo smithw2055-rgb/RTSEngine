@@ -2,12 +2,14 @@
 
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/Diplomacy.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/Vision.h>
 
 #include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace rts::gameplay {
@@ -38,7 +40,45 @@ public:
         return true;
     }
 
+    bool restore(std::vector<AiTeamState> teams) {
+        std::sort(
+            teams.begin(), teams.end(),
+            [](const AiTeamState& first, const AiTeamState& second) {
+                return first.teamId < second.teamId;
+            });
+        std::uint32_t previousTeam = 0;
+        bool hasPrevious = false;
+        for (const auto& team : teams) {
+            if (team.teamId == 0 || team.nextSequence == 0 ||
+                team.thinkIntervalTicks == 0 ||
+                (hasPrevious && team.teamId <= previousTeam)) {
+                return false;
+            }
+            previousTeam = team.teamId;
+            hasPrevious = true;
+        }
+        teams_ = std::move(teams);
+        return true;
+    }
+
     const std::vector<AiTeamState>& teams() const noexcept { return teams_; }
+
+    std::uint32_t takeSequence(std::uint32_t teamId) noexcept {
+        const auto found = lowerBound(teamId);
+        if (found == teams_.end() || found->teamId != teamId ||
+            found->nextSequence == std::numeric_limits<std::uint32_t>::max()) {
+            return 0;
+        }
+        return found->nextSequence++;
+    }
+
+    bool shouldThink(
+        std::uint32_t teamId,
+        std::uint64_t tick) const noexcept {
+        const auto found = lowerBound(teamId);
+        return found != teams_.end() && found->teamId == teamId &&
+               tick % found->thinkIntervalTicks == 0;
+    }
 
     template<class Submit>
     void emitCommands(
@@ -62,6 +102,7 @@ private:
     };
 
     using Iterator = std::vector<AiTeamState>::iterator;
+    using ConstIterator = std::vector<AiTeamState>::const_iterator;
 
     Iterator lowerBound(std::uint32_t teamId) noexcept {
         return std::lower_bound(
@@ -71,9 +112,21 @@ private:
             });
     }
 
+    ConstIterator lowerBound(std::uint32_t teamId) const noexcept {
+        return std::lower_bound(
+            teams_.begin(), teams_.end(), teamId,
+            [](const AiTeamState& state, std::uint32_t value) {
+                return state.teamId < value;
+            });
+    }
+
     static std::int32_t distance(Position first, Position second) noexcept {
-        const auto dx = first.x > second.x ? first.x - second.x : second.x - first.x;
-        const auto dy = first.y > second.y ? first.y - second.y : second.y - first.y;
+        const auto dx = first.x > second.x
+            ? first.x - second.x
+            : second.x - first.x;
+        const auto dy = first.y > second.y
+            ? first.y - second.y
+            : second.y - first.y;
         return dx + dy;
     }
 
@@ -111,13 +164,19 @@ private:
                 const Health& health,
                 const Weapon&,
                 const CombatDirective&) {
-                if (team.id != state.teamId || health.current <= 0) return;
+                if (team.id != state.teamId || health.current <= 0 ||
+                    world.try_get<WorkerHarvester>(entity) ||
+                    state.nextSequence ==
+                        std::numeric_limits<std::uint32_t>::max()) {
+                    return;
+                }
 
                 ecs::Entity best{};
                 std::int32_t bestDistance =
                     std::numeric_limits<std::int32_t>::max();
                 for (const auto& enemy : enemies) {
-                    const auto candidateDistance = distance(position, enemy.position);
+                    const auto candidateDistance =
+                        distance(position, enemy.position);
                     if (candidateDistance < bestDistance ||
                         (candidateDistance == bestDistance &&
                          (!best.valid() || enemy.entity < best))) {
