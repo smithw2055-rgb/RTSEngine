@@ -6,6 +6,7 @@
 #include <RTSEngine/Rts/Combat.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
+#include <RTSEngine/Rts/TechTree.h>
 
 #include <algorithm>
 #include <cstdint>
@@ -88,15 +89,27 @@ private:
                  0});
         }
 
+        const auto* victimTeam = world.try_get<Team>(victim);
         const auto* production =
             world.try_get<ProductionQueue>(victim);
-        const auto* victimTeam = world.try_get<Team>(victim);
         if (production && victimTeam) {
             for (const auto& item : production->items) {
                 dependencies.economy.release(
                     victimTeam->id,
                     kPrimaryResourceType,
                     item.reservedCost);
+            }
+        }
+
+        const auto* research = world.try_get<ResearchQueue>(victim);
+        if (research && victimTeam) {
+            for (const auto& item : research->items) {
+                for (const auto& cost : item.reservedCosts) {
+                    dependencies.economy.release(
+                        victimTeam->id,
+                        cost.resourceType,
+                        cost.amount);
+                }
             }
         }
 

@@ -22,6 +22,7 @@
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
 #include <RTSEngine/Rts/TeamEconomy.h>
+#include <RTSEngine/Rts/TechTree.h>
 #include <RTSEngine/Rts/Vision.h>
 #include <rts/sim/AuthoritativeStep.h>
 
@@ -66,6 +67,41 @@ public:
         if (configurationFrozen()) return false;
         unitDefinitions_.replace(std::move(definition));
         return true;
+    }
+
+    bool registerResearch(ResearchDefinition definition) {
+        if (configurationFrozen() || definition.id == 0 ||
+            definition.researchTicks == 0) {
+            return false;
+        }
+        NormalizeResourceCosts(definition.costs);
+        NormalizePrerequisites(definition.prerequisites);
+        if (!ValidateResourceCosts(definition.costs) ||
+            !ValidatePrerequisites(definition.prerequisites) ||
+            std::binary_search(
+                definition.prerequisites.research.begin(),
+                definition.prerequisites.research.end(),
+                definition.id)) {
+            return false;
+        }
+        researchDefinitions_.replace(std::move(definition));
+        return true;
+    }
+
+    bool setBuildingPrerequisites(
+        std::uint32_t definitionId,
+        PrerequisiteSet prerequisites) {
+        return !configurationFrozen() &&
+               buildingPrerequisites_.set(
+                   definitionId, std::move(prerequisites));
+    }
+
+    bool setUnitPrerequisites(
+        std::uint32_t definitionId,
+        PrerequisiteSet prerequisites) {
+        return !configurationFrozen() &&
+               unitPrerequisites_.set(
+                   definitionId, std::move(prerequisites));
     }
 
     void freezeConfiguration() noexcept { configurationFrozen_ = true; }
@@ -130,6 +166,14 @@ public:
         return modifiers_.profile(teamId);
     }
 
+    bool researchCompleted(
+        std::uint32_t teamId,
+        ResearchDefinitionId researchId) const noexcept {
+        return tech_.completed(teamId, researchId);
+    }
+
+    const TechTreeRuntime& techTree() const noexcept { return tech_; }
+
     ecs::Entity createUnit(
         Position position,
         MoveSpeed speed,
@@ -185,43 +229,29 @@ public:
         return navigation_.setBlocked(point, blocked);
     }
 
-    const NavigationGrid& navigation() const noexcept {
-        return navigation_;
-    }
-
-    const VisionRuntime& vision() const noexcept {
-        return vision_;
-    }
+    const NavigationGrid& navigation() const noexcept { return navigation_; }
+    const VisionRuntime& vision() const noexcept { return vision_; }
 
     const InfluenceRuntime& influence() const {
         refreshDerivedInfluence();
         return influence_;
     }
 
-    const GridPathCache& pathCache() const noexcept {
-        return pathCache_;
-    }
-
-    const GridFlowFieldCache& flowFields() const noexcept {
-        return flowFields_;
-    }
+    const GridPathCache& pathCache() const noexcept { return pathCache_; }
+    const GridFlowFieldCache& flowFields() const noexcept { return flowFields_; }
 
     const MovementReservationRuntime& movementReservations() const noexcept {
         return movement_;
     }
 
-    const RuntimeTelemetry& telemetry() const noexcept {
-        return telemetry_;
-    }
+    const RuntimeTelemetry& telemetry() const noexcept { return telemetry_; }
 
     const ResourceLedger& resources() const noexcept {
         compatibilityResources_ = economy_.legacyLedger(playerTeamId_);
         return compatibilityResources_;
     }
 
-    const TeamEconomyRuntime& teamEconomy() const noexcept {
-        return economy_;
-    }
+    const TeamEconomyRuntime& teamEconomy() const noexcept { return economy_; }
 
     ResourceAmount resourceAvailable(
         std::uint32_t teamId,
@@ -238,7 +268,8 @@ public:
     RtsStepResult stepDetailed(std::uint64_t tick) {
         const auto validation = validateStep(tick);
         if (!validation) {
-            return validation.failure == sim::AuthoritativeStepFailure::StaleTick
+            return validation.failure ==
+                       sim::AuthoritativeStepFailure::StaleTick
                 ? RtsStepResult::StaleTick
                 : RtsStepResult::NonSequentialTick;
         }
@@ -274,10 +305,7 @@ public:
         return snapshot_;
     }
 
-    const std::vector<DomainEvent>& events() const noexcept {
-        return events_;
-    }
-
+    const std::vector<DomainEvent>& events() const noexcept { return events_; }
     const ecs::World& world() const noexcept { return world_; }
 
     TickCommandStream::State commandStreamState() const {
@@ -378,12 +406,17 @@ private:
             structuralCommands_,
             building_,
             economy_,
+            tech_,
             modifiers_,
             buildingDefinitions_,
             unitDefinitions_,
+            researchDefinitions_,
+            buildingPrerequisites_,
+            unitPrerequisites_,
             requiredPathStart_,
             requiredPathGoal_,
             nextProductionId_,
+            nextResearchId_,
             events_};
     }
 
@@ -429,8 +462,7 @@ private:
             ecs::Stage::Navigation,
             -20,
             180,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 NavigationSystem::synchronizeTeamModifiers(
                     world, navigationDependencies());
             });
@@ -488,6 +520,22 @@ private:
 
         scheduler_.add(
             ecs::Stage::Simulation,
+            15,
+            315,
+            [this](ecs::World& world,
+                   const ecs::SystemContext& context) {
+                ResearchSystem::run(
+                    world,
+                    context,
+                    {economy_,
+                     tech_,
+                     modifiers_,
+                     researchDefinitions_,
+                     events_});
+            });
+
+        scheduler_.add(
+            ecs::Stage::Simulation,
             20,
             320,
             [this](ecs::World& world,
@@ -530,8 +578,7 @@ private:
             ecs::Stage::Snapshot,
             -10,
             390,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 VisionSystem::run(world, navigation_, vision_);
             });
 
@@ -539,8 +586,7 @@ private:
             ecs::Stage::Snapshot,
             -5,
             395,
-            [this](ecs::World& world,
-                   const ecs::SystemContext&) {
+            [this](ecs::World& world, const ecs::SystemContext&) {
                 InfluenceSystem::run(world, vision_, influence_);
             });
 
@@ -560,6 +606,7 @@ private:
                      commands_,
                      snapshot_,
                      &vision_});
+                snapshot_.teamTech = tech_.states();
                 snapshot_.influenceWidth = influence_.width();
                 snapshot_.influenceHeight = influence_.height();
                 influence_.buildSnapshot(snapshot_.influence);
@@ -580,6 +627,7 @@ private:
     RuntimeTelemetry telemetry_;
     MovementReservationRuntime movement_;
     TeamEconomyRuntime economy_;
+    TechTreeRuntime tech_;
     BaseBuildingRuntime building_;
     CombatRuntime combat_;
     HarvestingRuntime harvesting_;
@@ -591,9 +639,13 @@ private:
     mutable WorldSnapshot snapshot_;
     DefinitionCatalog<BuildingDefinition> buildingDefinitions_;
     DefinitionCatalog<UnitDefinition> unitDefinitions_;
+    DefinitionCatalog<ResearchDefinition> researchDefinitions_;
+    PrerequisiteCatalog buildingPrerequisites_;
+    PrerequisiteCatalog unitPrerequisites_;
     GridPoint requiredPathStart_{0, 0};
     GridPoint requiredPathGoal_{0, 0};
     ProductionId nextProductionId_{};
+    ResearchQueueId nextResearchId_{};
     std::uint32_t nextResourceNodeId_{};
     std::uint32_t playerTeamId_{1};
     std::uint64_t lastCompletedTick_{};

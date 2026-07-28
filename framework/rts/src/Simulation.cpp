@@ -1,4 +1,5 @@
 #include <RTSEngine/Rts/AuthoritativeStateHash.h>
+#include <RTSEngine/Rts/ResearchStateHash.h>
 #include <RTSEngine/Rts/Simulation.h>
 #include <RTSEngine/Rts/TargetAuthorization.h>
 
@@ -127,7 +128,8 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
                             if (!entity.valid() || !world.alive(entity)) {
                                 return false;
                             }
-                            const auto* targetTeam = world.try_get<Team>(entity);
+                            const auto* targetTeam =
+                                world.try_get<Team>(entity);
                             return targetTeam && IsRtsTargetAuthorized(
                                 *this, teamId, targetTeam->id);
                         };
@@ -164,8 +166,11 @@ RtsSimulation::RtsSimulation(std::int32_t width, std::int32_t height)
                 building_.nextConstructionId(),
                 nextProductionId_,
                 playerTeamId_,
-                4u,
-                nextResourceNodeId_);
+                5u,
+                nextResourceNodeId_,
+                nextResearchId_,
+                HashTechTreeState(tech_),
+                HashResearchQueueState(world));
             influenceWorldHash_ = snapshot_.worldHash;
         });
 }
