@@ -79,7 +79,7 @@ BuildingDefinition producerDefinition() {
     definition.producer = true;
     definition.supplyProvided = 4;
     definition.productionQueueCapacity = 1;
-    definition.trainableUnits = {1};
+    definition.trainableUnits = {1, 3};
     return definition;
 }
 
