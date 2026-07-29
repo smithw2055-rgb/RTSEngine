@@ -1,6 +1,8 @@
 #include <RTSEngine/RtsScripting/RtsScriptSession.h>
 
 #include <realscript/game/GameProductization.h>
+#include <rts/foundation/BinaryArchive.h>
+#include <rts/foundation/CanonicalHash.h>
 
 #include <algorithm>
 #include <cstring>
@@ -38,6 +40,63 @@ using realscript::runtime::ExecutionOptions;
 using realscript::runtime::RuntimeError;
 using realscript::runtime::Value;
 
+constexpr std::uint32_t kStateMagic = 0x33535452u; // RTS3
+constexpr std::uint32_t kStateVersion = 1u;
+constexpr std::uint32_t kMaximumTeams = 4096u;
+constexpr std::uint32_t kMaximumStringBytes = 4096u;
+constexpr std::uint32_t kMaximumObjectStateBytes = 16u * 1024u * 1024u;
+
+struct PersistedTeam final {
+    RtsTeamScriptDefinition definition;
+    std::uint32_t nextSequence{1};
+    bool enabled{true};
+    bool started{};
+    std::vector<std::uint8_t> objectState;
+};
+
+RuntimeError adapterError(
+    realscript::runtime::ErrorCode code,
+    std::string message) {
+    RuntimeError error;
+    error.code = code;
+    error.message = std::move(message);
+    return error;
+}
+
+void fail(RuntimeError& error, std::string message) {
+    error.code = realscript::runtime::ErrorCode::InvalidProgram;
+    error.message = std::move(message);
+    error.stackTrace.clear();
+}
+
+ExecutionOptions executionOptions(
+    const rts::scripting::ScriptExecutionPolicy& policy) {
+    ExecutionOptions options;
+    options.limits.instructionBudget =
+        std::max<std::uint64_t>(1u, policy.instructionBudget);
+    options.limits.recursionLimit =
+        std::max<std::size_t>(1u, policy.recursionLimit);
+    options.limits.gcWorkBudget = policy.gcWorkBudget;
+    options.determinism.mode = policy.strictDeterminism
+        ? realscript::runtime::DeterminismMode::Strict
+        : realscript::runtime::DeterminismMode::Off;
+    return options;
+}
+
+bool validDefinition(const RtsTeamScriptDefinition& definition) {
+    return definition.teamId != 0 && !definition.scriptType.empty() &&
+           definition.scriptType.size() <= kMaximumStringBytes &&
+           definition.thinkIntervalTicks != 0 &&
+           definition.maximumIntentsPerTick != 0;
+}
+
+bool builtInAiOwnsTeam(const RtsGameSession& session, std::uint32_t teamId) {
+    const auto& teams = session.ai().teams();
+    return std::any_of(
+        teams.begin(), teams.end(),
+        [teamId](const AiTeamState& value) { return value.teamId == teamId; });
+}
+
 bool visibleAt(
     const WorldSnapshot& snapshot,
     std::uint32_t teamId,
@@ -73,39 +132,7 @@ const RtsScriptEntityView* findEntity(
     return found != entities.end() && found->id == id ? &*found : nullptr;
 }
 
-RuntimeError adapterError(
-    realscript::runtime::ErrorCode code,
-    std::string message) {
-    RuntimeError error;
-    error.code = code;
-    error.message = std::move(message);
-    return error;
-}
-
-ExecutionOptions executionOptions(
-    const rts::scripting::ScriptExecutionPolicy& policy) {
-    ExecutionOptions options;
-    options.limits.instructionBudget =
-        std::max<std::uint64_t>(1u, policy.instructionBudget);
-    options.limits.recursionLimit =
-        std::max<std::size_t>(1u, policy.recursionLimit);
-    options.limits.gcWorkBudget = policy.gcWorkBudget;
-    options.determinism.mode = policy.strictDeterminism
-        ? realscript::runtime::DeterminismMode::Strict
-        : realscript::runtime::DeterminismMode::Off;
-    return options;
-}
-
-bool builtInAiOwnsTeam(const RtsGameSession& session, std::uint32_t teamId) {
-    const auto& teams = session.ai().teams();
-    return std::any_of(
-        teams.begin(), teams.end(),
-        [teamId](const AiTeamState& value) { return value.teamId == teamId; });
-}
-
-bool eventRelevant(
-    const RtsScriptReadView& view,
-    const DomainEvent& event) {
+bool eventRelevant(const RtsScriptReadView& view, const DomainEvent& event) {
     if (event.entity.valid()) {
         const auto* entity = view.entity(packScriptEntity(event.entity));
         if (entity && (entity->teamId == view.teamId() || entity->visible)) {
@@ -261,6 +288,85 @@ public:
 private:
     std::shared_ptr<detail::RtsScriptBindingState> state_;
 };
+
+bool readPersistedTeams(
+    const std::vector<std::uint8_t>& bytes,
+    std::vector<PersistedTeam>& output,
+    RuntimeError& error) {
+    foundation::BinaryReader reader(bytes);
+    std::uint32_t magic = 0;
+    std::uint32_t version = 0;
+    std::uint32_t count = 0;
+    if (!reader.readU32(magic) || !reader.readU32(version) ||
+        !reader.readU32(count) || magic != kStateMagic ||
+        version != kStateVersion || count > kMaximumTeams) {
+        fail(error, "invalid RTS script session state header");
+        return false;
+    }
+
+    std::vector<PersistedTeam> candidate;
+    candidate.resize(count);
+    std::uint32_t previousTeam = 0;
+    for (auto& entry : candidate) {
+        std::uint64_t maximumIntents = 0;
+        std::uint64_t recursionLimit = 0;
+        std::uint64_t gcWorkBudget = 0;
+        std::uint8_t strict = 0;
+        std::uint8_t enabled = 0;
+        std::uint8_t started = 0;
+        std::uint32_t objectBytes = 0;
+        if (!reader.readU32(entry.definition.teamId) ||
+            !reader.readString(
+                entry.definition.scriptType, kMaximumStringBytes) ||
+            !reader.readU32(entry.definition.thinkIntervalTicks) ||
+            !reader.readU64(maximumIntents) || maximumIntents == 0 ||
+            maximumIntents >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::size_t>::max()) ||
+            !reader.readU64(
+                entry.definition.executionPolicy.instructionBudget) ||
+            !reader.readU64(recursionLimit) ||
+            recursionLimit >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::size_t>::max()) ||
+            !reader.readU64(gcWorkBudget) ||
+            gcWorkBudget >
+                static_cast<std::uint64_t>(
+                    std::numeric_limits<std::size_t>::max()) ||
+            !reader.readU8(strict) || strict > 1 ||
+            !reader.readU32(entry.nextSequence) || entry.nextSequence == 0 ||
+            !reader.readU8(enabled) || enabled > 1 ||
+            !reader.readU8(started) || started > 1 ||
+            !reader.readU32(objectBytes) || objectBytes == 0 ||
+            objectBytes > kMaximumObjectStateBytes ||
+            !reader.readBytes(
+                objectBytes, entry.objectState, kMaximumObjectStateBytes)) {
+            fail(error, "invalid RTS script session state entry");
+            return false;
+        }
+        entry.definition.maximumIntentsPerTick =
+            static_cast<std::size_t>(maximumIntents);
+        entry.definition.executionPolicy.recursionLimit =
+            static_cast<std::size_t>(recursionLimit);
+        entry.definition.executionPolicy.gcWorkBudget =
+            static_cast<std::size_t>(gcWorkBudget);
+        entry.definition.executionPolicy.strictDeterminism = strict != 0;
+        entry.enabled = enabled != 0;
+        entry.started = started != 0;
+        if (!validDefinition(entry.definition) ||
+            (previousTeam != 0 && entry.definition.teamId <= previousTeam)) {
+            fail(error, "invalid or unsorted RTS script Team state");
+            return false;
+        }
+        previousTeam = entry.definition.teamId;
+    }
+    if (!reader.atEnd()) {
+        fail(error, "RTS script session state has trailing bytes");
+        return false;
+    }
+    output = std::move(candidate);
+    return true;
+}
 
 } // namespace
 
@@ -562,6 +668,79 @@ struct RtsScriptSession::Impl final {
         return false;
     }
 
+    bool buildTeam(
+        RtsTeamScriptDefinition definition,
+        bool runCreate,
+        const std::vector<std::uint8_t>* objectState,
+        std::uint32_t nextSequence,
+        bool enabled,
+        bool started,
+        TeamInstance& output,
+        RuntimeError& error) {
+        if (!runtime || !validDefinition(definition) || nextSequence == 0 ||
+            builtInAiOwnsTeam(session, definition.teamId)) {
+            fail(error, "invalid RTS script Team definition");
+            return false;
+        }
+        const auto type = runtime->findType(definition.scriptType);
+        if (!type) {
+            fail(error, "script Team type was not found: " + definition.scriptType);
+            return false;
+        }
+        auto object = runtime->createObject(*type, {}, error);
+        if (!object) return false;
+        const auto onThink = runtime->findMethod(*type, "OnThink", 0);
+        if (!onThink || !onThink->instance()) {
+            fail(error, "Team script requires void OnThink()");
+            return false;
+        }
+
+        TeamInstance team;
+        team.definition = std::move(definition);
+        team.object = std::move(*object);
+        team.onStart = runtime->findMethod(*type, "OnStart", 0);
+        team.onEvent = runtime->findMethod(*type, "OnEvent", 0);
+        team.onThink = *onThink;
+        team.nextSequence = nextSequence;
+        team.enabled = enabled;
+        team.started = started;
+
+        if (objectState) {
+            const auto decoded = realscript::game::decodeScriptObjectState(
+                *objectState, error);
+            if (!decoded || !realscript::game::restoreScriptObject(
+                    *runtime, team.object, *decoded, error)) {
+                return false;
+            }
+        } else if (runCreate) {
+            const auto onCreate = runtime->findMethod(*type, "OnCreate", 1);
+            if (onCreate) {
+                auto view = RtsScriptReadView::capture(
+                    session, team.definition.teamId);
+                std::vector<detail::RtsScriptIntent> ignored;
+                BindingScope scope(
+                    api.state_,
+                    view,
+                    ignored,
+                    team.definition.maximumIntentsPerTick,
+                    team.definition.teamId,
+                    session.simulation().nextExpectedTick());
+                report = {};
+                if (!invoke(
+                        team,
+                        *onCreate,
+                        {static_cast<std::int64_t>(team.definition.teamId)},
+                        "OnCreate",
+                        session.simulation().nextExpectedTick())) {
+                    error = errors.back().error;
+                    return false;
+                }
+            }
+        }
+        output = std::move(team);
+        return true;
+    }
+
     void flush(
         TeamInstance& team,
         const std::vector<detail::RtsScriptIntent>& intents,
@@ -620,12 +799,7 @@ bool RtsScriptSession::valid() const noexcept {
 }
 
 bool RtsScriptSession::registerTeam(RtsTeamScriptDefinition definition) {
-    if (!valid() || definition.teamId == 0 || definition.scriptType.empty() ||
-        definition.thinkIntervalTicks == 0 ||
-        definition.maximumIntentsPerTick == 0 ||
-        builtInAiOwnsTeam(impl_->session, definition.teamId)) {
-        return false;
-    }
+    if (!valid() || !validDefinition(definition)) return false;
     const auto existing = std::lower_bound(
         impl_->teams.begin(), impl_->teams.end(), definition.teamId,
         [](const Impl::TeamInstance& value, std::uint32_t teamId) {
@@ -636,69 +810,17 @@ bool RtsScriptSession::registerTeam(RtsTeamScriptDefinition definition) {
         return false;
     }
 
-    const auto type = impl_->runtime->findType(definition.scriptType);
-    if (!type) {
-        impl_->recordError(
-            impl_->session.simulation().nextExpectedTick(),
-            definition.teamId,
-            "FindType",
-            adapterError(
-                realscript::runtime::ErrorCode::FunctionNotFound,
-                "script Team type was not found: " + definition.scriptType));
-        return false;
-    }
-    RuntimeError createError;
-    auto object = impl_->runtime->createObject(*type, {}, createError);
-    if (!object) {
-        impl_->recordError(
-            impl_->session.simulation().nextExpectedTick(),
-            definition.teamId,
-            "CreateObject",
-            std::move(createError));
-        return false;
-    }
-    const auto onThink = impl_->runtime->findMethod(*type, "OnThink", 0);
-    if (!onThink) {
-        impl_->recordError(
-            impl_->session.simulation().nextExpectedTick(),
-            definition.teamId,
-            "FindOnThink",
-            adapterError(
-                realscript::runtime::ErrorCode::FunctionNotFound,
-                "Team script requires void OnThink()"));
-        return false;
-    }
-
     Impl::TeamInstance team;
-    team.definition = std::move(definition);
-    team.object = std::move(*object);
-    team.onStart = impl_->runtime->findMethod(*type, "OnStart", 0);
-    team.onEvent = impl_->runtime->findMethod(*type, "OnEvent", 0);
-    team.onThink = *onThink;
-
-    const auto onCreate = impl_->runtime->findMethod(*type, "OnCreate", 1);
-    if (onCreate) {
-        auto view = RtsScriptReadView::capture(
-            impl_->session, team.definition.teamId);
-        std::vector<detail::RtsScriptIntent> ignored;
-        BindingScope scope(
-            impl_->api.state_,
-            view,
-            ignored,
-            team.definition.maximumIntentsPerTick,
+    RuntimeError error;
+    if (!impl_->buildTeam(
+            std::move(definition), true, nullptr, 1, true, false, team, error)) {
+        impl_->recordError(
+            impl_->session.simulation().nextExpectedTick(),
             team.definition.teamId,
-            impl_->session.simulation().nextExpectedTick());
-        impl_->report = {};
-        if (!impl_->invoke(
-                team,
-                *onCreate,
-                {static_cast<std::int64_t>(team.definition.teamId)},
-                "OnCreate",
-                impl_->session.simulation().nextExpectedTick())) {
-            return false;
-        }
+            "RegisterTeam",
+            std::move(error));
+        return false;
     }
-
     impl_->teams.insert(existing, std::move(team));
     impl_->report = {};
     return true;
@@ -776,15 +898,136 @@ RtsScriptTickResult RtsScriptSession::processCompletedTick(
             succeeded = impl_->invoke(
                 team, team.onThink, {}, "OnThink", completedTick);
         }
-
-        if (succeeded) {
-            impl_->flush(team, intents, impl_->report.targetTick);
-        }
+        if (succeeded) impl_->flush(team, intents, impl_->report.targetTick);
     }
 
     return impl_->report.callbacks == 0
         ? RtsScriptTickResult::NoCallbacks
         : RtsScriptTickResult::Processed;
+}
+
+const rts::scripting::ScriptProgramIdentity*
+RtsScriptSession::programIdentity() const noexcept {
+    return valid() ? &impl_->program->identity() : nullptr;
+}
+
+std::vector<std::uint8_t> RtsScriptSession::encodeState(
+    RuntimeError& error) const {
+    if (!valid() || impl_->teams.size() > kMaximumTeams) {
+        fail(error, "RTS script session is not snapshot-ready");
+        return {};
+    }
+    foundation::BinaryWriter writer;
+    writer.writeU32(kStateMagic);
+    writer.writeU32(kStateVersion);
+    writer.writeU32(static_cast<std::uint32_t>(impl_->teams.size()));
+    for (const auto& team : impl_->teams) {
+        const auto state = realscript::game::snapshotScriptObject(
+            *impl_->runtime, team.object, error);
+        if (!state) return {};
+        const auto objectBytes = realscript::game::encodeScriptObjectState(
+            *state, error);
+        if (objectBytes.empty() || objectBytes.size() > kMaximumObjectStateBytes) {
+            if (error.code == realscript::runtime::ErrorCode::None) {
+                fail(error, "RTS script object state is too large");
+            }
+            return {};
+        }
+        writer.writeU32(team.definition.teamId);
+        writer.writeString(team.definition.scriptType);
+        writer.writeU32(team.definition.thinkIntervalTicks);
+        writer.writeU64(static_cast<std::uint64_t>(
+            team.definition.maximumIntentsPerTick));
+        writer.writeU64(team.definition.executionPolicy.instructionBudget);
+        writer.writeU64(static_cast<std::uint64_t>(
+            team.definition.executionPolicy.recursionLimit));
+        writer.writeU64(static_cast<std::uint64_t>(
+            team.definition.executionPolicy.gcWorkBudget));
+        writer.writeU8(
+            team.definition.executionPolicy.strictDeterminism ? 1u : 0u);
+        writer.writeU32(team.nextSequence);
+        writer.writeU8(team.enabled ? 1u : 0u);
+        writer.writeU8(team.started ? 1u : 0u);
+        writer.writeU32(static_cast<std::uint32_t>(objectBytes.size()));
+        writer.writeBytes(objectBytes);
+    }
+    return writer.take();
+}
+
+bool RtsScriptSession::restoreEncodedState(
+    const std::vector<std::uint8_t>& bytes,
+    RuntimeError& error) {
+    if (!valid()) {
+        fail(error, "RTS script runtime is unavailable");
+        return false;
+    }
+    std::vector<PersistedTeam> persisted;
+    if (!readPersistedTeams(bytes, persisted, error)) return false;
+
+    std::vector<Impl::TeamInstance> candidate;
+    candidate.reserve(persisted.size());
+    for (const auto& entry : persisted) {
+        Impl::TeamInstance team;
+        if (!impl_->buildTeam(
+                entry.definition,
+                false,
+                &entry.objectState,
+                entry.nextSequence,
+                entry.enabled,
+                entry.started,
+                team,
+                error)) {
+            return false;
+        }
+        candidate.push_back(std::move(team));
+    }
+    impl_->teams.swap(candidate);
+    impl_->outcomes.clear();
+    impl_->errors.clear();
+    impl_->report = {};
+    return true;
+}
+
+bool RtsScriptSession::authoritativeHash(
+    std::uint64_t& output,
+    RuntimeError& error) const {
+    if (!valid()) {
+        fail(error, "RTS script session cannot be hashed");
+        return false;
+    }
+    foundation::CanonicalHash hash;
+    hash.WriteU32(kStateVersion);
+    const auto& identity = impl_->program->identity();
+    hash.WriteU16(static_cast<std::uint16_t>(identity.bundle.type));
+    hash.WriteU64(identity.bundle.id);
+    hash.WriteU64(identity.bundlePayloadHash);
+    hash.WriteU32(identity.script.sdkCompatibilityVersion);
+    hash.WriteU32(identity.script.gameSdkPackageVersion);
+    hash.WriteU64(identity.script.hostApiHash);
+    hash.WriteU64(identity.script.programContentHash);
+    hash.WriteU32(static_cast<std::uint32_t>(impl_->teams.size()));
+    for (const auto& team : impl_->teams) {
+        const auto state = realscript::game::snapshotScriptObject(
+            *impl_->runtime, team.object, error);
+        if (!state) return false;
+        hash.WriteU32(team.definition.teamId);
+        hash.WriteString(team.definition.scriptType);
+        hash.WriteU32(team.definition.thinkIntervalTicks);
+        hash.WriteU64(static_cast<std::uint64_t>(
+            team.definition.maximumIntentsPerTick));
+        hash.WriteU64(team.definition.executionPolicy.instructionBudget);
+        hash.WriteU64(static_cast<std::uint64_t>(
+            team.definition.executionPolicy.recursionLimit));
+        hash.WriteU64(static_cast<std::uint64_t>(
+            team.definition.executionPolicy.gcWorkBudget));
+        hash.WriteBool(team.definition.executionPolicy.strictDeterminism);
+        hash.WriteU32(team.nextSequence);
+        hash.WriteBool(team.enabled);
+        hash.WriteBool(team.started);
+        hash.WriteU64(state->canonicalHash());
+    }
+    output = hash.Value();
+    return true;
 }
 
 const RtsScriptTickReport& RtsScriptSession::lastReport() const noexcept {

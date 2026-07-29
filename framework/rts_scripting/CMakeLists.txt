@@ -1,5 +1,6 @@
 add_library(rts_engine_rts_scripting STATIC
     src/RtsScriptSessionV2.cpp
+    src/RtsScriptSessionArchive.cpp
 )
 add_library(RTSEngine::RtsScripting ALIAS rts_engine_rts_scripting)
 
