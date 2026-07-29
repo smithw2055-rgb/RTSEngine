@@ -90,6 +90,12 @@ public:
         return api_;
     }
 
+    // Extension modules must be registered before compiling or loading a
+    // ScriptBundle so that the Host API hash covers the complete contract.
+    [[nodiscard]] realscript::game::GameApi& mutableGameApi() noexcept {
+        return api_;
+    }
+
 private:
     friend class RtsScriptSession;
     std::shared_ptr<detail::RtsScriptBindingState> state_;

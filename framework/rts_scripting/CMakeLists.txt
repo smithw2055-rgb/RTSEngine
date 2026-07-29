@@ -1,6 +1,8 @@
 add_library(rts_engine_rts_scripting STATIC
     src/RtsScriptSessionV2.cpp
     src/RtsScriptSessionArchive.cpp
+    src/RtsEntityBehaviorRuntime.cpp
+    src/RtsScriptWorldRuntime.cpp
 )
 add_library(RTSEngine::RtsScripting ALIAS rts_engine_rts_scripting)
 
