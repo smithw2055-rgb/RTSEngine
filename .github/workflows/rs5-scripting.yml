@@ -1,0 +1,78 @@
+name: RS5 Scripting
+
+on:
+  pull_request:
+  push:
+    branches:
+      - agent/rs5-aot-tools-mods
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rs5-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  aot-tools-mods:
+    name: AOT tools and Mods (${{ matrix.os }}, Debug)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned RealScript SDK
+        uses: actions/checkout@v4
+        with:
+          repository: smithw2055-rgb/RealScript
+          ref: e07b519acd3935def0f6d1079e3d366472fa30b5
+          path: .ci/RealScript
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build-rs5 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_REALSCRIPT=ON \
+            -DRTSENGINE_BUILD_SCRIPT_TOOLS=ON \
+            -DRTSENGINE_REALSCRIPT_SOURCE_DIR="$GITHUB_WORKSPACE/.ci/RealScript"
+      - name: Build
+        shell: bash
+        run: |
+          cmake --build build-rs5 --config Debug --parallel 2 \
+            --target rts_rs5_aot_smoke \
+                     rtsmod \
+                     rts_script_mod_tests \
+                     rts_entity_behavior_tests \
+            > rs5-build.log 2>&1 || {
+              tail -n 360 rs5-build.log
+              exit 1
+            }
+      - name: Test
+        shell: bash
+        run: |
+          ctest --test-dir build-rs5 -C Debug --output-on-failure \
+            -R "^rts_(script_mod|entity_behavior)_tests$" \
+            > rs5-tests.log 2>&1 || {
+              cat rs5-tests.log
+              exit 1
+            }
+      - name: Tool smoke
+        shell: bash
+        run: |
+          "$GITHUB_WORKSPACE/build-rs5/tools/rtsmod/${{ runner.os == 'Windows' && 'Debug/rtsmod.exe' || 'rtsmod' }}" 2> rtsmod-usage.log || test $? -eq 2
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rs5-logs-${{ matrix.os }}
+          path: |
+            rs5-build.log
+            rs5-tests.log
+            rtsmod-usage.log
+          if-no-files-found: ignore
+          retention-days: 3
