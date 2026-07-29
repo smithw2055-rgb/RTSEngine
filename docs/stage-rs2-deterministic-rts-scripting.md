@@ -33,6 +33,7 @@ The deterministic `Engine.Rts` module provides bounded queries:
 
 ```text
 CompletedTick, TargetTick, Team
+EventType, EventEntity, EventSecondary, EventValue
 ResourceAvailable, UsedSupply, SupplyCapacity
 IsAlive, EntityTeam, EntityX, EntityY, Health, IsIdle
 FindIdleUnit, FindIdleProducer, FindNearestVisibleEnemy
@@ -52,23 +53,28 @@ The binding layer validates basic ownership, visibility, target kind, map bounds
 A Team script is a rooted RealScript object with the following supported callbacks:
 
 ```text
-OnCreate(int teamId)                         optional
-OnStart()                                    optional
-OnEvent(int type, long entity,
-        long secondary, int value)           optional
-OnThink(long targetTick)                     required
+OnCreate(int teamId)    optional
+OnStart()               optional
+OnEvent()               optional
+OnThink()               required
 ```
+
+Lifecycle callbacks deliberately have no Tick or entity arguments. They read the active deterministic context through `TargetTick()` and `Event*()` queries. This keeps callback signatures stable while preserving full 64-bit Tick and generational entity identities.
 
 Teams execute in ascending `teamId` order. Within one Team the order is:
 
 ```text
 OnStart
 visible/relevant DomainEvents in publication order
-OnThink when targetTick % thinkIntervalTicks == 0
+OnThink when TargetTick() % thinkIntervalTicks == 0
 intent submission in script call order
 ```
 
 If any callback fails, every intent produced by that Team during the current adapter pass is discarded. Other Teams continue deterministically.
+
+## Bytecode object metadata
+
+RTSEngine loads script bundles through RealScript's game-object bytecode loader. RSBC 0.5 already preserves executable function signatures and exact receiver type identities, while the Game SDK loader reconstructs instance method, constructor, and property descriptors after decoding. This keeps existing RSBC 0.5 assets compatible and makes `ScriptRuntime::findMethod()` available after a cooked-asset round trip.
 
 ## Command submission
 
@@ -103,7 +109,7 @@ Script execution after a completed Tick cannot change the current `WorldSnapshot
 
 `rts_rts_scripting_tests` covers:
 
-- RealScript Team object creation and lifecycle resolution;
+- RealScript Team object creation and lifecycle resolution after `.rsbc` loading;
 - immutable visible-world capture;
 - hidden enemy filtering;
 - deterministic unit and target selection;
@@ -112,7 +118,7 @@ Script execution after a completed Tick cannot change the current `WorldSnapshot
 - stable command identity across identical runs;
 - rejection when built-in AI already owns the Team.
 
-GitHub Actions builds and runs both RS1 and RS2 scripting tests on Ubuntu and Windows using the pinned RealScript RS0 SDK revision.
+GitHub Actions builds and runs both RS1 and RS2 scripting tests on Ubuntu and Windows using the pinned RealScript object-metadata loader revision.
 
 ## Deferred to RS3
 
