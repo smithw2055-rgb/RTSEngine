@@ -25,7 +25,7 @@ set(RTSENGINE_REALSCRIPT_GIT_REPOSITORY
     "https://github.com/smithw2055-rgb/RealScript.git" CACHE STRING
     "RealScript repository used by FetchContent")
 set(RTSENGINE_REALSCRIPT_GIT_TAG
-    "7a6c8d56913cb7be4e5b8addad985eb5812bef82" CACHE STRING
+    "6817f01e8cecf2251150c854488ffd5f10c16df7" CACHE STRING
     "Pinned RealScript revision validated for RTSEngine scripting")
 
 if(RTSENGINE_ENABLE_SOKOL_APP AND NOT RTSENGINE_ENABLE_SOKOL_RENDERER)
