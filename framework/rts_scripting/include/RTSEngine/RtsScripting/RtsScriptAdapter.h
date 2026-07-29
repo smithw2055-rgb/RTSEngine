@@ -42,6 +42,7 @@ struct RtsScriptContext final {
 struct RtsTeamScriptConfig final {
     std::uint32_t teamId{};
     std::uint32_t thinkIntervalTicks{8};
+    std::uint32_t nextSequence{1};
     std::string entryPoint{"Game.AI::OnThink"};
 };
 
@@ -74,7 +75,7 @@ public:
     void clearErrors() { errors_.clear(); }
 
 private:
-    bool submitIntent(const RtsTeamScriptConfig& team,
+    bool submitIntent(RtsTeamScriptConfig& team,
                       std::uint64_t targetTick,
                       const RtsScriptIntent& intent);
 
