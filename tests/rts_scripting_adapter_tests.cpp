@@ -147,6 +147,35 @@ struct ScriptFixture final {
     }
 };
 
+void probeTeamProgram(const ScriptFixture& scripts) {
+    auto runtime = scripts.program->createObjectRuntime();
+    const auto type = runtime.findType("Game.TeamAi::TeamBrain");
+    require(type.has_value());
+    require(runtime.findMethod(*type, "OnThink", 1).has_value());
+    require(runtime.findMethod(*type, "OnStart", 0).has_value());
+    require(runtime.findMethod(*type, "OnEvent", 4).has_value());
+    const auto onCreate = runtime.findMethod(*type, "OnCreate", 1);
+    require(onCreate.has_value());
+
+    realscript::runtime::RuntimeError error;
+    auto object = runtime.createObject(*type, {}, error);
+    if (!object) {
+        std::cerr << "RS2 object creation failed: " << error.message << "\n";
+        std::abort();
+    }
+    realscript::runtime::ExecutionOptions options;
+    options.determinism.mode = realscript::runtime::DeterminismMode::Strict;
+    const auto created = runtime.invoke(
+        *object,
+        *onCreate,
+        {std::int64_t{1}},
+        options);
+    if (!created.succeeded) {
+        std::cerr << "RS2 OnCreate failed: " << created.error.message << "\n";
+        std::abort();
+    }
+}
+
 struct ScenarioResult final {
     std::uint64_t hashBeforeScripts{};
     std::uint64_t hashAfterScripts{};
@@ -156,6 +185,7 @@ struct ScenarioResult final {
 
 ScenarioResult runScenario() {
     ScriptFixture scripts;
+    probeTeamProgram(scripts);
     RtsGameSession session(24, 12);
     const auto own = session.createUnit(
         {3, 5}, {1}, 1, combatProfile(), 20);
@@ -172,7 +202,14 @@ ScenarioResult runScenario() {
     definition.thinkIntervalTicks = 1;
     definition.maximumIntentsPerTick = 16;
     definition.executionPolicy.instructionBudget = 10000;
-    require(adapter.registerTeam(std::move(definition)));
+    const bool registered = adapter.registerTeam(std::move(definition));
+    if (!registered) {
+        for (const auto& failure : adapter.errors()) {
+            std::cerr << "RS2 registration error [" << failure.callback
+                      << "]: " << failure.error.message << "\n";
+        }
+    }
+    require(registered);
 
     require(session.stepDetailed(0) == RtsStepResult::Advanced);
     ScenarioResult result;
