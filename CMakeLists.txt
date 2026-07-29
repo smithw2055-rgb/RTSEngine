@@ -4,6 +4,7 @@ project(RTSEngine VERSION 0.1.0 LANGUAGES CXX)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 option(RTSENGINE_BUILD_TESTS "Build RTSEngine tests" ON)
 option(RTSENGINE_BUILD_EXAMPLES "Build RTSEngine examples" ON)
@@ -17,6 +18,8 @@ option(RTSENGINE_ENABLE_SOKOL_APP
        "Build the optional Sokol desktop platform and application" OFF)
 option(RTSENGINE_ENABLE_REALSCRIPT
        "Build the optional RealScript scripting runtime" OFF)
+option(RTSENGINE_BUILD_SCRIPT_TOOLS
+       "Build RealScript AOT and Mod command-line tools" ON)
 set(RTSENGINE_SOKOL_INCLUDE_DIR "" CACHE PATH
     "Directory containing pinned Sokol app, gfx, glue and log headers")
 set(RTSENGINE_REALSCRIPT_SOURCE_DIR "" CACHE PATH
@@ -112,6 +115,10 @@ add_subdirectory(framework/rts_desktop)
 add_subdirectory(framework/tower_defense)
 add_subdirectory(framework/roguelite)
 
+if(RTSENGINE_ENABLE_REALSCRIPT AND RTSENGINE_BUILD_SCRIPT_TOOLS)
+    add_subdirectory(tools/rtsmod)
+endif()
+
 if(RTSENGINE_BUILD_EXAMPLES)
     add_subdirectory(apps/headless_demo)
     add_subdirectory(apps/tower_defense_demo)
@@ -126,6 +133,7 @@ if(RTSENGINE_BUILD_TESTS)
     add_subdirectory(tests)
     if(RTSENGINE_ENABLE_REALSCRIPT)
         add_subdirectory(tests/rs2)
+        add_subdirectory(tests/rs5)
     endif()
 endif()
 
