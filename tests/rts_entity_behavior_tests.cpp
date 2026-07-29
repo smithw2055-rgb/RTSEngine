@@ -165,7 +165,15 @@ std::int64_t memberInt(
     realscript::runtime::RuntimeError error;
     const auto value = behaviors.member(entity, name, error);
     require(value.has_value());
-    return std::get<std::int64_t>(*value);
+    if (const auto* integer = std::get_if<std::int64_t>(&*value)) {
+        return *integer;
+    }
+    if (const auto* integer =
+            std::get_if<realscript::runtime::LongValue>(&*value)) {
+        return integer->value;
+    }
+    require(false);
+    return 0;
 }
 
 struct Scenario final {
