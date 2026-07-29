@@ -56,6 +56,10 @@ if(RTSENGINE_ENABLE_SANITIZERS)
     endif()
 endif()
 
+if(RTSENGINE_BUILD_TESTS)
+    enable_testing()
+endif()
+
 if(RTSENGINE_ENABLE_REALSCRIPT)
     set(REALSCRIPT_BUILD_TESTS OFF CACHE BOOL
         "RTSEngine owns the integration test boundary" FORCE)
@@ -122,7 +126,6 @@ if(RTSENGINE_BUILD_EXAMPLES)
 endif()
 
 if(RTSENGINE_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
 endif()
 
