@@ -223,6 +223,15 @@ target_link_libraries(rts_playable_desktop_runtime_tests PRIVATE
 )
 add_test(NAME rts_playable_desktop_runtime_tests COMMAND rts_playable_desktop_runtime_tests)
 
+if(RTSENGINE_ENABLE_REALSCRIPT)
+    add_executable(rts_scripting_tests scripting_integration_tests.cpp)
+    target_link_libraries(rts_scripting_tests PRIVATE
+        RTSEngine::Scripting
+        RealScript::GameCompiler
+    )
+    add_test(NAME rts_scripting_tests COMMAND rts_scripting_tests)
+endif()
+
 if(RTSENGINE_ENABLE_SOKOL_RENDERER)
     add_executable(rts_sokol_shader_contract_tests
         sokol_shader_contract_tests.cpp
