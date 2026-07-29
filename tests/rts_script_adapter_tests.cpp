@@ -4,9 +4,9 @@
 #include <realscript/game/GameScripting.h>
 #include <realscript/runtime/Runtime.h>
 
-#include <cassert>
 #include <cstdint>
 #include <cstdlib>
+#include <iostream>
 #include <memory>
 #include <string>
 
@@ -16,10 +16,13 @@ using namespace rts;
 using namespace rts::gameplay;
 using namespace rts::gameplay::scripting;
 
-void check(bool value) {
-    assert(value);
-    if (!value) std::abort();
+void check(bool value, const char* expression, int line) {
+    if (value) return;
+    std::cerr << "CHECK failed at line " << line << ": " << expression << '\n';
+    std::abort();
 }
+
+#define CHECK(expression) check((expression), #expression, __LINE__)
 
 const char* source = R"(
 module Game.AI;
@@ -43,26 +46,31 @@ int Plan(int team)
 
 void testEntityPacking() {
     ecs::Entity entity{42, 7};
-    check(UnpackScriptEntity(PackScriptEntity(entity)) == entity);
-    check(PackScriptEntity({}) == 0);
-    check(!UnpackScriptEntity(0).valid());
+    CHECK(UnpackScriptEntity(PackScriptEntity(entity)) == entity);
+    CHECK(PackScriptEntity({}) == 0);
+    CHECK(!UnpackScriptEntity(0).valid());
 }
 
 void testQueriesAndIntentBuffer() {
     RtsGameSession session(16, 16);
-    check(session.setRelation(1, 2, DiplomaticRelation::Hostile));
+    CHECK(session.setRelation(1, 2, DiplomaticRelation::Hostile));
     const auto friendly = session.createUnit({1, 1}, {1}, 1);
     const auto enemy = session.createUnit({2, 1}, {1}, 2);
-    check(friendly.valid() && enemy.valid());
-    check(session.step(0));
+    CHECK(friendly.valid() && enemy.valid());
+    CHECK(session.step(0));
 
     auto context = std::make_shared<RtsScriptContext>();
     auto api = CreateRtsScriptApi(context);
-    check(api.valid());
+    CHECK(api.valid());
 
     realscript::game::GameScriptCompiler compiler(api);
     auto compiled = compiler.compile({{"team_ai.rs", source}});
-    check(compiled.succeeded());
+    if (!compiled.succeeded()) {
+        for (const auto& item : compiled.diagnostics.items()) {
+            std::cerr << item.code << ": " << item.message << '\n';
+        }
+    }
+    CHECK(compiled.succeeded());
 
     realscript::runtime::EngineRuntime runtime(compiled.program.program());
     runtime.setBindings(compiled.program.bindings());
@@ -74,12 +82,15 @@ void testQueriesAndIntentBuffer() {
     options.determinism.mode = realscript::runtime::DeterminismMode::Strict;
     const auto result = runtime.invoke(
         "Game.AI::Plan", {std::int64_t{1}}, options);
-    check(result.succeeded);
-    check(std::get<std::int64_t>(result.value) == 1);
-    check(context->intents.size() == 1);
-    check(context->intents.front().subject == friendly);
-    check(context->intents.front().type == RtsScriptIntentType::Attack);
-    check(context->intents.front().target == enemy);
+    if (!result.succeeded) {
+        std::cerr << "runtime error: " << result.error.message << '\n';
+    }
+    CHECK(result.succeeded);
+    CHECK(std::get<std::int64_t>(result.value) == 1);
+    CHECK(context->intents.size() == 1);
+    CHECK(context->intents.front().subject == friendly);
+    CHECK(context->intents.front().type == RtsScriptIntentType::Attack);
+    CHECK(context->intents.front().target == enemy);
     context->clear();
 }
 
