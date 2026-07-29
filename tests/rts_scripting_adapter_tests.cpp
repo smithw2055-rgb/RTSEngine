@@ -69,15 +69,21 @@ class TeamBrain
         observedEvents = 0;
     }
 
-    void OnEvent(int eventType, long entity, long secondary, int value)
+    void OnEvent()
     {
-        observedEvents = observedEvents + 1;
+        int eventType = EventType();
+        long entity = EventEntity();
+        if (eventType >= 0 && entity != 0)
+        {
+            observedEvents = observedEvents + 1;
+        }
     }
 
-    void OnThink(long tick)
+    void OnThink()
     {
+        long tick = TargetTick();
         long unit = FindIdleUnit();
-        if (unit != 0)
+        if (tick >= 0 && unit != 0)
         {
             long enemy = FindNearestVisibleEnemy(unit);
             if (enemy != 0)
@@ -151,9 +157,9 @@ void probeTeamProgram(const ScriptFixture& scripts) {
     auto runtime = scripts.program->createObjectRuntime();
     const auto type = runtime.findType("Game.TeamAi::TeamBrain");
     require(type.has_value());
-    require(runtime.findMethod(*type, "OnThink", 1).has_value());
+    require(runtime.findMethod(*type, "OnThink", 0).has_value());
     require(runtime.findMethod(*type, "OnStart", 0).has_value());
-    require(runtime.findMethod(*type, "OnEvent", 4).has_value());
+    require(runtime.findMethod(*type, "OnEvent", 0).has_value());
     const auto onCreate = runtime.findMethod(*type, "OnCreate", 1);
     require(onCreate.has_value());
 
