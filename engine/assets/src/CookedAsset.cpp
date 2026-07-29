@@ -70,7 +70,7 @@ bool CookedAssetCodec::decode(const std::vector<std::uint8_t>& bytes,
     CookedAsset candidate;
     if (!reader.readU32(magic) || !reader.readU16(version) ||
         !reader.readU16(type) || magic != kMagic || version != kVersion ||
-        type > static_cast<std::uint16_t>(AssetType::Binary) ||
+        type > static_cast<std::uint16_t>(AssetType::ScriptBundle) ||
         !reader.readU64(candidate.key.id) ||
         !reader.readU32(candidate.schemaVersion) ||
         !reader.readU32(dependencyCount) ||
@@ -86,7 +86,7 @@ bool CookedAssetCodec::decode(const std::vector<std::uint8_t>& bytes,
     for (auto& dependency : candidate.dependencies) {
         if (!reader.readU16(type) ||
             type == static_cast<std::uint16_t>(AssetType::Unknown) ||
-            type > static_cast<std::uint16_t>(AssetType::Binary) ||
+            type > static_cast<std::uint16_t>(AssetType::ScriptBundle) ||
             !reader.readU64(dependency.key.id) ||
             !reader.readU32(dependency.minimumSchemaVersion) ||
             dependency.key.id == 0 ||
