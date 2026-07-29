@@ -2,6 +2,7 @@
 
 #include <realscript/Version.h>
 #include <realscript/bytecode/Bytecode.h>
+#include <realscript/game/GameBytecodeObjects.h>
 
 #include <algorithm>
 #include <utility>
@@ -102,8 +103,8 @@ std::optional<ScriptBundle> RealScriptHost::describeBundle(
         encodedModules.push_back(std::move(encoded));
     }
 
-    realscript::game::GameProgramLoader loader(api_);
-    auto loaded = loader.loadBytecodeModules(encodedModules);
+    auto loaded = realscript::game::loadGameObjectBytecodeModules(
+        api_, encodedModules);
     appendLoadDiagnostics(diagnostics, loaded.diagnostics);
     if (!loaded.succeeded()) return std::nullopt;
 
@@ -202,8 +203,8 @@ ScriptLoadResult RealScriptHost::load(assets::AssetKey bundleKey) {
         encodedModules.push_back(std::move(encoded));
     }
 
-    realscript::game::GameProgramLoader loader(api_);
-    auto loadedProgram = loader.loadBytecodeModules(encodedModules);
+    auto loadedProgram = realscript::game::loadGameObjectBytecodeModules(
+        api_, encodedModules);
     appendLoadDiagnostics(result.diagnostics, loadedProgram.diagnostics);
     if (!loadedProgram.succeeded()) {
         result.failure = ScriptLoadFailure::ProgramDecodeFailed;

@@ -25,8 +25,8 @@ set(RTSENGINE_REALSCRIPT_GIT_REPOSITORY
     "https://github.com/smithw2055-rgb/RealScript.git" CACHE STRING
     "RealScript repository used by FetchContent")
 set(RTSENGINE_REALSCRIPT_GIT_TAG
-    "50d13a0074d9555391f63e0dd0b1a3c2b07b040e" CACHE STRING
-    "Pinned RealScript revision validated for RTSEngine Stage RS1")
+    "6817f01e8cecf2251150c854488ffd5f10c16df7" CACHE STRING
+    "Pinned RealScript revision validated for RTSEngine scripting")
 
 if(RTSENGINE_ENABLE_SOKOL_APP AND NOT RTSENGINE_ENABLE_SOKOL_RENDERER)
     message(FATAL_ERROR
@@ -60,7 +60,7 @@ if(RTSENGINE_ENABLE_REALSCRIPT)
     set(REALSCRIPT_BUILD_TESTS OFF CACHE BOOL
         "RTSEngine owns the integration test boundary" FORCE)
     set(REALSCRIPT_ENABLE_TOOLCHAIN_JIT_TESTS OFF CACHE BOOL
-        "Toolchain JIT is not part of RTSEngine Stage RS1" FORCE)
+        "Toolchain JIT is not part of RTSEngine scripting" FORCE)
     set(REALSCRIPT_INSTALL_SDK OFF CACHE BOOL
         "RTSEngine does not install the nested RealScript SDK" FORCE)
 
@@ -104,6 +104,9 @@ add_subdirectory(engine/runtime)
 add_subdirectory(engine/ecs)
 add_subdirectory(engine/navigation)
 add_subdirectory(framework/rts)
+if(RTSENGINE_ENABLE_REALSCRIPT)
+    add_subdirectory(framework/rts_scripting)
+endif()
 add_subdirectory(framework/rts_presentation)
 add_subdirectory(framework/rts_desktop)
 add_subdirectory(framework/tower_defense)
@@ -121,6 +124,9 @@ endif()
 if(RTSENGINE_BUILD_TESTS)
     enable_testing()
     add_subdirectory(tests)
+    if(RTSENGINE_ENABLE_REALSCRIPT)
+        add_subdirectory(tests/rs2)
+    endif()
 endif()
 
 if(RTSENGINE_BUILD_FUZZERS)

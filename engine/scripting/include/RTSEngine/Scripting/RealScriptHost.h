@@ -46,6 +46,10 @@ public:
         const std::vector<realscript::runtime::Value>& arguments = {},
         ScriptExecutionPolicy policy = {}) const;
 
+    [[nodiscard]] realscript::game::ScriptRuntime createObjectRuntime() const {
+        return package_.createRuntime();
+    }
+
     [[nodiscard]] std::shared_ptr<realscript::runtime::ManagedHeap> heap()
         const noexcept {
         return package_.heap;
