@@ -154,6 +154,17 @@ public:
     [[nodiscard]] RtsScriptTickResult processCompletedTick(
         std::uint64_t completedTick);
 
+    [[nodiscard]] const rts::scripting::ScriptProgramIdentity*
+        programIdentity() const noexcept;
+    [[nodiscard]] bool authoritativeHash(
+        std::uint64_t& output,
+        realscript::runtime::RuntimeError& error) const;
+    [[nodiscard]] std::vector<std::uint8_t> encodeState(
+        realscript::runtime::RuntimeError& error) const;
+    [[nodiscard]] bool restoreEncodedState(
+        const std::vector<std::uint8_t>& bytes,
+        realscript::runtime::RuntimeError& error);
+
     [[nodiscard]] const RtsScriptTickReport& lastReport() const noexcept;
     [[nodiscard]] const std::vector<RtsScriptCommandOutcome>& outcomes()
         const noexcept;
