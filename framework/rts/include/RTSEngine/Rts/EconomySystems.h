@@ -132,13 +132,13 @@ private:
         EconomyCommandDependencies dependencies) {
         bool found = false;
         bool owned = false;
-        for (const auto entity : world.view<ConstructionSite>()) {
-            const auto* site = world.try_get<ConstructionSite>(entity);
-            if (!site || site->id != command.objectId) continue;
-            found = true;
-            owned = site->ownerTeam == command.issuer && command.issuer != 0;
-            break;
-        }
+        world.eachRef<ConstructionSite>(
+            [&](ecs::Entity, ConstructionSite& site) {
+                if (found || site.id != command.objectId) return;
+                found = true;
+                owned = site.ownerTeam == command.issuer &&
+                        command.issuer != 0;
+            });
         if (!found) {
             reject(context, command, CommandRejectionReason::InvalidEntity,
                    dependencies.events);
@@ -299,6 +299,7 @@ private:
 struct ConstructionSystemDependencies {
     BaseBuildingRuntime& building;
     ecs::EntityCommandBuffer& structuralCommands;
+    std::vector<ConstructionId>& completing;
     std::vector<DomainEvent>& events;
 };
 
@@ -308,17 +309,16 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         ConstructionSystemDependencies dependencies) {
-        std::vector<ConstructionId> completing;
-        for (const auto entity : world.view<ConstructionSite>()) {
-            const auto* site = world.try_get<ConstructionSite>(entity);
-            if (site &&
-                site->progressTicks + 1 >= site->requiredTicks) {
-                completing.push_back(site->id);
-            }
-        }
+        dependencies.completing.clear();
+        world.eachRef<ConstructionSite>(
+            [&](ecs::Entity, ConstructionSite& site) {
+                if (site.progressTicks + 1 >= site.requiredTicks) {
+                    dependencies.completing.push_back(site.id);
+                }
+            });
         dependencies.building.advance(
             context, dependencies.structuralCommands, world);
-        for (const auto id : completing) {
+        for (const auto id : dependencies.completing) {
             dependencies.events.push_back(
                 {context.tick,
                  DomainEventType::ConstructionCompleted,
@@ -343,56 +343,57 @@ public:
         ecs::World& world,
         const ecs::SystemContext& context,
         ProductionSystemDependencies dependencies) {
-        for (const auto entity :
-             world.view<Building, ProductionQueue, RallyPoint>()) {
-            auto* queue = world.try_get<ProductionQueue>(entity);
-            const auto* rally = world.try_get<RallyPoint>(entity);
-            if (!queue || !rally || queue->items.empty()) continue;
+        world.eachRef<Building, ProductionQueue, RallyPoint>(
+            [&](ecs::Entity entity,
+                Building&,
+                ProductionQueue& queue,
+                RallyPoint& rally) {
+                if (queue.items.empty()) return;
 
-            auto& item = queue->items.front();
-            ++item.progressTicks;
-            if (item.progressTicks < item.requiredTicks) continue;
+                auto& item = queue.items.front();
+                ++item.progressTicks;
+                if (item.progressTicks < item.requiredTicks) return;
 
-            const auto* definition =
-                dependencies.unitDefinitions.find(item.unitDefinitionId);
-            if (!definition) {
-                const auto rejectedId = item.id;
-                const auto rejectedDefinition = item.unitDefinitionId;
-                dependencies.resources.release(item.reservedCost);
-                queue->items.erase(queue->items.begin());
+                const auto* definition =
+                    dependencies.unitDefinitions.find(item.unitDefinitionId);
+                if (!definition) {
+                    const auto rejectedId = item.id;
+                    const auto rejectedDefinition = item.unitDefinitionId;
+                    dependencies.resources.release(item.reservedCost);
+                    queue.items.erase(queue.items.begin());
+                    dependencies.events.push_back(
+                        {context.tick,
+                         DomainEventType::ProductionRejected,
+                         entity,
+                         rejectedId,
+                         rejectedDefinition});
+                    return;
+                }
+
+                dependencies.resources.commit(item.reservedCost);
+                const auto producedId = item.id;
+                const auto* ownerTeam = world.try_get<Team>(entity);
+                const auto teamId = ownerTeam ? ownerTeam->id : 0;
+                const auto deferred =
+                    dependencies.structuralCommands.create(context);
+                EntityFactory::queueUnit(
+                    context,
+                    dependencies.structuralCommands,
+                    dependencies.modifiers,
+                    deferred,
+                    Position{rally.point.x, rally.point.y},
+                    definition->cellsPerTick,
+                    teamId,
+                    definition->combat,
+                    definition->visionRange);
+                queue.items.erase(queue.items.begin());
                 dependencies.events.push_back(
                     {context.tick,
-                     DomainEventType::ProductionRejected,
+                     DomainEventType::ProductionCompleted,
                      entity,
-                     rejectedId,
-                     rejectedDefinition});
-                continue;
-            }
-
-            dependencies.resources.commit(item.reservedCost);
-            const auto producedId = item.id;
-            const auto* ownerTeam = world.try_get<Team>(entity);
-            const auto teamId = ownerTeam ? ownerTeam->id : 0;
-            const auto deferred =
-                dependencies.structuralCommands.create(context);
-            EntityFactory::queueUnit(
-                context,
-                dependencies.structuralCommands,
-                dependencies.modifiers,
-                deferred,
-                Position{rally->point.x, rally->point.y},
-                definition->cellsPerTick,
-                teamId,
-                definition->combat,
-                definition->visionRange);
-            queue->items.erase(queue->items.begin());
-            dependencies.events.push_back(
-                {context.tick,
-                 DomainEventType::ProductionCompleted,
-                 entity,
-                 producedId,
-                 definition->id});
-        }
+                     producedId,
+                     definition->id});
+            });
     }
 };
 

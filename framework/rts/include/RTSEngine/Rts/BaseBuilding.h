@@ -164,15 +164,13 @@ public:
                         ecs::World& world,
                         ConstructionId id) {
         BuildFailure result = BuildFailure::UnknownConstruction;
-        world.each<ConstructionSite, BuildingFootprint>(
-            [&](ecs::Entity entity) {
-                if (result == BuildFailure::None) return;
-                const auto* site = world.try_get<ConstructionSite>(entity);
-                const auto* footprint =
-                    world.try_get<BuildingFootprint>(entity);
-                if (!site || !footprint || site->id != id) return;
-                releaseFootprint(*footprint);
-                ledger_.release(site->reservedCost);
+        world.eachRef<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity,
+                ConstructionSite& site,
+                BuildingFootprint& footprint) {
+                if (result == BuildFailure::None || site.id != id) return;
+                releaseFootprint(footprint);
+                ledger_.release(site.reservedCost);
                 commands.destroy(context, entity);
                 result = BuildFailure::None;
             });
@@ -182,24 +180,22 @@ public:
     void advance(const ecs::SystemContext& context,
                  ecs::EntityCommandBuffer& commands,
                  ecs::World& world) {
-        world.each<ConstructionSite, BuildingFootprint>(
-            [&](ecs::Entity entity) {
-                auto* site = world.try_get<ConstructionSite>(entity);
-                const auto* footprint =
-                    world.try_get<BuildingFootprint>(entity);
-                if (!site || !footprint) return;
-                ++site->progressTicks;
-                if (site->progressTicks < site->requiredTicks) return;
+        world.eachRef<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity,
+                ConstructionSite& site,
+                BuildingFootprint& footprint) {
+                ++site.progressTicks;
+                if (site.progressTicks < site.requiredTicks) return;
 
-                ledger_.commit(site->reservedCost);
+                ledger_.commit(site.reservedCost);
                 commands.add(
                     context, entity,
-                    Building{site->definitionId, site->producer});
-                if (site->producer) {
+                    Building{site.definitionId, site.producer});
+                if (site.producer) {
                     commands.add(context, entity, ProductionQueue{});
                     commands.add(context, entity, RallyPoint{
-                        {footprint->origin.x + footprint->width,
-                         footprint->origin.y + footprint->height / 2}
+                        {footprint.origin.x + footprint.width,
+                         footprint.origin.y + footprint.height / 2}
                     });
                 }
                 commands.remove<ConstructionSite>(context, entity);

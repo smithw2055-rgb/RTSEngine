@@ -5,6 +5,7 @@
 
 #include <cassert>
 #include <memory>
+#include <tuple>
 #include <typeindex>
 #include <unordered_map>
 #include <utility>
@@ -69,9 +70,9 @@ public:
         pool<T>().pool.reserve(count);
     }
 
-    // Allocation-free deterministic query. The smallest component pool is used
-    // as the driving range and all component pools are already kept in Entity
-    // order, so callers can use this directly in warmed simulation Tick paths.
+    // Allocation-free deterministic entity query. The smallest component pool
+    // is used as the driving range. This compatibility form only exposes the
+    // Entity and is retained for callers that do not need component references.
     template<class... Components, class Function>
     void each(Function&& function) {
         const auto* driving = smallestPool<Components...>();
@@ -93,6 +94,42 @@ public:
             if (alive(entity) && (has<Components>(entity) && ...)) {
                 callback(entity);
             }
+        }
+    }
+
+    // Direct component-reference query for warmed Tick paths. Component pool
+    // pointers are resolved once at query construction, not once per entity.
+    // The callback signature is:
+    //   void(Entity, Components&...)
+    template<class... Components, class Function>
+    void eachRef(Function&& function) {
+        auto pools = std::make_tuple(find_pool<Components>()...);
+        constexpr auto indices = std::index_sequence_for<Components...>{};
+        if (!allPoolsPresent(pools, indices)) return;
+        const auto* driving = smallestPool<Components...>();
+        if (!driving) return;
+
+        auto&& callback = function;
+        for (const auto entity : driving->entities()) {
+            if (!alive(entity)) continue;
+            invokeMutableReferences(callback, entity, pools, indices);
+        }
+    }
+
+    // Const overload exposes const component references:
+    //   void(Entity, const Components&...)
+    template<class... Components, class Function>
+    void eachRef(Function&& function) const {
+        auto pools = std::make_tuple(find_pool<Components>()...);
+        constexpr auto indices = std::index_sequence_for<Components...>{};
+        if (!allPoolsPresent(pools, indices)) return;
+        const auto* driving = smallestPool<Components...>();
+        if (!driving) return;
+
+        auto&& callback = function;
+        for (const auto entity : driving->entities()) {
+            if (!alive(entity)) continue;
+            invokeConstReferences(callback, entity, pools, indices);
         }
     }
 
@@ -125,6 +162,39 @@ private:
     bool has(Entity entity) const {
         const auto* value = find_pool<T>();
         return value && value->pool.contains(entity);
+    }
+
+    template<class Tuple, std::size_t... Indices>
+    static bool allPoolsPresent(
+        const Tuple& pools,
+        std::index_sequence<Indices...>) noexcept {
+        return ((std::get<Indices>(pools) != nullptr) && ...);
+    }
+
+    template<class Function, class Tuple, std::size_t... Indices>
+    static void invokeMutableReferences(
+        Function& callback,
+        Entity entity,
+        Tuple& pools,
+        std::index_sequence<Indices...>) {
+        auto values = std::make_tuple(
+            std::get<Indices>(pools)->pool.try_get(entity)...);
+        if (((std::get<Indices>(values) != nullptr) && ...)) {
+            callback(entity, *std::get<Indices>(values)...);
+        }
+    }
+
+    template<class Function, class Tuple, std::size_t... Indices>
+    static void invokeConstReferences(
+        Function& callback,
+        Entity entity,
+        const Tuple& pools,
+        std::index_sequence<Indices...>) {
+        auto values = std::make_tuple(
+            std::get<Indices>(pools)->pool.try_get(entity)...);
+        if (((std::get<Indices>(values) != nullptr) && ...)) {
+            callback(entity, *std::get<Indices>(values)...);
+        }
     }
 
     template<class... Components>

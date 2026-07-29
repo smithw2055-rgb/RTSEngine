@@ -32,10 +32,10 @@ public:
         snapshot.tick = tick;
         snapshot.resources = dependencies.resources;
         snapshot.teamModifiers = dependencies.modifiers.entries();
-        const auto commandState = dependencies.commands.snapshot();
-        snapshot.commandCommittedThrough = commandState.committedThrough;
+        snapshot.commandCommittedThrough =
+            dependencies.commands.committedThrough();
         snapshot.pendingCommands = static_cast<std::uint32_t>(
-            commandState.pending.size());
+            dependencies.commands.pending());
         snapshot.entities.clear();
         snapshot.visibility.clear();
         snapshot.visibilityWidth = 0;
@@ -52,12 +52,13 @@ public:
         hash.WriteI32(dependencies.resources.reserved);
         hash.WriteI32(dependencies.resources.spent);
         dependencies.modifiers.appendHash(hash);
-        hash.WriteU64(commandState.committedThrough);
+        hash.WriteU64(dependencies.commands.committedThrough());
         hash.WriteU32(static_cast<std::uint32_t>(
-            commandState.pending.size()));
-        for (const auto& command : commandState.pending) {
-            hashCommand(hash, command);
-        }
+            dependencies.commands.pending()));
+        dependencies.commands.forEachPending(
+            [&](const TickCommand& command) {
+                hashCommand(hash, command);
+            });
         hash.WriteU64(dependencies.navigation.revision());
         for (const auto blocked : dependencies.navigation.blockers()) {
             hash.WriteU8(blocked);
@@ -252,40 +253,40 @@ private:
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
         bool includeVision) {
-        for (const auto entity :
-             world.view<Position, OrderQueue, MovementAgent>()) {
-            const auto* position = world.try_get<Position>(entity);
-            const auto* queue = world.try_get<OrderQueue>(entity);
-            const auto* agent = world.try_get<MovementAgent>(entity);
-            const bool moving =
-                !agent->path.empty() ||
-                !queue->pending.empty() ||
-                agent->combatPath;
+        world.eachRef<Position, OrderQueue, MovementAgent>(
+            [&](ecs::Entity entity,
+                const Position& position,
+                const OrderQueue& queue,
+                const MovementAgent& agent) {
+                const bool moving =
+                    !agent.path.empty() ||
+                    !queue.pending.empty() ||
+                    agent.combatPath;
 
-            SnapshotEntity value;
-            value.entity = entity;
-            value.x = position->x;
-            value.y = position->y;
-            value.moving = moving;
-            value.queuedOrders = static_cast<std::uint32_t>(
-                queue->pending.size());
-            value.kind = SnapshotKind::Unit;
-            value.movementBlockedTicks = agent->blockedTicks;
-            value.movementYieldOrdinal = agent->yieldOrdinal;
-            populateCombatSnapshot(world, entity, value);
-            snapshot.entities.push_back(value);
+                SnapshotEntity value;
+                value.entity = entity;
+                value.x = position.x;
+                value.y = position.y;
+                value.moving = moving;
+                value.queuedOrders = static_cast<std::uint32_t>(
+                    queue.pending.size());
+                value.kind = SnapshotKind::Unit;
+                value.movementBlockedTicks = agent.blockedTicks;
+                value.movementYieldOrdinal = agent.yieldOrdinal;
+                populateCombatSnapshot(world, entity, value);
+                snapshot.entities.push_back(value);
 
-            hash.WriteU8(static_cast<std::uint8_t>(SnapshotKind::Unit));
-            hashUnit(
-                hash,
-                world,
-                entity,
-                *position,
-                *queue,
-                *agent,
-                moving,
-                includeVision);
-        }
+                hash.WriteU8(static_cast<std::uint8_t>(SnapshotKind::Unit));
+                hashUnit(
+                    hash,
+                    world,
+                    entity,
+                    position,
+                    queue,
+                    agent,
+                    moving,
+                    includeVision);
+            });
     }
 
     static void appendConstruction(
@@ -293,38 +294,36 @@ private:
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
         bool includeVision) {
-        for (const auto entity :
-             world.view<ConstructionSite, BuildingFootprint>()) {
-            const auto* site = world.try_get<ConstructionSite>(entity);
-            const auto* footprint =
-                world.try_get<BuildingFootprint>(entity);
+        world.eachRef<ConstructionSite, BuildingFootprint>(
+            [&](ecs::Entity entity,
+                const ConstructionSite& site,
+                const BuildingFootprint& footprint) {
+                SnapshotEntity value;
+                value.entity = entity;
+                value.x = footprint.origin.x;
+                value.y = footprint.origin.y;
+                value.kind = SnapshotKind::Construction;
+                value.definitionId = site.definitionId;
+                value.progressTicks = site.progressTicks;
+                value.requiredTicks = site.requiredTicks;
+                populateCombatSnapshot(world, entity, value);
+                snapshot.entities.push_back(value);
 
-            SnapshotEntity value;
-            value.entity = entity;
-            value.x = footprint->origin.x;
-            value.y = footprint->origin.y;
-            value.kind = SnapshotKind::Construction;
-            value.definitionId = site->definitionId;
-            value.progressTicks = site->progressTicks;
-            value.requiredTicks = site->requiredTicks;
-            populateCombatSnapshot(world, entity, value);
-            snapshot.entities.push_back(value);
-
-            hash.WriteU8(
-                static_cast<std::uint8_t>(SnapshotKind::Construction));
-            hashEntity(hash, entity);
-            hash.WriteU32(site->id);
-            hash.WriteU32(site->definitionId);
-            hash.WriteI32(site->reservedCost);
-            hash.WriteU32(site->progressTicks);
-            hash.WriteU32(site->requiredTicks);
-            hash.WriteU32(site->baseRequiredTicks);
-            hash.WriteBool(site->producer);
-            hash.WriteU32(site->ownerTeam);
-            hashFootprint(hash, *footprint);
-            hashCombat(hash, world, entity);
-            if (includeVision) hashVision(hash, world, entity);
-        }
+                hash.WriteU8(
+                    static_cast<std::uint8_t>(SnapshotKind::Construction));
+                hashEntity(hash, entity);
+                hash.WriteU32(site.id);
+                hash.WriteU32(site.definitionId);
+                hash.WriteI32(site.reservedCost);
+                hash.WriteU32(site.progressTicks);
+                hash.WriteU32(site.requiredTicks);
+                hash.WriteU32(site.baseRequiredTicks);
+                hash.WriteBool(site.producer);
+                hash.WriteU32(site.ownerTeam);
+                hashFootprint(hash, footprint);
+                hashCombat(hash, world, entity);
+                if (includeVision) hashVision(hash, world, entity);
+            });
     }
 
     static void appendBuildings(
@@ -332,52 +331,51 @@ private:
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
         bool includeVision) {
-        for (const auto entity :
-             world.view<Building, BuildingFootprint>()) {
-            const auto* building = world.try_get<Building>(entity);
-            const auto* footprint =
-                world.try_get<BuildingFootprint>(entity);
-            const auto* queue = world.try_get<ProductionQueue>(entity);
-            const auto queueSize = queue
-                ? static_cast<std::uint32_t>(queue->items.size())
-                : 0;
+        world.eachRef<Building, BuildingFootprint>(
+            [&](ecs::Entity entity,
+                const Building& building,
+                const BuildingFootprint& footprint) {
+                const auto* queue = world.try_get<ProductionQueue>(entity);
+                const auto queueSize = queue
+                    ? static_cast<std::uint32_t>(queue->items.size())
+                    : 0;
 
-            SnapshotEntity value;
-            value.entity = entity;
-            value.x = footprint->origin.x;
-            value.y = footprint->origin.y;
-            value.kind = SnapshotKind::Building;
-            value.definitionId = building->definitionId;
-            value.productionQueueSize = queueSize;
-            populateCombatSnapshot(world, entity, value);
-            snapshot.entities.push_back(value);
+                SnapshotEntity value;
+                value.entity = entity;
+                value.x = footprint.origin.x;
+                value.y = footprint.origin.y;
+                value.kind = SnapshotKind::Building;
+                value.definitionId = building.definitionId;
+                value.productionQueueSize = queueSize;
+                populateCombatSnapshot(world, entity, value);
+                snapshot.entities.push_back(value);
 
-            hash.WriteU8(
-                static_cast<std::uint8_t>(SnapshotKind::Building));
-            hashEntity(hash, entity);
-            hash.WriteU32(building->definitionId);
-            hash.WriteBool(building->producer);
-            hashFootprint(hash, *footprint);
-            hash.WriteU32(queueSize);
-            if (queue) {
-                for (const auto& item : queue->items) {
-                    hash.WriteU32(item.id);
-                    hash.WriteU32(item.unitDefinitionId);
-                    hash.WriteI32(item.reservedCost);
-                    hash.WriteU32(item.progressTicks);
-                    hash.WriteU32(item.requiredTicks);
-                    hash.WriteU32(item.baseRequiredTicks);
+                hash.WriteU8(
+                    static_cast<std::uint8_t>(SnapshotKind::Building));
+                hashEntity(hash, entity);
+                hash.WriteU32(building.definitionId);
+                hash.WriteBool(building.producer);
+                hashFootprint(hash, footprint);
+                hash.WriteU32(queueSize);
+                if (queue) {
+                    for (const auto& item : queue->items) {
+                        hash.WriteU32(item.id);
+                        hash.WriteU32(item.unitDefinitionId);
+                        hash.WriteI32(item.reservedCost);
+                        hash.WriteU32(item.progressTicks);
+                        hash.WriteU32(item.requiredTicks);
+                        hash.WriteU32(item.baseRequiredTicks);
+                    }
                 }
-            }
-            const auto* rally = world.try_get<RallyPoint>(entity);
-            hash.WriteBool(rally != nullptr);
-            if (rally) {
-                hash.WriteI32(rally->point.x);
-                hash.WriteI32(rally->point.y);
-            }
-            hashCombat(hash, world, entity);
-            if (includeVision) hashVision(hash, world, entity);
-        }
+                const auto* rally = world.try_get<RallyPoint>(entity);
+                hash.WriteBool(rally != nullptr);
+                if (rally) {
+                    hash.WriteI32(rally->point.x);
+                    hash.WriteI32(rally->point.y);
+                }
+                hashCombat(hash, world, entity);
+                if (includeVision) hashVision(hash, world, entity);
+            });
     }
 };
 

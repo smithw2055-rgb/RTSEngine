@@ -69,20 +69,21 @@ public:
         }
 
         clearCurrent();
-        for (const auto entity : world.view<Team, VisionSource>()) {
-            const auto* team = world.try_get<Team>(entity);
-            const auto* source = world.try_get<VisionSource>(entity);
-            const auto* position = world.try_get<Position>(entity);
-            if (!team || !source || !position || source->range < 0) continue;
+        world.eachRef<Team, VisionSource, Position>(
+            [&](ecs::Entity entity,
+                const Team& team,
+                const VisionSource& source,
+                const Position& position) {
+                if (source.range < 0) return;
 
-            auto& layer = ensureLayer(team->id);
-            reveal(
-                navigation,
-                {position->x, position->y},
-                source->range,
-                world.try_get<BuildingFootprint>(entity),
-                layer);
-        }
+                auto& layer = ensureLayer(team.id);
+                reveal(
+                    navigation,
+                    {position.x, position.y},
+                    source.range,
+                    world.try_get<BuildingFootprint>(entity),
+                    layer);
+            });
     }
 
     void clear() noexcept {
