@@ -134,16 +134,16 @@ jobs:
         shell: bash
         run: |
           cmake --build build-realscript --config Debug \
-            --target rts_scripting_tests --parallel 2 \
+            --target rts_scripting_tests rts_rts_scripting_tests --parallel 2 \
             > realscript-build.log 2>&1 || {
-              tail -n 240 realscript-build.log
+              tail -n 280 realscript-build.log
               exit 1
             }
       - name: Test RealScript integration
         shell: bash
         run: |
           ctest --test-dir build-realscript -C Debug --output-on-failure \
-            -R "^rts_scripting_tests$" \
+            -R "^rts_(scripting|rts_scripting)_tests$" \
             > realscript-tests.log 2>&1 || {
               cat realscript-tests.log
               exit 1
