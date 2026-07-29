@@ -105,6 +105,60 @@ jobs:
           if-no-files-found: ignore
           retention-days: 3
 
+  realscript-integration:
+    name: RealScript integration (${{ matrix.os }}, Debug)
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Checkout pinned RealScript SDK
+        uses: actions/checkout@v4
+        with:
+          repository: smithw2055-rgb/RealScript
+          ref: 50d13a0074d9555391f63e0dd0b1a3c2b07b040e
+          path: .ci/RealScript
+      - name: Configure RealScript integration
+        shell: bash
+        run: |
+          cmake -S . -B build-realscript \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_REALSCRIPT=ON \
+            -DRTSENGINE_REALSCRIPT_SOURCE_DIR="$GITHUB_WORKSPACE/.ci/RealScript"
+      - name: Build RealScript integration
+        shell: bash
+        run: |
+          cmake --build build-realscript --config Debug \
+            --target rts_scripting_tests --parallel 2 \
+            > realscript-build.log 2>&1 || {
+              tail -n 240 realscript-build.log
+              exit 1
+            }
+      - name: Test RealScript integration
+        shell: bash
+        run: |
+          ctest --test-dir build-realscript -C Debug --output-on-failure \
+            -R "^rts_scripting_tests$" \
+            > realscript-tests.log 2>&1 || {
+              cat realscript-tests.log
+              exit 1
+            }
+      - name: Upload RealScript diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: realscript-logs-${{ matrix.os }}
+          path: |
+            realscript-build.log
+            realscript-tests.log
+          if-no-files-found: ignore
+          retention-days: 3
+
   sokol-desktop:
     name: playable Sokol desktop (ubuntu-latest, Debug)
     runs-on: ubuntu-latest

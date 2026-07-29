@@ -17,7 +17,9 @@ enum class AssetType : std::uint16_t {
     Font,
     Material2D,
     Shader,
-    Binary
+    Binary,
+    ScriptModule,
+    ScriptBundle
 };
 
 struct AssetKey final {
@@ -140,7 +142,7 @@ struct AssetManagerStats final {
 };
 
 constexpr bool ValidAssetType(AssetType value) noexcept {
-    return value >= AssetType::Unknown && value <= AssetType::Binary;
+    return value >= AssetType::Unknown && value <= AssetType::ScriptBundle;
 }
 
 } // namespace rts::assets
