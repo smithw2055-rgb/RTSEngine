@@ -39,14 +39,21 @@ void testShortestDistanceExtraction() {
     assert(path.back() == goal);
     assert(path.size() == static_cast<std::size_t>(field.distance(start)));
 
+    auto current = start;
     auto previousDistance = field.distance(start);
     for (const auto point : path) {
+        GridPoint sampled;
+        assert(field.nextStep(current, sampled));
+        assert(sampled == point);
         assert(grid.contains(point));
         assert(!grid.blocked(point));
         const auto nextDistance = field.distance(point);
         assert(nextDistance + 1 == previousDistance);
         previousDistance = nextDistance;
+        current = point;
     }
+    GridPoint afterGoal;
+    assert(!field.nextStep(goal, afterGoal));
 
     GridPathfinderScratch scratch;
     const auto astar = GridPathfinder::find(
@@ -63,6 +70,8 @@ void testInvalidGoalAndUnreachableStart() {
     std::vector<GridPoint> path{{1, 1}};
     assert(!invalid.extract({0, 0}, path));
     assert(path.empty());
+    GridPoint next;
+    assert(!invalid.nextStep({0, 0}, next));
 
     NavigationGrid split(8, 8);
     for (std::int32_t y = 0; y < 8; ++y) {
@@ -72,6 +81,7 @@ void testInvalidGoalAndUnreachableStart() {
     assert(field.build(split, {7, 7}));
     assert(field.distance({0, 0}) == GridFlowField::kUnreachable);
     assert(!field.extract({0, 0}, path));
+    assert(!field.nextStep({0, 0}, next));
 }
 
 void testBoundedCacheAndInvalidation() {
@@ -107,6 +117,25 @@ void testBoundedCacheAndInvalidation() {
     assert(tiny.stats().uncachedFields == 1);
 }
 
+void testDirectCacheSampling() {
+    auto grid = makeGrid();
+    GridFlowFieldCache cache;
+    const GridPoint start{0, 0};
+    const GridPoint goal{31, 23};
+    const auto& field = cache.resolve(grid, goal);
+    assert(cache.assignDirect(field, start));
+    assert(cache.stats().directAssignments == 1);
+    assert(cache.stats().pathExtractions == 1);
+    assert(cache.stats().extractedPathPoints ==
+           static_cast<std::uint64_t>(field.distance(start)));
+
+    GridPoint next;
+    assert(cache.sample(grid, goal, start, next));
+    assert(field.distance(next) + 1 == field.distance(start));
+    assert(cache.stats().directSamples == 1);
+    assert(cache.stats().directSampleFailures == 0);
+}
+
 struct ScaleRun final {
     std::vector<std::uint64_t> hashes;
     GridFlowFieldStats flowStats;
@@ -114,6 +143,7 @@ struct ScaleRun final {
     std::size_t intentCapacity{};
     std::size_t rejectedCapacity{};
     std::size_t distinctPositions{};
+    bool firstAgentUsesSharedField{};
 };
 
 ScaleRun runScaleScenario() {
@@ -130,9 +160,11 @@ ScaleRun runScaleScenario() {
     }
 
     std::uint32_t sequence = 1;
+    rts::ecs::Entity firstUnit;
     for (std::int32_t y = 0; y < 25; ++y) {
         for (std::int32_t x = 0; x < 40; ++x) {
             const auto unit = simulation.createUnit({x, y}, {1});
+            if (!firstUnit.valid()) firstUnit = unit;
             TickCommand move;
             move.targetTick = 0;
             move.issuer = 1;
@@ -157,9 +189,16 @@ ScaleRun runScaleScenario() {
             assert(simulation.flowFields().stats().builds == 1);
             assert(simulation.flowFields().stats().misses == 1);
             assert(simulation.flowFields().stats().pathExtractions == unitCount);
+            assert(simulation.flowFields().stats().directAssignments == unitCount);
             assert(simulation.pathCache().stats().misses == 0);
             assert(simulation.movementReservations().intentCapacity() >=
                    unitCount);
+            const auto* agent =
+                simulation.world().try_get<MovementAgent>(firstUnit);
+            run.firstAgentUsesSharedField =
+                agent && agent->flowFieldPath && agent->path.empty() &&
+                agent->flowContext && agent->flowSample;
+            assert(run.firstAgentUsesSharedField);
         }
         if (tick + 1 == warmupTicks) {
             warmedIntentCapacity =
@@ -206,11 +245,21 @@ void testSimulationSharedFieldAndScaleDeterminism() {
     assert(first.flowStats.builds == 1);
     assert(first.flowStats.misses == 1);
     assert(first.flowStats.pathExtractions >= 1000);
+    assert(first.flowStats.directAssignments >= 1000);
+    assert(first.flowStats.directAssignments ==
+           second.flowStats.directAssignments);
+    assert(first.flowStats.directSamples > 0);
+    assert(first.flowStats.directSamples == second.flowStats.directSamples);
+    assert(first.flowStats.directSampleFailures == 0);
+    assert(first.flowStats.directSampleFailures ==
+           second.flowStats.directSampleFailures);
     assert(first.flowStats.extractionFailures == 0);
     assert(first.pathStats.misses < 1000);
     assert(first.intentCapacity == second.intentCapacity);
     assert(first.rejectedCapacity == second.rejectedCapacity);
     assert(first.distinctPositions == 1000);
+    assert(first.firstAgentUsesSharedField);
+    assert(second.firstAgentUsesSharedField);
 }
 
 } // namespace
@@ -219,6 +268,7 @@ int main() {
     testShortestDistanceExtraction();
     testInvalidGoalAndUnreachableStart();
     testBoundedCacheAndInvalidation();
+    testDirectCacheSampling();
     testSimulationSharedFieldAndScaleDeterminism();
     std::cout << "flow field and 1000-agent tests passed\n";
     return 0;

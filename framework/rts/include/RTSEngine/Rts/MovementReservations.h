@@ -168,6 +168,57 @@ public:
             });
     }
 
+    std::uint32_t commitAcceptedMoves() noexcept {
+        std::uint32_t acceptedCount = 0;
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
+            if (!accepted(indexValue)) continue;
+            const auto& value = intents_[indexValue];
+            const auto sourceCell = index(value.source);
+            if (occupantCount_[sourceCell] != 1 ||
+                firstOccupant_[sourceCell] != value.entity) {
+                return 0;
+            }
+            const auto destinationCell = index(value.destination);
+            if (occupantCount_[destinationCell] > 1) return 0;
+            if (occupantCount_[destinationCell] == 1 &&
+                firstOccupant_[destinationCell] != value.entity) {
+                const auto destinationIntent =
+                    findIntent(firstOccupant_[destinationCell]);
+                if (destinationIntent == intents_.size() ||
+                    !accepted(destinationIntent)) {
+                    return 0;
+                }
+            }
+            ++acceptedCount;
+        }
+
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
+            if (!accepted(indexValue)) continue;
+            const auto& value = intents_[indexValue];
+            if (value.source == value.destination) continue;
+            const auto sourceCell = index(value.source);
+            occupantCount_[sourceCell] = 0;
+            firstOccupant_[sourceCell] = {};
+        }
+
+        for (std::size_t indexValue = 0; indexValue < intents_.size();
+             ++indexValue) {
+            if (!accepted(indexValue)) continue;
+            const auto& value = intents_[indexValue];
+            if (value.source == value.destination) continue;
+            const auto destinationCell = index(value.destination);
+            occupantCount_[destinationCell] = 1;
+            firstOccupant_[destinationCell] = value.entity;
+        }
+        if (acceptedCount != 0) {
+            maximumCellOccupancy_ = std::max<std::uint32_t>(
+                maximumCellOccupancy_, 1u);
+        }
+        return acceptedCount;
+    }
+
     std::size_t intentCount() const noexcept { return intents_.size(); }
 
     const MovementIntent& intent(std::size_t indexValue) const noexcept {

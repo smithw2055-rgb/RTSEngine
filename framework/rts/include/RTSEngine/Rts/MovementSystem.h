@@ -60,16 +60,13 @@ public:
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
-                if (agent.path.empty()) return;
+                if (!active(agent)) return;
                 dependencies.telemetry->recordMovementAgent();
                 maximumSteps = std::max(
                     maximumSteps,
                     std::max<std::int32_t>(1, speed.cellsPerTick));
             });
 
-        // Build occupancy once at Tick start. Each substep rebuilds only after
-        // accepted moves, leaving a current map for the next substep. This cuts
-        // the previous two full occupancy scans per substep to one.
         rebuildOccupancy(
             world, dependencies.reservations, *dependencies.telemetry);
         for (std::int32_t step = 0; step < maximumSteps; ++step) {
@@ -84,6 +81,12 @@ public:
     }
 
 private:
+    static bool active(const MovementAgent& agent) noexcept {
+        return (agent.flowFieldPath && agent.hasPathGoal &&
+                agent.flowContext && agent.flowSample) ||
+               !agent.path.empty();
+    }
+
     static void rebuildOccupancy(
         const ecs::World& world,
         MovementReservationRuntime& reservations,
@@ -101,6 +104,28 @@ private:
             reservations.maximumCellOccupancy());
     }
 
+    static bool resolveDestination(
+        Position position,
+        MovementAgent& agent,
+        const NavigationGrid& navigation,
+        GridPoint& destination) {
+        if (agent.flowFieldPath) {
+            const GridPoint current{position.x, position.y};
+            if (current == agent.pathGoal || !agent.flowSample) return false;
+            return agent.flowSample(
+                agent.flowContext,
+                navigation,
+                agent.pathGoal,
+                current,
+                destination);
+        }
+        if (agent.path.empty() || agent.nextPoint >= agent.path.size()) {
+            return false;
+        }
+        destination = agent.path[agent.nextPoint];
+        return true;
+    }
+
     static void runSubstep(
         ecs::World& world,
         const ecs::SystemContext& context,
@@ -115,15 +140,24 @@ private:
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
-                if (agent.path.empty() ||
-                    agent.nextPoint >= agent.path.size() ||
+                if (!active(agent) ||
                     step >= std::max<std::int32_t>(1, speed.cellsPerTick) ||
                     shouldPauseForCombat(world, entity, position)) {
                     return;
                 }
 
-                const auto destination = agent.path[agent.nextPoint];
-                if (!dependencies.navigation.contains(destination) ||
+                if (agent.flowFieldPath &&
+                    GridPoint{position.x, position.y} == agent.pathGoal) {
+                    return;
+                }
+
+                GridPoint destination;
+                if (!resolveDestination(
+                        position,
+                        agent,
+                        dependencies.navigation,
+                        destination) ||
+                    !dependencies.navigation.contains(destination) ||
                     dependencies.navigation.blocked(destination)) {
                     clearPathForReplan(agent);
                     agent.blockedTicks = 0;
@@ -145,24 +179,33 @@ private:
             });
 
         reservations.arbitrate();
-        std::uint32_t accepted = 0;
+        std::uint32_t resolvedAccepted = 0;
         for (std::size_t index = 0;
              index < reservations.intentCount(); ++index) {
-            if (!reservations.accepted(index)) continue;
-            ++accepted;
-            const auto& intent = reservations.intent(index);
-            auto* position = world.try_get<Position>(intent.entity);
-            auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!position || !agent ||
-                position->x != intent.source.x ||
-                position->y != intent.source.y ||
-                agent->nextPoint >= agent->path.size()) {
-                continue;
+            if (reservations.accepted(index)) ++resolvedAccepted;
+        }
+        const auto committedAccepted = reservations.commitAcceptedMoves();
+        const bool occupancyCommitValid =
+            committedAccepted == resolvedAccepted;
+        std::uint32_t accepted = 0;
+        if (occupancyCommitValid) {
+            for (std::size_t index = 0;
+                 index < reservations.intentCount(); ++index) {
+                if (!reservations.accepted(index)) continue;
+                const auto& intent = reservations.intent(index);
+                auto* position = world.try_get<Position>(intent.entity);
+                auto* agent = world.try_get<MovementAgent>(intent.entity);
+                if (!position || !agent ||
+                    position->x != intent.source.x ||
+                    position->y != intent.source.y || !active(*agent)) {
+                    continue;
+                }
+                position->x = intent.destination.x;
+                position->y = intent.destination.y;
+                if (!agent->flowFieldPath) ++agent->nextPoint;
+                agent->blockedTicks = 0;
+                ++accepted;
             }
-            position->x = intent.destination.x;
-            position->y = intent.destination.y;
-            ++agent->nextPoint;
-            agent->blockedTicks = 0;
         }
         dependencies.telemetry->recordReservationBatch(
             static_cast<std::uint32_t>(reservations.intentCount()),
@@ -172,7 +215,7 @@ private:
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!agent || agent->path.empty()) continue;
+            if (!agent || !active(*agent)) continue;
             if (agent->blockedTicks !=
                 std::numeric_limits<std::uint32_t>::max()) {
                 ++agent->blockedTicks;
@@ -192,15 +235,11 @@ private:
             }
         }
 
-        // Synchronize the occupancy map once after the simultaneous movement
-        // commit. Yield recovery then updates this map incrementally.
-        rebuildOccupancy(
-            world, reservations, *dependencies.telemetry);
         for (const auto index : reservations.rejected()) {
             const auto& intent = reservations.intent(index);
             auto* position = world.try_get<Position>(intent.entity);
             auto* agent = world.try_get<MovementAgent>(intent.entity);
-            if (!position || !agent || agent->path.empty() ||
+            if (!position || !agent || !active(*agent) ||
                 agent->blockedTicks < kYieldThreshold) {
                 continue;
             }
@@ -291,6 +330,9 @@ private:
         agent.nextPoint = 0;
         agent.hasPathGoal = false;
         agent.combatPath = false;
+        agent.flowFieldPath = false;
+        agent.flowContext = nullptr;
+        agent.flowSample = nullptr;
         agent.chaseTarget = {};
         agent.chaseTargetPosition = {};
     }
@@ -302,16 +344,22 @@ private:
         std::vector<DomainEvent>& events) {
         world.eachRef<Position, OrderQueue, MovementAgent>(
             [&](ecs::Entity entity,
-                Position&,
+                Position& position,
                 OrderQueue& queue,
                 MovementAgent& agent) {
-                if (agent.path.empty() ||
-                    agent.nextPoint != agent.path.size()) {
-                    return;
-                }
+                const bool flowCompleted =
+                    agent.flowFieldPath && agent.hasPathGoal &&
+                    GridPoint{position.x, position.y} == agent.pathGoal;
+                const bool regularCompleted =
+                    !agent.flowFieldPath && !agent.path.empty() &&
+                    agent.nextPoint == agent.path.size();
+                if (!flowCompleted && !regularCompleted) return;
 
                 const bool completedCombatPath = agent.combatPath;
                 OrderSystem::clearPath(agent);
+                agent.flowFieldPath = false;
+                agent.flowContext = nullptr;
+                agent.flowSample = nullptr;
                 agent.blockedTicks = 0;
                 if (completedCombatPath) return;
 

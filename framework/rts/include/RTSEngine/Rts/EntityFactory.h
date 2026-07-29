@@ -3,6 +3,7 @@
 #include <RTSEngine/Ecs/EntityCommandBuffer.h>
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
 
 #include <algorithm>
@@ -32,6 +33,33 @@ public:
         attachCombatProfile(
             world, entity, combat, false, speed.cellsPerTick);
         modifiers.applyEntity<MoveSpeed>(world, entity);
+        return entity;
+    }
+
+    static ecs::Entity createUnitDefinition(
+        ecs::World& world,
+        const GameplayModifierSystem& modifiers,
+        Position position,
+        std::uint32_t teamId,
+        const UnitDefinition& definition) {
+        const auto entity = createUnit(
+            world,
+            modifiers,
+            position,
+            MoveSpeed{definition.cellsPerTick},
+            teamId,
+            definition.combat,
+            definition.visionRange);
+        world.emplace<UnitArchetype>(
+            entity, UnitArchetype{definition.id});
+        if (definition.worker) {
+            world.emplace<WorkerHarvester>(
+                entity,
+                WorkerHarvester{
+                    std::max<ResourceAmount>(0, definition.cargoCapacity),
+                    std::max<ResourceAmount>(0, definition.harvestAmount),
+                    std::max<std::uint32_t>(1, definition.harvestTicks)});
+        }
         return entity;
     }
 
@@ -69,6 +97,38 @@ public:
             false,
             baseMoveSpeed,
             teamId);
+    }
+
+    template<class Target>
+    static void queueUnitDefinition(
+        const ecs::SystemContext& context,
+        ecs::EntityCommandBuffer& commands,
+        const GameplayModifierSystem& modifiers,
+        Target target,
+        Position position,
+        std::uint32_t teamId,
+        const UnitDefinition& definition) {
+        queueUnit(
+            context,
+            commands,
+            modifiers,
+            target,
+            position,
+            definition.cellsPerTick,
+            teamId,
+            definition.combat,
+            definition.visionRange);
+        commands.add(
+            context, target, UnitArchetype{definition.id});
+        if (definition.worker) {
+            commands.add(
+                context,
+                target,
+                WorkerHarvester{
+                    std::max<ResourceAmount>(0, definition.cargoCapacity),
+                    std::max<ResourceAmount>(0, definition.harvestAmount),
+                    std::max<std::uint32_t>(1, definition.harvestTicks)});
+        }
     }
 
     static void attachCombatProfile(

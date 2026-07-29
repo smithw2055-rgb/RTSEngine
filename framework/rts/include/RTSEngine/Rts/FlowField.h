@@ -28,6 +28,9 @@ struct GridFlowFieldStats final {
     std::uint64_t pathExtractions{};
     std::uint64_t extractedPathPoints{};
     std::uint64_t extractionFailures{};
+    std::uint64_t directAssignments{};
+    std::uint64_t directSamples{};
+    std::uint64_t directSampleFailures{};
 };
 
 class GridFlowField final {
@@ -97,33 +100,47 @@ public:
             path.reserve(static_cast<std::size_t>(currentDistance));
         }
 
-        static constexpr GridPoint directions[] = {
-            {0, -1}, {1, 0}, {0, 1}, {-1, 0}
-        };
         while (current != goal_) {
-            bool advanced = false;
-            for (const auto direction : directions) {
-                const GridPoint next{
-                    current.x + direction.x,
-                    current.y + direction.y};
-                if (!contains(next)) continue;
-                const auto nextDistance = distance(next);
-                if (nextDistance == kUnreachable ||
-                    nextDistance + 1 != currentDistance) {
-                    continue;
-                }
-                path.push_back(next);
-                current = next;
-                currentDistance = nextDistance;
-                advanced = true;
-                break;
+            GridPoint next;
+            if (!nextStep(current, next)) {
+                path.clear();
+                return false;
             }
-            if (!advanced || path.size() > distances_.size()) {
+            path.push_back(next);
+            current = next;
+            if (path.size() > distances_.size()) {
                 path.clear();
                 return false;
             }
         }
         return true;
+    }
+
+    bool nextStep(GridPoint current, GridPoint& next) const noexcept {
+        if (!ready_ || !validGoal_ || !contains(current) ||
+            distances_.empty()) {
+            return false;
+        }
+        const auto currentDistance = distance(current);
+        if (currentDistance == kUnreachable || currentDistance == 0) {
+            return false;
+        }
+        static constexpr GridPoint directions[] = {
+            {0, -1}, {1, 0}, {0, 1}, {-1, 0}
+        };
+        for (const auto direction : directions) {
+            const GridPoint candidate{
+                current.x + direction.x,
+                current.y + direction.y};
+            if (!contains(candidate)) continue;
+            const auto candidateDistance = distance(candidate);
+            if (candidateDistance != kUnreachable &&
+                candidateDistance + 1 == currentDistance) {
+                next = candidate;
+                return true;
+            }
+        }
+        return false;
     }
 
     bool ready() const noexcept { return ready_; }
@@ -239,6 +256,32 @@ public:
             return true;
         }
         ++stats_.extractionFailures;
+        return false;
+    }
+
+    bool assignDirect(
+        const GridFlowField& field,
+        GridPoint start) noexcept {
+        ++stats_.pathExtractions;
+        ++stats_.directAssignments;
+        const auto distance = field.distance(start);
+        if (distance == GridFlowField::kUnreachable) {
+            ++stats_.extractionFailures;
+            return false;
+        }
+        stats_.extractedPathPoints += static_cast<std::uint64_t>(distance);
+        return true;
+    }
+
+    bool sample(
+        const NavigationGrid& grid,
+        GridPoint goal,
+        GridPoint current,
+        GridPoint& next) {
+        ++stats_.directSamples;
+        const auto& field = resolve(grid, goal);
+        if (field.nextStep(current, next)) return true;
+        ++stats_.directSampleFailures;
         return false;
     }
 

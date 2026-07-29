@@ -3,8 +3,10 @@
 #include <RTSEngine/Ecs/World.h>
 #include <RTSEngine/Rts/BaseBuilding.h>
 #include <RTSEngine/Rts/GameplayModifierSystem.h>
+#include <RTSEngine/Rts/Harvesting.h>
 #include <RTSEngine/Rts/Navigation.h>
 #include <RTSEngine/Rts/SimulationTypes.h>
+#include <RTSEngine/Rts/TeamEconomy.h>
 #include <RTSEngine/Rts/Vision.h>
 #include <rts/foundation/CanonicalHash.h>
 
@@ -14,12 +16,14 @@
 namespace rts::gameplay {
 
 struct SnapshotBuilderDependencies {
-    const ResourceLedger& resources;
+    const TeamEconomyRuntime& economy;
+    std::uint32_t playerTeamId;
     const GameplayModifierSystem& modifiers;
     const NavigationGrid& navigation;
     const TickCommandStream& commands;
     WorldSnapshot& snapshot;
     const VisionRuntime* vision{};
+    std::uint16_t compatibilityVersion{4u};
 };
 
 class SnapshotBuilder final {
@@ -30,7 +34,9 @@ public:
         SnapshotBuilderDependencies dependencies) {
         auto& snapshot = dependencies.snapshot;
         snapshot.tick = tick;
-        snapshot.resources = dependencies.resources;
+        snapshot.resources = dependencies.economy.legacyLedger(
+            dependencies.playerTeamId);
+        snapshot.teamResources = dependencies.economy.entries();
         snapshot.teamModifiers = dependencies.modifiers.entries();
         snapshot.commandCommittedThrough =
             dependencies.commands.committedThrough();
@@ -48,9 +54,13 @@ public:
 
         foundation::CanonicalHash hash;
         hash.WriteU64(tick);
-        hash.WriteI32(dependencies.resources.available);
-        hash.WriteI32(dependencies.resources.reserved);
-        hash.WriteI32(dependencies.resources.spent);
+        if (dependencies.compatibilityVersion >= 4u) {
+            dependencies.economy.appendHash(hash);
+        } else {
+            hash.WriteI32(snapshot.resources.available);
+            hash.WriteI32(snapshot.resources.reserved);
+            hash.WriteI32(snapshot.resources.spent);
+        }
         dependencies.modifiers.appendHash(hash);
         hash.WriteU64(dependencies.commands.committedThrough());
         hash.WriteU32(static_cast<std::uint32_t>(
@@ -68,9 +78,17 @@ public:
         }
 
         const bool includeVision = dependencies.vision != nullptr;
-        appendUnits(world, hash, snapshot, includeVision);
-        appendConstruction(world, hash, snapshot, includeVision);
-        appendBuildings(world, hash, snapshot, includeVision);
+        const bool includeEconomy =
+            dependencies.compatibilityVersion >= 4u;
+        appendUnits(
+            world, hash, snapshot, includeVision, includeEconomy);
+        appendConstruction(
+            world, hash, snapshot, includeVision, includeEconomy);
+        appendBuildings(
+            world, hash, snapshot, includeVision, includeEconomy);
+        if (includeEconomy) {
+            appendResourceNodes(world, hash, snapshot);
+        }
 
         std::sort(
             snapshot.entities.begin(),
@@ -87,6 +105,12 @@ private:
         ecs::Entity entity) {
         hash.WriteU32(entity.index);
         hash.WriteU32(entity.generation);
+    }
+
+    static void hashAmount(
+        foundation::CanonicalHash& hash,
+        ResourceAmount amount) {
+        hash.WriteU64(static_cast<std::uint64_t>(amount));
     }
 
     static void hashCommand(
@@ -209,6 +233,35 @@ private:
         hash.WriteI32(footprint.height);
     }
 
+    static void hashUnitEconomy(
+        foundation::CanonicalHash& hash,
+        const ecs::World& world,
+        ecs::Entity entity,
+        SnapshotEntity& snapshot) {
+        const auto* archetype = world.try_get<UnitArchetype>(entity);
+        hash.WriteBool(archetype != nullptr);
+        if (archetype) {
+            hash.WriteU32(archetype->definitionId);
+            snapshot.definitionId = archetype->definitionId;
+        }
+
+        const auto* worker = world.try_get<WorkerHarvester>(entity);
+        hash.WriteBool(worker != nullptr);
+        if (worker) {
+            hashAmount(hash, worker->cargoCapacity);
+            hashAmount(hash, worker->harvestAmount);
+            hash.WriteU32(worker->harvestTicks);
+            hashAmount(hash, worker->cargo);
+            hash.WriteU32(worker->cargoType);
+            hashEntity(hash, worker->targetNode);
+            hash.WriteU32(worker->progressTicks);
+            hash.WriteU8(static_cast<std::uint8_t>(worker->state));
+            snapshot.cargoAmount = worker->cargo;
+            snapshot.cargoCapacity = worker->cargoCapacity;
+            snapshot.resourceType = worker->cargoType;
+        }
+    }
+
     static void hashUnit(
         foundation::CanonicalHash& hash,
         const ecs::World& world,
@@ -217,7 +270,9 @@ private:
         const OrderQueue& queue,
         const MovementAgent& agent,
         bool moving,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy,
+        SnapshotEntity& snapshot) {
         hashEntity(hash, entity);
         hash.WriteI32(position.x);
         hash.WriteI32(position.y);
@@ -245,6 +300,9 @@ private:
         hash.WriteU32(agent.blockedTicks);
         hash.WriteU32(agent.yieldOrdinal);
         hashCombat(hash, world, entity);
+        if (includeEconomy) {
+            hashUnitEconomy(hash, world, entity, snapshot);
+        }
         if (includeVision) hashVision(hash, world, entity);
     }
 
@@ -252,7 +310,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<Position, OrderQueue, MovementAgent>(
             [&](ecs::Entity entity,
                 const Position& position,
@@ -274,7 +333,6 @@ private:
                 value.movementBlockedTicks = agent.blockedTicks;
                 value.movementYieldOrdinal = agent.yieldOrdinal;
                 populateCombatSnapshot(world, entity, value);
-                snapshot.entities.push_back(value);
 
                 hash.WriteU8(static_cast<std::uint8_t>(SnapshotKind::Unit));
                 hashUnit(
@@ -285,7 +343,10 @@ private:
                     queue,
                     agent,
                     moving,
-                    includeVision);
+                    includeVision,
+                    includeEconomy,
+                    value);
+                snapshot.entities.push_back(value);
             });
     }
 
@@ -293,7 +354,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<ConstructionSite, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const ConstructionSite& site,
@@ -320,6 +382,17 @@ private:
                 hash.WriteU32(site.baseRequiredTicks);
                 hash.WriteBool(site.producer);
                 hash.WriteU32(site.ownerTeam);
+                if (includeEconomy) {
+                    const auto* features =
+                        world.try_get<ConstructionEconomyFeatures>(entity);
+                    hash.WriteBool(features != nullptr);
+                    if (features) {
+                        hash.WriteU32(features->dropOffResourceType);
+                        hash.WriteI32(features->dropOffAccessX);
+                        hash.WriteI32(features->dropOffAccessY);
+                        hash.WriteU32(features->supplyProvided);
+                    }
+                }
                 hashFootprint(hash, footprint);
                 hashCombat(hash, world, entity);
                 if (includeVision) hashVision(hash, world, entity);
@@ -330,7 +403,8 @@ private:
         const ecs::World& world,
         foundation::CanonicalHash& hash,
         WorldSnapshot& snapshot,
-        bool includeVision) {
+        bool includeVision,
+        bool includeEconomy) {
         world.eachRef<Building, BuildingFootprint>(
             [&](ecs::Entity entity,
                 const Building& building,
@@ -373,8 +447,51 @@ private:
                     hash.WriteI32(rally->point.x);
                     hash.WriteI32(rally->point.y);
                 }
+                if (includeEconomy) {
+                    const auto* dropOff =
+                        world.try_get<ResourceDropOff>(entity);
+                    hash.WriteBool(dropOff != nullptr);
+                    if (dropOff) {
+                        hash.WriteU32(dropOff->resourceType);
+                        hash.WriteI32(dropOff->accessX);
+                        hash.WriteI32(dropOff->accessY);
+                    }
+                    const auto* supply =
+                        world.try_get<SupplyProvider>(entity);
+                    hash.WriteBool(supply != nullptr);
+                    if (supply) hash.WriteU32(supply->capacity);
+                }
                 hashCombat(hash, world, entity);
                 if (includeVision) hashVision(hash, world, entity);
+            });
+    }
+
+    static void appendResourceNodes(
+        const ecs::World& world,
+        foundation::CanonicalHash& hash,
+        WorldSnapshot& snapshot) {
+        world.eachRef<Position, ResourceNode>(
+            [&](ecs::Entity entity,
+                const Position& position,
+                const ResourceNode& node) {
+                SnapshotEntity value;
+                value.entity = entity;
+                value.x = position.x;
+                value.y = position.y;
+                value.kind = SnapshotKind::ResourceNode;
+                value.definitionId = node.id;
+                value.resourceType = node.resourceType;
+                value.resourceAmount = node.remaining;
+                snapshot.entities.push_back(value);
+
+                hash.WriteU8(
+                    static_cast<std::uint8_t>(SnapshotKind::ResourceNode));
+                hashEntity(hash, entity);
+                hash.WriteI32(position.x);
+                hash.WriteI32(position.y);
+                hash.WriteU32(node.id);
+                hash.WriteU32(node.resourceType);
+                hashAmount(hash, node.remaining);
             });
     }
 };

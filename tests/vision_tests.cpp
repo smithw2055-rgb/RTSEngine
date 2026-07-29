@@ -67,6 +67,19 @@ int testLineOfSightAndTeams() {
     CHECK(layers[0].exploredCells == countVisible(layers[0], true));
     CHECK(layers[1].currentVisibleCells == countVisible(layers[1], false));
     CHECK(layers[1].exploredCells == countVisible(layers[1], true));
+
+    const auto byteGridCells =
+        static_cast<std::size_t>(12 * 7) * vision.layerCount() * 2u;
+    CHECK(vision.packedWordCount() * sizeof(std::uint64_t) < byteGridCells);
+    CHECK(vision.offsetSetCount() == 2u);
+    const auto offsetCapacity = vision.offsetPointCapacity();
+    for (std::uint32_t iteration = 0; iteration < 32; ++iteration) {
+        vision.rebuild(world, navigation);
+        CHECK(vision.offsetSetCount() == 2u);
+        CHECK(vision.offsetPointCapacity() == offsetCapacity);
+        CHECK(vision.layers()[0].currentVisibleCells ==
+              countVisible(vision.layers()[0], false));
+    }
     return EXIT_SUCCESS;
 }
 
@@ -106,6 +119,7 @@ int testExploredHistoryAndBinaryState() {
     CHECK(restored.explored(7, {11, 2}));
     CHECK(!restored.visible(7, {11, 2}));
     CHECK(restored.exploredCount(7) == vision.exploredCount(7));
+    CHECK(restored.packedWordCount() == vision.packedWordCount());
     return EXIT_SUCCESS;
 }
 
