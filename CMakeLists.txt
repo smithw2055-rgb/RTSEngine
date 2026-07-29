@@ -15,8 +15,18 @@ option(RTSENGINE_ENABLE_SOKOL_RENDERER
        "Build the optional Sokol render backend" OFF)
 option(RTSENGINE_ENABLE_SOKOL_APP
        "Build the optional Sokol desktop platform and application" OFF)
+option(RTSENGINE_ENABLE_REALSCRIPT
+       "Build the optional RealScript scripting runtime" OFF)
 set(RTSENGINE_SOKOL_INCLUDE_DIR "" CACHE PATH
     "Directory containing pinned Sokol app, gfx, glue and log headers")
+set(RTSENGINE_REALSCRIPT_SOURCE_DIR "" CACHE PATH
+    "Optional local RealScript source tree; when empty FetchContent uses the pinned revision")
+set(RTSENGINE_REALSCRIPT_GIT_REPOSITORY
+    "https://github.com/smithw2055-rgb/RealScript.git" CACHE STRING
+    "RealScript repository used by FetchContent")
+set(RTSENGINE_REALSCRIPT_GIT_TAG
+    "50d13a0074d9555391f63e0dd0b1a3c2b07b040e" CACHE STRING
+    "Pinned RealScript revision validated for RTSEngine Stage RS1")
 
 if(RTSENGINE_ENABLE_SOKOL_APP AND NOT RTSENGINE_ENABLE_SOKOL_RENDERER)
     message(FATAL_ERROR
@@ -46,9 +56,45 @@ if(RTSENGINE_ENABLE_SANITIZERS)
     endif()
 endif()
 
+if(RTSENGINE_ENABLE_REALSCRIPT)
+    set(REALSCRIPT_BUILD_TESTS OFF CACHE BOOL
+        "RTSEngine owns the integration test boundary" FORCE)
+    set(REALSCRIPT_ENABLE_TOOLCHAIN_JIT_TESTS OFF CACHE BOOL
+        "Toolchain JIT is not part of RTSEngine Stage RS1" FORCE)
+    set(REALSCRIPT_INSTALL_SDK OFF CACHE BOOL
+        "RTSEngine does not install the nested RealScript SDK" FORCE)
+
+    if(RTSENGINE_REALSCRIPT_SOURCE_DIR)
+        if(NOT EXISTS "${RTSENGINE_REALSCRIPT_SOURCE_DIR}/CMakeLists.txt")
+            message(FATAL_ERROR
+                "RTSENGINE_REALSCRIPT_SOURCE_DIR must contain RealScript/CMakeLists.txt")
+        endif()
+        add_subdirectory(
+            "${RTSENGINE_REALSCRIPT_SOURCE_DIR}"
+            "${CMAKE_BINARY_DIR}/_deps/realscript-build"
+            EXCLUDE_FROM_ALL)
+    else()
+        include(FetchContent)
+        FetchContent_Declare(
+            realscript
+            GIT_REPOSITORY "${RTSENGINE_REALSCRIPT_GIT_REPOSITORY}"
+            GIT_TAG "${RTSENGINE_REALSCRIPT_GIT_TAG}"
+            GIT_SHALLOW FALSE)
+        FetchContent_MakeAvailable(realscript)
+    endif()
+
+    if(NOT TARGET RealScript::GameSdk)
+        message(FATAL_ERROR
+            "The pinned RealScript revision does not expose RealScript::GameSdk")
+    endif()
+endif()
+
 add_subdirectory(engine/foundation)
 add_subdirectory(engine/platform)
 add_subdirectory(engine/assets)
+if(RTSENGINE_ENABLE_REALSCRIPT)
+    add_subdirectory(engine/scripting)
+endif()
 add_subdirectory(engine/audio)
 add_subdirectory(engine/render)
 add_subdirectory(engine/presentation)
