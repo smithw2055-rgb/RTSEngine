@@ -1,6 +1,8 @@
 add_library(rts_scripting STATIC
     src/ScriptBundle.cpp
     src/RealScriptHost.cpp
+    src/ScriptAot.cpp
+    src/ScriptModPackage.cpp
 )
 add_library(RTSEngine::Scripting ALIAS rts_scripting)
 
