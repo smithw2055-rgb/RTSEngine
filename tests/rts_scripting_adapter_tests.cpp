@@ -23,9 +23,14 @@ using namespace rts;
 using namespace rts::gameplay;
 namespace rs = rts::gameplay::scripting;
 
-void require(bool condition) {
-    if (!condition) std::abort();
-}
+#define require(condition)                                                     \
+    do {                                                                       \
+        if (!(condition)) {                                                    \
+            std::cerr << "RS2 assertion failed at line " << __LINE__          \
+                      << ": " #condition "\n";                               \
+            std::abort();                                                      \
+        }                                                                      \
+    } while (false)
 
 void writeCooked(
     assets::MemoryVfs& vfs,
