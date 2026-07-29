@@ -1,6 +1,7 @@
 #pragma once
 
 #include <RTSEngine/Ecs/WorldArchive.h>
+#include <RTSEngine/Rts/AuthoritativeStateHash.h>
 #include <RTSEngine/Rts/Replay.h>
 #include <RTSEngine/Rts/RtsComponentSchemas.h>
 #include <RTSEngine/Rts/Simulation.h>
@@ -19,7 +20,7 @@ namespace rts::gameplay {
 class RtsSimulationArchive final {
 public:
     static constexpr std::uint32_t kMagic = 0x31535452u; // "RTS1"
-    static constexpr std::uint16_t kVersion = 2u;
+    static constexpr std::uint16_t kVersion = 3u;
     static constexpr std::uint16_t kMinimumVersion = 1u;
     static constexpr std::uint32_t kMaximumWorldBytes = 128u * 1024u * 1024u;
     static constexpr std::uint32_t kMaximumModifierEntries = 4096u;
@@ -246,6 +247,15 @@ public:
                  commandCandidate,
                  snapshotCandidate,
                  version >= 2u ? &visionCandidate : nullptr});
+            snapshotCandidate.worldHash = FinalizeRtsAuthoritativeWorldHash(
+                snapshotCandidate.worldHash,
+                worldCandidate.entityRegistryHash(),
+                requiredStart,
+                requiredGoal,
+                nextConstructionId,
+                nextProductionId,
+                playerTeamId,
+                version);
             if (snapshotCandidate.worldHash != storedWorldHash) return false;
         }
 
@@ -262,11 +272,14 @@ public:
         simulation.playerTeamId_ = playerTeamId;
         simulation.lastCompletedTick_ = lastCompletedTick;
         simulation.hasStepped_ = hasStepped;
+        simulation.configurationFrozen_ = hasStepped;
         simulation.snapshot_ = std::move(snapshotCandidate);
         simulation.structuralCommands_ = {};
         simulation.activeCommands_.clear();
         simulation.events_.clear();
         simulation.deathSideEffects_.clear();
+        simulation.influence_.clear();
+        simulation.influenceWorldHash_ = RtsSimulation::kInvalidDerivedHash;
         return true;
     }
 

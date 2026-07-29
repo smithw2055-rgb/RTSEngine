@@ -7,6 +7,7 @@
 #include <RTSEngine/TowerDefense/Simulation.h>
 #include <RTSEngine/TowerDefense/WaveSequence.h>
 #include <rts/foundation/CanonicalHash.h>
+#include <rts/sim/AuthoritativeStep.h>
 #include <rts/sim/DeterministicCommandStream.h>
 
 #include <algorithm>
@@ -116,33 +117,49 @@ public:
     RunSimulation(RunSimulation&&) = delete;
     RunSimulation& operator=(RunSimulation&&) = delete;
 
-    void registerUnit(gameplay::UnitDefinition definition) {
-        tower_.registerUnit(std::move(definition));
+    bool configurationFrozen() const noexcept {
+        return hasStepped_ || tower_.configurationFrozen();
     }
 
-    void registerBuilding(gameplay::BuildingDefinition definition) {
-        tower_.registerBuilding(std::move(definition));
+    void freezeConfiguration() noexcept {
+        tower_.freezeConfiguration();
+    }
+
+    bool registerUnit(gameplay::UnitDefinition definition) {
+        return !configurationFrozen() &&
+               tower_.registerUnit(std::move(definition));
+    }
+
+    bool registerBuilding(gameplay::BuildingDefinition definition) {
+        return !configurationFrozen() &&
+               tower_.registerBuilding(std::move(definition));
     }
 
     bool registerAffix(tower_defense::WaveAffixDefinition affix) {
-        return tower_.registerAffix(std::move(affix));
+        return !configurationFrozen() &&
+               tower_.registerAffix(std::move(affix));
     }
 
     bool registerBoss(tower_defense::BossDefinition boss) {
-        return tower_.registerBoss(std::move(boss));
+        return !configurationFrozen() &&
+               tower_.registerBoss(std::move(boss));
     }
 
     bool registerLane(tower_defense::SpawnLane lane) {
-        return tower_.registerLane(std::move(lane));
+        return !configurationFrozen() &&
+               tower_.registerLane(std::move(lane));
     }
 
     bool registerWave(tower_defense::WaveDefinition wave) {
-        if (wave.id == 0) return false;
-        replaceById(waves_, wave);
-        return tower_.registerWave(std::move(wave));
+        if (configurationFrozen() || wave.id == 0) return false;
+        const auto copy = wave;
+        if (!tower_.registerWave(std::move(wave))) return false;
+        replaceById(waves_, copy);
+        return true;
     }
 
     bool registerModifier(ModifierDefinition modifier) {
+        if (configurationFrozen()) return false;
         const auto id = modifier.id;
         const auto weight = modifier.weight;
         if (!modifiers_.registerDefinition(std::move(modifier))) return false;
@@ -150,7 +167,7 @@ public:
     }
 
     bool registerRun(RunDefinition run) {
-        if (!validRunDefinition(run)) return false;
+        if (configurationFrozen() || !validRunDefinition(run)) return false;
         const auto sequenceDefinition = makeSequenceDefinition(run);
         if (!sequence_.registerSequence(sequenceDefinition)) return false;
         replaceById(runs_, std::move(run));
@@ -161,24 +178,29 @@ public:
         tower_.setResources(available);
     }
 
-    void setPlayerTeam(std::uint32_t teamId) noexcept {
+    bool setPlayerTeam(std::uint32_t teamId) noexcept {
+        if (configurationFrozen() || !tower_.setPlayerTeam(teamId)) {
+            return false;
+        }
         playerTeamId_ = teamId;
-        tower_.setPlayerTeam(teamId);
         synchronizeGameplayModifiers();
+        return true;
     }
 
-    void setRequiredRoute(gameplay::GridPoint start,
+    bool setRequiredRoute(gameplay::GridPoint start,
                           gameplay::GridPoint goal) noexcept {
-        tower_.setRequiredRoute(start, goal);
+        return !configurationFrozen() &&
+               tower_.setRequiredRoute(start, goal);
     }
 
     bool setBlocked(gameplay::GridPoint point, bool blocked) {
-        return tower_.setBlocked(point, blocked);
+        return !configurationFrozen() && tower_.setBlocked(point, blocked);
     }
 
     ecs::Entity createBaseCore(gameplay::Position position,
                                std::uint32_t teamId,
                                gameplay::CombatStats combat) {
+        if (configurationFrozen()) return {};
         return tower_.createBaseCore(position, teamId, combat);
     }
 
@@ -186,10 +208,12 @@ public:
                                gameplay::MoveSpeed speed,
                                std::uint32_t teamId,
                                gameplay::CombatStats combat) {
+        if (configurationFrozen()) return {};
         return tower_.createDefender(position, speed, teamId, combat);
     }
 
     bool submit(TickCommand command) {
+        if (isInternalIssuer(command.issuer)) return false;
         return commands_.submit(std::move(command));
     }
 
@@ -197,12 +221,26 @@ public:
         return tower_.submitRts(std::move(command));
     }
 
-    bool step(std::uint64_t tick) {
-        if (hasStepped_ && tick <= lastTick_) return false;
-        hasStepped_ = true;
-        lastTick_ = tick;
-        events_.clear();
+    sim::AuthoritativeStepValidation validateStep(
+        std::uint64_t tick) const noexcept {
+        const auto outer = sim::ValidateAuthoritativeStep(
+            hasStepped_, lastTick_, tick);
+        if (!outer) return outer;
+        const auto inner = tower_.validateStep(tick);
+        if (!inner) {
+            return {
+                sim::AuthoritativeStepFailure::InnerLayerRejected,
+                inner.expectedTick,
+                tick};
+        }
+        return outer;
+    }
 
+    bool step(std::uint64_t tick) {
+        if (!validateStep(tick)) return false;
+
+        freezeConfiguration();
+        events_.clear();
         for (const auto& command : commands_.consume(tick)) {
             processCommand(tick, command);
         }
@@ -211,7 +249,13 @@ public:
         reconcileTowerEvents(tick);
         synchronizeRunState();
         buildSnapshot(tick);
+        hasStepped_ = true;
+        lastTick_ = tick;
         return true;
+    }
+
+    std::uint64_t nextExpectedTick() const noexcept {
+        return hasStepped_ ? lastTick_ + 1u : 0u;
     }
 
     const RunSnapshot& snapshot() const noexcept { return snapshot_; }
@@ -234,6 +278,9 @@ public:
 private:
     friend class RunSimulationArchive;
 
+    using TowerRuntimeAuthority =
+        tower_defense::TowerDefenseSimulation::RuntimeAuthority;
+
     struct PendingWaveBaseline final {
         tower_defense::WaveId waveId{};
         std::uint32_t waveIndex{};
@@ -243,6 +290,10 @@ private:
         std::int32_t resources{};
         bool valid{};
     };
+
+    static TowerRuntimeAuthority towerRuntimeAuthority() noexcept {
+        return TowerRuntimeAuthority{};
+    }
 
     template<class T>
     static void replaceById(std::vector<T>& values, T value) {
@@ -425,7 +476,7 @@ private:
         command.sequence = nextInternalSequence_++;
         command.type = tower_defense::CommandType::ChooseReward;
         command.objectId = id;
-        if (!tower_.submit(command)) {
+        if (!tower_.submitRuntime(towerRuntimeAuthority(), command)) {
             events_.push_back(
                 {tick, EventType::ModifierRejected, state_.runId,
                  state_.currentWave, id, 0,
@@ -485,7 +536,9 @@ private:
                 pendingRewardOffer_.choices.size());
         }
 
-        if (!tower_.registerWave(wave) || !sequence_.markWaveStartQueued()) {
+        if (!tower_.registerRuntimeWave(
+                towerRuntimeAuthority(), std::move(wave)) ||
+            !sequence_.markWaveStartQueued()) {
             pendingRewardOffer_ = {};
             failRun(tick, RunFailure::InvalidDefinition,
                     tower_defense::WaveSequenceFailure::InvalidDefinition);
@@ -498,7 +551,7 @@ private:
         command.sequence = nextInternalSequence_++;
         command.type = tower_defense::CommandType::StartWave;
         command.objectId = waveId;
-        if (!tower_.submit(command)) {
+        if (!tower_.submitRuntime(towerRuntimeAuthority(), command)) {
             pendingRewardOffer_ = {};
             failRun(tick, RunFailure::TowerDefenseRejected,
                     tower_defense::WaveSequenceFailure::TowerCommandRejected);
@@ -921,6 +974,10 @@ private:
             appendHistoryHash(hash, history_, compatibilityVersion);
         }
         snapshot_.worldHash = hash.Value();
+    }
+
+    static bool isInternalIssuer(std::uint32_t issuer) noexcept {
+        return (issuer & 0xc0000000u) == 0xc0000000u;
     }
 
     static std::uint32_t internalIssuer(RunId runId) noexcept {

@@ -46,43 +46,43 @@ public:
     }
 
     RtsReplay finish() {
-        normalize(replay_);
+        if (!normalize(replay_)) return {};
         return std::move(replay_);
     }
 
-    static void normalize(RtsReplay& replay) {
-        sortCommands(replay.commands);
-        sortCommands(replay.commandStream.pending);
-        std::sort(
-            replay.randomStreams.begin(),
-            replay.randomStreams.end(),
-            [](const auto& a, const auto& b) { return a.id < b.id; });
-        replay.randomStreams.erase(
-            std::unique(
-                replay.randomStreams.begin(),
-                replay.randomStreams.end(),
-                [](const auto& a, const auto& b) {
-                    return a.id == b.id;
-                }),
-            replay.randomStreams.end());
-        std::sort(
-            replay.checkpoints.begin(),
-            replay.checkpoints.end(),
-            [](const auto& a, const auto& b) {
-                return a.tick < b.tick;
-            });
-        replay.checkpoints.erase(
-            std::unique(
-                replay.checkpoints.begin(),
-                replay.checkpoints.end(),
-                [](const auto& a, const auto& b) {
-                    return a.tick == b.tick;
-                }),
-            replay.checkpoints.end());
+    static bool normalize(RtsReplay& replay) {
+        if (!sortCommands(replay.commands) ||
+            !sortCommands(replay.commandStream.pending) ||
+            !sortRandomStreams(replay.randomStreams) ||
+            !sortCheckpoints(replay.checkpoints)) {
+            return false;
+        }
+        return true;
     }
 
 private:
-    static void sortCommands(std::vector<TickCommand>& commands) {
+    static bool sameIdentity(
+        const TickCommand& a,
+        const TickCommand& b) noexcept {
+        return a.targetTick == b.targetTick &&
+               a.issuer == b.issuer &&
+               a.sequence == b.sequence;
+    }
+
+    static bool samePayload(
+        const TickCommand& a,
+        const TickCommand& b) noexcept {
+        return a.type == b.type &&
+               a.subject == b.subject &&
+               a.targetX == b.targetX &&
+               a.targetY == b.targetY &&
+               a.append == b.append &&
+               a.definitionId == b.definitionId &&
+               a.objectId == b.objectId &&
+               a.targetEntity == b.targetEntity;
+    }
+
+    static bool sortCommands(std::vector<TickCommand>& commands) {
         std::stable_sort(
             commands.begin(),
             commands.end(),
@@ -93,16 +93,64 @@ private:
                 if (a.issuer != b.issuer) return a.issuer < b.issuer;
                 return a.sequence < b.sequence;
             });
-        commands.erase(
-            std::unique(
-                commands.begin(),
-                commands.end(),
-                [](const TickCommand& a, const TickCommand& b) {
-                    return a.targetTick == b.targetTick &&
-                           a.issuer == b.issuer &&
-                           a.sequence == b.sequence;
-                }),
-            commands.end());
+
+        auto output = commands.begin();
+        for (auto current = commands.begin(); current != commands.end();
+             ++current) {
+            if (output != commands.begin() &&
+                sameIdentity(*(output - 1), *current)) {
+                if (!samePayload(*(output - 1), *current)) return false;
+                continue;
+            }
+            if (output != current) *output = std::move(*current);
+            ++output;
+        }
+        commands.erase(output, commands.end());
+        return true;
+    }
+
+    static bool sortRandomStreams(
+        std::vector<foundation::RandomStreamState>& streams) {
+        std::sort(
+            streams.begin(), streams.end(),
+            [](const auto& a, const auto& b) { return a.id < b.id; });
+        auto output = streams.begin();
+        for (auto current = streams.begin(); current != streams.end();
+             ++current) {
+            if (output != streams.begin() &&
+                (output - 1)->id == current->id) {
+                if (!(*(output - 1) == *current)) return false;
+                continue;
+            }
+            if (output != current) *output = *current;
+            ++output;
+        }
+        streams.erase(output, streams.end());
+        return true;
+    }
+
+    static bool sortCheckpoints(
+        std::vector<sim::WorldHashCheckpoint>& checkpoints) {
+        std::sort(
+            checkpoints.begin(), checkpoints.end(),
+            [](const auto& a, const auto& b) {
+                return a.tick < b.tick;
+            });
+        auto output = checkpoints.begin();
+        for (auto current = checkpoints.begin(); current != checkpoints.end();
+             ++current) {
+            if (output != checkpoints.begin() &&
+                (output - 1)->tick == current->tick) {
+                if ((output - 1)->worldHash != current->worldHash) {
+                    return false;
+                }
+                continue;
+            }
+            if (output != current) *output = *current;
+            ++output;
+        }
+        checkpoints.erase(output, checkpoints.end());
+        return true;
     }
 
     RtsReplay replay_;
@@ -153,7 +201,7 @@ inline bool ReadTickCommand(
 }
 
 inline std::vector<std::uint8_t> EncodeRtsReplay(RtsReplay replay) {
-    RtsReplayRecorder::normalize(replay);
+    if (!RtsReplayRecorder::normalize(replay)) return {};
     sim::BinaryWriter writer;
     sim::WriteSessionHeader(
         writer,
@@ -247,8 +295,9 @@ inline bool DecodeRtsReplay(
             return false;
         }
     }
-    if (!reader.atEnd()) return false;
-    RtsReplayRecorder::normalize(replay);
+    if (!reader.atEnd() || !RtsReplayRecorder::normalize(replay)) {
+        return false;
+    }
     return replay.firstTick <= replay.lastTick ||
            replay.checkpoints.empty();
 }

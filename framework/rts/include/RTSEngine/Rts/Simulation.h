@@ -21,6 +21,7 @@
 #include <RTSEngine/Rts/SimulationTypes.h>
 #include <RTSEngine/Rts/SnapshotBuilder.h>
 #include <RTSEngine/Rts/Vision.h>
+#include <rts/sim/AuthoritativeStep.h>
 
 #include <algorithm>
 #include <cstddef>
@@ -28,6 +29,10 @@
 #include <limits>
 #include <utility>
 #include <vector>
+
+namespace rts::tower_defense {
+class TowerDefenseSimulation;
+}
 
 namespace rts::gameplay {
 
@@ -105,17 +110,15 @@ public:
         std::uint32_t teamId = 1,
         CombatStats combat = {},
         std::int32_t visionRange = 6) {
-        return EntityFactory::createUnit(
-            world_,
-            modifiers_,
-            position,
-            speed,
-            teamId,
-            combat,
-            visionRange);
+        if (configurationFrozen()) return {};
+        return createUnitUnchecked(
+            position, speed, teamId, combat, visionRange);
     }
 
     sim::CommandSubmitResult submitDetailed(TickCommand command) {
+        if (isInternalIssuer(command.issuer)) {
+            return sim::CommandSubmitResult::Unauthorized;
+        }
         return commands_.submitDetailed(std::move(command));
     }
 
@@ -161,17 +164,18 @@ public:
         return resources_;
     }
 
+    sim::AuthoritativeStepValidation validateStep(
+        std::uint64_t tick) const noexcept {
+        return sim::ValidateAuthoritativeStep(
+            hasStepped_, lastCompletedTick_, tick);
+    }
+
     RtsStepResult stepDetailed(std::uint64_t tick) {
-        if (hasStepped_) {
-            if (tick <= lastCompletedTick_) return RtsStepResult::StaleTick;
-            if (tick != lastCompletedTick_ + 1u) {
-                return RtsStepResult::NonSequentialTick;
-            }
-        } else if (tick > 1u) {
-            // Existing applications begin at either Tick 0 or Tick 1. Larger
-            // initial values require an explicit archive restore instead of
-            // silently dropping the skipped command interval.
-            return RtsStepResult::NonSequentialTick;
+        const auto validation = validateStep(tick);
+        if (!validation) {
+            return validation.failure == sim::AuthoritativeStepFailure::StaleTick
+                ? RtsStepResult::StaleTick
+                : RtsStepResult::NonSequentialTick;
         }
 
         configurationFrozen_ = true;
@@ -216,6 +220,14 @@ public:
     }
 
     bool restoreCommandStream(TickCommandStream::State state) {
+        if (std::any_of(
+                state.pending.begin(),
+                state.pending.end(),
+                [](const TickCommand& command) {
+                    return isInternalIssuer(command.issuer);
+                })) {
+            return false;
+        }
         return commands_.restore(std::move(state));
     }
 
@@ -225,9 +237,53 @@ public:
 
 private:
     friend class RtsSimulationArchive;
+    friend class ::rts::tower_defense::TowerDefenseSimulation;
 
+    static constexpr std::uint32_t kInternalIssuerMask = 0x80000000u;
     static constexpr std::uint64_t kInvalidDerivedHash =
         std::numeric_limits<std::uint64_t>::max();
+
+    static bool isInternalIssuer(std::uint32_t issuer) noexcept {
+        return (issuer & kInternalIssuerMask) != 0;
+    }
+
+    ecs::Entity createUnitUnchecked(
+        Position position,
+        MoveSpeed speed,
+        std::uint32_t teamId,
+        CombatStats combat,
+        std::int32_t visionRange) {
+        return EntityFactory::createUnit(
+            world_,
+            modifiers_,
+            position,
+            speed,
+            teamId,
+            combat,
+            visionRange);
+    }
+
+    ecs::Entity createUnitInternal(
+        Position position,
+        MoveSpeed speed,
+        std::uint32_t teamId,
+        CombatStats combat,
+        std::int32_t visionRange) {
+        return createUnitUnchecked(
+            position, speed, teamId, combat, visionRange);
+    }
+
+    sim::CommandSubmitResult submitInternalDetailed(TickCommand command) {
+        if (!isInternalIssuer(command.issuer)) {
+            return sim::CommandSubmitResult::Unauthorized;
+        }
+        return commands_.submitDetailed(std::move(command));
+    }
+
+    bool submitInternal(TickCommand command) {
+        return submitInternalDetailed(std::move(command)) ==
+               sim::CommandSubmitResult::Accepted;
+    }
 
     void refreshDerivedInfluence() const {
         if (!hasStepped_) {

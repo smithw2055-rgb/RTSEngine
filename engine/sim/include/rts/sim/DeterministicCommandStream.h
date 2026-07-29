@@ -15,7 +15,8 @@ namespace rts::sim {
 enum class CommandSubmitResult : std::uint8_t {
     Accepted,
     DuplicateIdentity,
-    Late
+    Late,
+    Unauthorized
 };
 
 namespace detail {
