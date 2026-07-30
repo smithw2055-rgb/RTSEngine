@@ -41,8 +41,23 @@ jobs:
           base64 --decode /tmp/engine-g1-g2.b64 > /tmp/engine-g1-g2.tar.gz
           echo "6a91d761c4d232fec9f451fa4a1e4f173f3a4777a2a384fe61a573131c3f9a64  /tmp/engine-g1-g2.tar.gz" | sha256sum -c -
           tar -xzf /tmp/engine-g1-g2.tar.gz -C .
-          git diff --check
 
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('framework/rts/include/RTSEngine/Rts/Navigation.h')
+          text = path.read_text()
+          text = text.replace(
+              'using NavigationLayerCell = ::rts::navigation::NavigationLayerCell;',
+              'using NavigationCellLayers = ::rts::navigation::NavigationCellLayers;')
+          text = text.replace(
+              'using WeightedGridPathfinderScratch =\n    ::rts::navigation::WeightedGridPathfinderScratch;',
+              'using WeightedPathfinderScratch =\n    ::rts::navigation::WeightedPathfinderScratch;')
+          text = text.replace(
+              'using FormationMember = ::rts::navigation::FormationMember;\n', '')
+          path.write_text(text)
+          PY
+
+          git diff --check
           cmake -S . -B build-g1-g2 \
             -DCMAKE_BUILD_TYPE=Debug \
             -DRTSENGINE_BUILD_TESTS=ON \
