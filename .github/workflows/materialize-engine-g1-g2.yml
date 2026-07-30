@@ -1,0 +1,66 @@
+name: Materialize Engine G1 G2
+
+on:
+  push:
+    branches:
+      - agent/engine-g1-g2-world-presentation
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-engine-g1-g2
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify and unpack implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat .g1g2/part-* > /tmp/engine-g1-g2.b64
+          echo "ad468e8d98beb892cadd194ec88cea5171753396bda0e3b31d777256fe93c111  /tmp/engine-g1-g2.b64" | sha256sum -c -
+          base64 --decode /tmp/engine-g1-g2.b64 > /tmp/engine-g1-g2.tar.gz
+          echo "6a91d761c4d232fec9f451fa4a1e4f173f3a4777a2a384fe61a573131c3f9a64  /tmp/engine-g1-g2.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/engine-g1-g2.tar.gz -C .
+          git diff --check
+
+      - name: Configure
+        shell: bash
+        run: |
+          cmake -S . -B build-g1-g2 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_REALSCRIPT=OFF
+
+      - name: Build focused regression targets
+        shell: bash
+        run: |
+          cmake --build build-g1-g2 --parallel 2 \
+            --target rts_engine_g1_g2_tests rts_presentation_events_tests
+
+      - name: Test G1 G2 and presentation playback
+        shell: bash
+        run: |
+          ctest --test-dir build-g1-g2 --output-on-failure \
+            -R '^rts_(engine_g1_g2|presentation_events)_tests$'
+
+      - name: Publish verified implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf .g1g2 .github/workflows/materialize-engine-g1-g2.yml build-g1-g2
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Implement Engine G1 and G2 foundations"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
