@@ -24,7 +24,7 @@ docs/ENGINE_G3.md
 -- Check for working CXX compiler: /usr/bin/c++ - skipped
 -- Detecting CXX compile features
 -- Detecting CXX compile features - done
--- Configuring done (0.3s)
+-- Configuring done (1.9s)
 -- Generating done (0.1s)
 -- Build files have been written to: /home/runner/work/RTSEngine/RTSEngine/build-g3
 
@@ -34,13 +34,13 @@ docs/ENGINE_G3.md
 [ 11%] Linking CXX static library librts_network.a
 [ 22%] Building CXX object engine/assets/CMakeFiles/rts_assets.dir/src/CookedAsset.cpp.o
 [ 33%] Building CXX object engine/assets/CMakeFiles/rts_assets.dir/src/CookedContent.cpp.o
-[ 33%] Built target rts_network
-[ 44%] Building CXX object engine/sim/CMakeFiles/rts_sim.dir/src/SimulationHost.cpp.o
-[ 55%] Linking CXX static library librts_sim.a
-[ 55%] Built target rts_sim
-[ 55%] Building CXX object engine/assets/CMakeFiles/rts_assets.dir/src/Vfs.cpp.o
-[ 66%] Linking CXX static library librts_assets.a
-[ 66%] Built target rts_assets
+[ 33%] Building CXX object engine/assets/CMakeFiles/rts_assets.dir/src/Vfs.cpp.o
+[ 44%] Linking CXX static library librts_assets.a
+[ 44%] Built target rts_network
+[ 44%] Built target rts_assets
+[ 55%] Building CXX object engine/sim/CMakeFiles/rts_sim.dir/src/SimulationHost.cpp.o
+[ 66%] Linking CXX static library librts_sim.a
+[ 66%] Built target rts_sim
 [ 77%] Building CXX object framework/rts/CMakeFiles/rts_engine_rts.dir/src/Simulation.cpp.o
 [ 88%] Linking CXX static library librts_engine_rts.a
 [ 88%] Built target rts_engine_rts
@@ -75,16 +75,17 @@ Test project /home/runner/work/RTSEngine/RTSEngine/build-g3
     Start 28: rts_simulation_persistence_tests
 1/4 Test #28: rts_simulation_persistence_tests ...   Passed    0.02 sec
     Start 31: rts_combat_tests
-2/4 Test #31: rts_combat_tests ...................   Passed    0.07 sec
+2/4 Test #31: rts_combat_tests ...................   Passed    0.06 sec
     Start 32: rts_combat_integration_tests
 3/4 Test #32: rts_combat_integration_tests .......   Passed    0.01 sec
     Start 33: rts_engine_g3_tests
-4/4 Test #33: rts_engine_g3_tests ................Subprocess aborted***Exception:   0.09 sec
+4/4 Test #33: rts_engine_g3_tests ................Subprocess aborted***Exception:   0.10 sec
+G3 require failed at line 120: afterCast && afterCast->current == 88
 
 
 75% tests passed, 1 tests failed out of 4
 
-Total Test time (real) =   0.25 sec
+Total Test time (real) =   0.24 sec
 
 The following tests FAILED:
 	 33 - rts_engine_g3_tests (Subprocess aborted)
