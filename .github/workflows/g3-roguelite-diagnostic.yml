@@ -40,6 +40,7 @@ jobs:
           diagnostics = '''    if (!completed) {
               const auto& runState = original.state();
               const auto& towerSnapshot = original.tower().snapshot();
+              const auto& world = original.tower().rts().world();
               std::cerr << "run did not complete: phase="
                         << static_cast<int>(runState.phase)
                         << " completedWaves=" << runState.completedWaves
@@ -49,8 +50,8 @@ jobs:
                         << " resolved=" << towerSnapshot.wave.resolved
                         << " enemies=" << towerSnapshot.enemies.size() << '\\n';
               for (const auto& enemySnapshot : towerSnapshot.enemies) {
-                  const auto* position = original.tower().rts().world().try_get<gameplay::Position>(enemySnapshot.entity);
-                  const auto* health = original.tower().rts().world().try_get<gameplay::Health>(enemySnapshot.entity);
+                  const auto* position = world.try_get<gameplay::Position>(enemySnapshot.entity);
+                  const auto* health = world.try_get<gameplay::Health>(enemySnapshot.entity);
                   std::cerr << " enemy=" << enemySnapshot.entity.index
                             << ":" << enemySnapshot.entity.generation
                             << " alive=" << enemySnapshot.alive
@@ -61,6 +62,27 @@ jobs:
                             << " health=" << (health ? health->current : -999)
                             << '\\n';
               }
+              world.eachRef<gameplay::Position, gameplay::Team, gameplay::Health>(
+                  [&](gameplay::ecs::Entity entity,
+                      const gameplay::Position& position,
+                      const gameplay::Team& team,
+                      const gameplay::Health& health) {
+                      const auto* weapon = world.try_get<gameplay::Weapon>(entity);
+                      const auto* target = world.try_get<gameplay::CombatTarget>(entity);
+                      const auto* directive = world.try_get<gameplay::CombatDirective>(entity);
+                      std::cerr << " actor=" << entity.index << ":" << entity.generation
+                                << " team=" << team.id
+                                << " position=" << position.x << "," << position.y
+                                << " health=" << health.current << "/" << health.maximum
+                                << " weaponDamage=" << (weapon ? weapon->damage : -999)
+                                << " weaponRange=" << (weapon ? weapon->range : -999)
+                                << " cooldown=" << (weapon ? weapon->cooldownRemaining : 999999)
+                                << " projectile=" << (weapon ? weapon->projectileDefinitionId : 999999)
+                                << " target=" << (target ? target->entity.index : 0)
+                                << ":" << (target ? target->entity.generation : 0)
+                                << " mode=" << (directive ? static_cast<int>(directive->mode) : -1)
+                                << '\\n';
+                  });
           }
           check(completed);
           '''
