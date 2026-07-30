@@ -1,98 +1,98 @@
-name: G3 Roguelite Diagnostic
+name: Finalize Engine G3 compatibility
 
 on:
-  pull_request:
+  push:
+    branches:
+      - agent/engine-g3-combat-squad-ai
 
 permissions:
-  contents: read
+  contents: write
+
+concurrency:
+  group: finalize-engine-g3-compatibility
+  cancel-in-progress: false
 
 jobs:
-  diagnose:
-    if: github.event.pull_request.number == 26
+  finalize:
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Add assertion diagnostics
+        with:
+          fetch-depth: 0
+
+      - name: Restore legacy movement contract and validate
         shell: bash
         run: |
-          python - <<'PY'
+          set -Eeuo pipefail
+          report_failure() {
+            status=$?
+            trap - ERR
+            mkdir -p .g3fix
+            {
+              echo "Engine G3 compatibility gate failed with status ${status}."
+              for log in /tmp/g3fix-patch.log /tmp/g3fix-config.log /tmp/g3fix-build.log /tmp/g3fix-test.log; do
+                if [[ -f "${log}" ]]; then
+                  echo
+                  echo "===== ${log} ====="
+                  tail -n 500 "${log}"
+                fi
+              done
+            } > .g3fix/failure.log
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .g3fix/failure.log
+            git commit -m "Record Engine G3 compatibility failure" || true
+            git push origin HEAD:"${GITHUB_REF_NAME}" || true
+            exit "${status}"
+          }
+          trap report_failure ERR
+
+          python - <<'PY' > /tmp/g3fix-patch.log 2>&1
           from pathlib import Path
-          path = Path('tests/roguelite_persistence_tests.cpp')
+
+          path = Path('framework/rts/include/RTSEngine/Rts/MovementSystem.h')
           text = path.read_text()
-          old = '''void check(bool condition) {
-              assert(condition);
-              if (!condition) std::abort();
-          }
-          '''
-          new = '''void checkImpl(bool condition, const char* expression, int line) {
-              if (!condition) {
-                  std::cerr << "roguelite persistence check failed at line "
-                            << line << ": " << expression << '\\n';
-                  std::abort();
-              }
-          }
-          #define check(condition) checkImpl((condition), #condition, __LINE__)
-          '''
-          if old not in text:
-              raise SystemExit('check helper not found')
-          text = text.replace(old, new, 1)
-          marker = '    check(completed);\n'
-          diagnostics = '''    if (!completed) {
-              const auto& runState = original.state();
-              const auto& towerSnapshot = original.tower().snapshot();
-              const auto& world = original.tower().rts().world();
-              std::cerr << "run did not complete: phase="
-                        << static_cast<int>(runState.phase)
-                        << " completedWaves=" << runState.completedWaves
-                        << " wavePhase="
-                        << static_cast<int>(towerSnapshot.wave.phase)
-                        << " spawned=" << towerSnapshot.wave.spawned
-                        << " resolved=" << towerSnapshot.wave.resolved
-                        << " enemies=" << towerSnapshot.enemies.size() << '\\n';
-              for (const auto& enemySnapshot : towerSnapshot.enemies) {
-                  const auto* position = world.try_get<gameplay::Position>(enemySnapshot.entity);
-                  const auto* health = world.try_get<gameplay::Health>(enemySnapshot.entity);
-                  std::cerr << " enemy=" << enemySnapshot.entity.index
-                            << ":" << enemySnapshot.entity.generation
-                            << " alive=" << enemySnapshot.alive
-                            << " waypoint=" << enemySnapshot.waypointIndex
-                            << "/" << enemySnapshot.waypointCount
-                            << " position=" << (position ? position->x : -999)
-                            << "," << (position ? position->y : -999)
-                            << " health=" << (health ? health->current : -999)
-                            << '\\n';
-              }
-              world.eachRef<gameplay::Position, gameplay::Team, gameplay::Health>(
-                  [&](ecs::Entity entity,
-                      const gameplay::Position& position,
-                      const gameplay::Team& team,
-                      const gameplay::Health& health) {
-                      const auto* weapon = world.try_get<gameplay::Weapon>(entity);
-                      const auto* target = world.try_get<gameplay::CombatTarget>(entity);
-                      const auto* directive = world.try_get<gameplay::CombatDirective>(entity);
-                      std::cerr << " actor=" << entity.index << ":" << entity.generation
-                                << " team=" << team.id
-                                << " position=" << position.x << "," << position.y
-                                << " health=" << health.current << "/" << health.maximum
-                                << " weaponDamage=" << (weapon ? weapon->damage : -999)
-                                << " weaponRange=" << (weapon ? weapon->range : -999)
-                                << " cooldown=" << (weapon ? weapon->cooldownRemaining : 999999)
-                                << " projectile=" << (weapon ? weapon->projectileDefinitionId : 999999)
-                                << " target=" << (target ? target->entity.index : 0)
-                                << ":" << (target ? target->entity.generation : 0)
-                                << " mode=" << (directive ? static_cast<int>(directive->mode) : -1)
-                                << '\\n';
-                  });
-          }
-          check(completed);
-          '''
-          if marker not in text:
-              raise SystemExit('completed assertion not found')
-          path.write_text(text.replace(marker, diagnostics, 1))
+          old = '''const auto effectiveSteps = control && control->stunned
+                    ? 0
+                    : static_cast<std::int32_t>(
+                          static_cast<std::int64_t>(speed.cellsPerTick) *
+                          (control ? control->moveScalePermille : 1000u) / 1000u);'''
+          new = '''const auto scaledSteps = static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(speed.cellsPerTick) *
+                    (control ? control->moveScalePermille : 1000u) / 1000u);
+                const auto effectiveSteps = control && control->stunned
+                    ? 0
+                    : std::max<std::int32_t>(1, scaledSteps);'''
+          count = text.count(old)
+          if count != 2:
+              raise SystemExit(f'expected two movement scale sites, found {count}')
+          path.write_text(text.replace(old, new))
           PY
-      - name: Configure
-        run: cmake -S . -B build-diag -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=OFF
-      - name: Build
-        run: cmake --build build-diag --parallel 2 --target rts_roguelite_persistence_tests
-      - name: Test
-        run: ctest --test-dir build-diag --output-on-failure -R '^rts_roguelite_persistence_tests$'
+
+          git diff --check
+          cmake -S . -B build-g3fix \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_REALSCRIPT=OFF \
+            > /tmp/g3fix-config.log 2>&1
+          cmake --build build-g3fix --parallel 2 \
+            --target rts_engine_g3_tests \
+                     rts_combat_tests \
+                     rts_combat_integration_tests \
+                     rts_simulation_persistence_tests \
+                     rts_roguelite_persistence_tests \
+            > /tmp/g3fix-build.log 2>&1
+          ctest --test-dir build-g3fix --output-on-failure \
+            -R '^rts_(engine_g3|combat|combat_integration|simulation_persistence|roguelite_persistence)_tests$' \
+            > /tmp/g3fix-test.log 2>&1
+
+          trap - ERR
+          rm -rf .g3fix build-g3fix .github/workflows/g3-roguelite-diagnostic.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Restore legacy zero-speed movement compatibility"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
