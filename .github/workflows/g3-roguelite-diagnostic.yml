@@ -63,7 +63,7 @@ jobs:
                             << '\\n';
               }
               world.eachRef<gameplay::Position, gameplay::Team, gameplay::Health>(
-                  [&](gameplay::ecs::Entity entity,
+                  [&](ecs::Entity entity,
                       const gameplay::Position& position,
                       const gameplay::Team& team,
                       const gameplay::Health& health) {
