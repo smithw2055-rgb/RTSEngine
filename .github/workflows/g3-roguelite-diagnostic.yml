@@ -35,7 +35,38 @@ jobs:
           '''
           if old not in text:
               raise SystemExit('check helper not found')
-          path.write_text(text.replace(old, new, 1))
+          text = text.replace(old, new, 1)
+          marker = '    check(completed);\n'
+          diagnostics = '''    if (!completed) {
+              const auto& runState = original.state();
+              const auto& towerSnapshot = original.tower().snapshot();
+              std::cerr << "run did not complete: phase="
+                        << static_cast<int>(runState.phase)
+                        << " completedWaves=" << runState.completedWaves
+                        << " wavePhase="
+                        << static_cast<int>(towerSnapshot.wave.phase)
+                        << " spawned=" << towerSnapshot.wave.spawned
+                        << " resolved=" << towerSnapshot.wave.resolved
+                        << " enemies=" << towerSnapshot.enemies.size() << '\\n';
+              for (const auto& enemySnapshot : towerSnapshot.enemies) {
+                  const auto* position = original.tower().rts().world().try_get<gameplay::Position>(enemySnapshot.entity);
+                  const auto* health = original.tower().rts().world().try_get<gameplay::Health>(enemySnapshot.entity);
+                  std::cerr << " enemy=" << enemySnapshot.entity.index
+                            << ":" << enemySnapshot.entity.generation
+                            << " alive=" << enemySnapshot.alive
+                            << " waypoint=" << enemySnapshot.waypointIndex
+                            << "/" << enemySnapshot.waypointCount
+                            << " position=" << (position ? position->x : -999)
+                            << "," << (position ? position->y : -999)
+                            << " health=" << (health ? health->current : -999)
+                            << '\\n';
+              }
+          }
+          check(completed);
+          '''
+          if marker not in text:
+              raise SystemExit('completed assertion not found')
+          path.write_text(text.replace(marker, diagnostics, 1))
           PY
       - name: Configure
         run: cmake -S . -B build-diag -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=OFF
