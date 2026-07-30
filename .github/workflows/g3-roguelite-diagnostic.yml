@@ -50,24 +50,33 @@ jobs:
 
           python - <<'PY' > /tmp/g3fix-patch.log 2>&1
           from pathlib import Path
+          import re
 
           path = Path('framework/rts/include/RTSEngine/Rts/MovementSystem.h')
           text = path.read_text()
-          old = '''const auto effectiveSteps = control && control->stunned
-                    ? 0
-                    : static_cast<std::int32_t>(
-                          static_cast<std::int64_t>(speed.cellsPerTick) *
-                          (control ? control->moveScalePermille : 1000u) / 1000u);'''
-          new = '''const auto scaledSteps = static_cast<std::int32_t>(
-                    static_cast<std::int64_t>(speed.cellsPerTick) *
-                    (control ? control->moveScalePermille : 1000u) / 1000u);
-                const auto effectiveSteps = control && control->stunned
-                    ? 0
-                    : std::max<std::int32_t>(1, scaledSteps);'''
-          count = text.count(old)
+          pattern = re.compile(
+              r'(?P<indent>[ ]*)const auto effectiveSteps = control && control->stunned\n'
+              r'(?P=indent)    \? 0\n'
+              r'(?P=indent)    : static_cast<std::int32_t>\(\n'
+              r'(?P=indent)          static_cast<std::int64_t>\(speed\.cellsPerTick\) \*\n'
+              r'(?P=indent)          \(control \? control->moveScalePermille : 1000u\) / 1000u\);'
+          )
+
+          def replacement(match):
+              indent = match.group('indent')
+              return (
+                  f'{indent}const auto scaledSteps = static_cast<std::int32_t>(\n'
+                  f'{indent}    static_cast<std::int64_t>(speed.cellsPerTick) *\n'
+                  f'{indent}    (control ? control->moveScalePermille : 1000u) / 1000u);\n'
+                  f'{indent}const auto effectiveSteps = control && control->stunned\n'
+                  f'{indent}    ? 0\n'
+                  f'{indent}    : std::max<std::int32_t>(1, scaledSteps);'
+              )
+
+          updated, count = pattern.subn(replacement, text)
           if count != 2:
               raise SystemExit(f'expected two movement scale sites, found {count}')
-          path.write_text(text.replace(old, new))
+          path.write_text(updated)
           PY
 
           git diff --check
