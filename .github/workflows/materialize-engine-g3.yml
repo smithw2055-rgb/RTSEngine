@@ -1,0 +1,59 @@
+name: Materialize Engine G3
+
+on:
+  push:
+    branches:
+      - agent/engine-g3-combat-squad-ai
+
+permissions:
+  contents: write
+
+concurrency:
+  group: materialize-engine-g3
+  cancel-in-progress: false
+
+jobs:
+  materialize:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify build test and publish implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ ! -d .g3 ]]; then
+            echo "Implementation is already materialized."
+            exit 0
+          fi
+          cat .g3/part-* > /tmp/engine-g3.b64
+          echo "bf5478349c438b33bd5dee67c0d5d69020e6b75f0ed990ad2f5ff5b80f5345d6  /tmp/engine-g3.b64" | sha256sum -c -
+          base64 --decode /tmp/engine-g3.b64 > /tmp/engine-g3.tar.gz
+          echo "b682ee9904101e2394d3d3f9e6de91360d7856ae789c1205ff1f311976780e58  /tmp/engine-g3.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/engine-g3.tar.gz -C .
+          python .g3/patch.py
+          git diff --check
+
+          cmake -S . -B build-g3 \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DRTSENGINE_BUILD_TESTS=ON \
+            -DRTSENGINE_BUILD_EXAMPLES=OFF \
+            -DRTSENGINE_ENABLE_REALSCRIPT=OFF
+          cmake --build build-g3 --parallel 2 \
+            --target rts_engine_g3_tests \
+                     rts_combat_tests \
+                     rts_combat_integration_tests \
+                     rts_simulation_persistence_tests
+          ctest --test-dir build-g3 --output-on-failure \
+            -R '^rts_(engine_g3|combat|combat_integration|simulation_persistence)_tests$'
+
+          rm -rf .g3 .github/workflows/materialize-engine-g3.yml build-g3
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --check
+          git commit -m "Implement Engine G3 combat and squad AI"
+          git push origin HEAD:"${GITHUB_REF_NAME}"
