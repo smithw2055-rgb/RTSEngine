@@ -1,1 +1,19 @@
 Engine G3 materialization failed with status 1.
+
+===== /tmp/g3-prep.log =====
+bf5478349c438b33bd5dee67c0d5d69020e6b75f0ed990ad2f5ff5b80f5345d6  /tmp/engine-g3.b64
+/tmp/engine-g3.b64: OK
+b682ee9904101e2394d3d3f9e6de91360d7856ae789c1205ff1f311976780e58  /tmp/engine-g3.tar.gz
+/tmp/engine-g3.tar.gz: OK
+framework/
+framework/rts/
+framework/rts/include/
+framework/rts/include/RTSEngine/
+framework/rts/include/RTSEngine/Rts/
+framework/rts/include/RTSEngine/Rts/G3GameSession.h
+tests/
+tests/engine_g3_tests.cpp
+docs/
+docs/ENGINE_G3.md
+.g3/patch.py
+tests CMake insertion point not found
