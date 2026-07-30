@@ -96,7 +96,16 @@ jobs:
           '''
           if old not in test_text:
               raise SystemExit('G3 require helper not found')
-          test.write_text(test_text.replace(old, new, 1))
+          test_text = test_text.replace(old, new, 1)
+          caster = '    const auto caster = game.base().createUnit({1, 1}, {1}, 1, soldierCombat());\n'
+          passive = (
+              '    auto casterCombat = soldierCombat();\n'
+              '    casterCombat.weaponDamage = 0;\n'
+              '    const auto caster = game.base().createUnit({1, 1}, {1}, 1, casterCombat);\n'
+          )
+          if caster not in test_text:
+              raise SystemExit('G3 ability caster line not found')
+          test.write_text(test_text.replace(caster, passive, 1))
           PY
             python .g3/patch.py
             git diff --check
