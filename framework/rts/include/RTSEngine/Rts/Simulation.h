@@ -306,6 +306,7 @@ public:
     }
 
     const std::vector<DomainEvent>& events() const noexcept { return events_; }
+    ecs::World& mutableWorld() noexcept { return world_; }
     const ecs::World& world() const noexcept { return world_; }
 
     TickCommandStream::State commandStreamState() const {

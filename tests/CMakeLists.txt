@@ -145,6 +145,10 @@ add_executable(rts_combat_integration_tests rts_combat_integration_tests.cpp)
 target_link_libraries(rts_combat_integration_tests PRIVATE RTSEngine::Rts)
 add_test(NAME rts_combat_integration_tests COMMAND rts_combat_integration_tests)
 
+add_executable(rts_engine_g3_tests engine_g3_tests.cpp)
+target_link_libraries(rts_engine_g3_tests PRIVATE RTSEngine::Rts)
+add_test(NAME rts_engine_g3_tests COMMAND rts_engine_g3_tests)
+
 add_executable(rts_lane_graph_tests lane_graph_tests.cpp)
 target_link_libraries(rts_lane_graph_tests PRIVATE RTSEngine::TowerDefense)
 add_test(NAME rts_lane_graph_tests COMMAND rts_lane_graph_tests)

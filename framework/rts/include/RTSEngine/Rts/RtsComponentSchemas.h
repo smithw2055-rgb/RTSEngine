@@ -297,21 +297,30 @@ inline bool RegisterRtsComponentSchemas(
         }) && ok;
 
     ok = schemas.registerSchema<Weapon>(
-        0x52545309u, 1u, "rts.Weapon",
+        0x52545309u, 2u, "rts.Weapon",
         [](foundation::BinaryWriter& writer, const Weapon& value) {
             writer.writeI32(value.damage);
             writer.writeI32(value.range);
             writer.writeU32(value.cooldownTicks);
             writer.writeU32(value.cooldownRemaining);
+            writer.writeU32(value.projectileDefinitionId);
         },
         [](foundation::BinaryReader& reader,
            ecs::ComponentSchemaVersion version,
            Weapon& value) {
-            return version == 1u && reader.readI32(value.damage) &&
-                   reader.readI32(value.range) &&
-                   reader.readU32(value.cooldownTicks) &&
-                   reader.readU32(value.cooldownRemaining) &&
-                   value.damage >= 0 && value.range >= 0 &&
+            if ((version != 1u && version != 2u) ||
+                !reader.readI32(value.damage) ||
+                !reader.readI32(value.range) ||
+                !reader.readU32(value.cooldownTicks) ||
+                !reader.readU32(value.cooldownRemaining)) {
+                return false;
+            }
+            value.projectileDefinitionId = 0;
+            if (version == 2u &&
+                !reader.readU32(value.projectileDefinitionId)) {
+                return false;
+            }
+            return value.damage >= 0 && value.range >= 0 &&
                    value.cooldownTicks > 0 &&
                    value.cooldownRemaining <= value.cooldownTicks;
         },
@@ -320,6 +329,7 @@ inline bool RegisterRtsComponentSchemas(
             hash.WriteI32(value.range);
             hash.WriteU32(value.cooldownTicks);
             hash.WriteU32(value.cooldownRemaining);
+            hash.WriteU32(value.projectileDefinitionId);
         }) && ok;
 
     ok = schemas.registerSchema<CombatTarget>(
@@ -510,6 +520,56 @@ inline bool RegisterRtsComponentSchemas(
         },
         [](foundation::CanonicalHash& hash, const RallyPoint& value) {
             HashGridPoint(hash, value.point);
+        }) && ok;
+
+    ok = schemas.registerSchema<StatusControl>(
+        0x52545320u, 1u, "rts.StatusControl",
+        [](foundation::BinaryWriter& writer, const StatusControl& value) {
+            writer.writeU16(value.moveScalePermille);
+            writer.writeU16(value.damageScalePermille);
+            writer.writeI32(value.armorAdd);
+            writer.writeBool(value.stunned);
+        },
+        [](foundation::BinaryReader& reader,
+           ecs::ComponentSchemaVersion version,
+           StatusControl& value) {
+            return version == 1u &&
+                   reader.readU16(value.moveScalePermille) &&
+                   reader.readU16(value.damageScalePermille) &&
+                   reader.readI32(value.armorAdd) &&
+                   reader.readBool(value.stunned) &&
+                   value.moveScalePermille <= 4000u &&
+                   value.damageScalePermille <= 4000u;
+        },
+        [](foundation::CanonicalHash& hash, const StatusControl& value) {
+            hash.WriteU16(value.moveScalePermille);
+            hash.WriteU16(value.damageScalePermille);
+            hash.WriteI32(value.armorAdd);
+            hash.WriteBool(value.stunned);
+        }) && ok;
+
+    ok = schemas.registerSchema<DamageResistance>(
+        0x52545321u, 1u, "rts.DamageResistance",
+        [](foundation::BinaryWriter& writer, const DamageResistance& value) {
+            writer.writeU16(value.kineticPermille);
+            writer.writeU16(value.explosivePermille);
+            writer.writeU16(value.energyPermille);
+        },
+        [](foundation::BinaryReader& reader,
+           ecs::ComponentSchemaVersion version,
+           DamageResistance& value) {
+            return version == 1u &&
+                   reader.readU16(value.kineticPermille) &&
+                   reader.readU16(value.explosivePermille) &&
+                   reader.readU16(value.energyPermille) &&
+                   value.kineticPermille <= 4000u &&
+                   value.explosivePermille <= 4000u &&
+                   value.energyPermille <= 4000u;
+        },
+        [](foundation::CanonicalHash& hash, const DamageResistance& value) {
+            hash.WriteU16(value.kineticPermille);
+            hash.WriteU16(value.explosivePermille);
+            hash.WriteU16(value.energyPermille);
         }) && ok;
 
     if (ok) schemas.freeze();
