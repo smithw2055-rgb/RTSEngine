@@ -25,6 +25,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # A follow-up push intentionally triggers this branch-local gate.
           if [[ ! -d .g3 ]]; then
             echo "Implementation is already materialized."
             exit 0
