@@ -8,6 +8,7 @@ target_include_directories(rts_engine_rts PUBLIC
 )
 target_link_libraries(rts_engine_rts PUBLIC
     RTSEngine::Foundation
+    RTSEngine::Assets
     RTSEngine::Sim
     RTSEngine::Network
     RTSEngine::Ecs

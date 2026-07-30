@@ -59,21 +59,31 @@ void PresentationPlaybackRuntime::apply(
     expireEffects(nowMilliseconds);
 
     for (auto& sprite : packet.sprites) {
-        const auto iterator = lowerAnimation(sprite.viewId);
-        const auto clipId = iterator != animations_.end() &&
-                                    iterator->viewId == sprite.viewId
-            ? iterator->clipId : sprite.animationAsset;
-        const auto start = iterator != animations_.end() &&
-                                   iterator->viewId == sprite.viewId
-            ? iterator->startedMilliseconds : 0u;
+        auto iterator = lowerAnimation(sprite.viewId);
+        const auto hasOverride = iterator != animations_.end() &&
+                                 iterator->viewId == sprite.viewId;
+        const auto clipId = hasOverride
+            ? iterator->clipId
+            : sprite.animationAsset;
+        const auto started = hasOverride
+            ? iterator->startedMilliseconds
+            : 0u;
         if (clipId == 0) continue;
         std::uint64_t frameSprite = 0;
         bool finished = false;
+        const auto elapsed = nowMilliseconds >= started
+            ? nowMilliseconds - started
+            : 0u;
         if (sampleAnimation(
                 clipId,
-                nowMilliseconds >= start ? nowMilliseconds - start : 0u,
-                frameSprite, finished)) {
+                elapsed,
+                frameSprite,
+                finished,
+                hasOverride ? 0u : sprite.viewId)) {
             sprite.spriteAsset = frameSprite;
+            if (hasOverride && finished) {
+                completeAnimation(iterator);
+            }
         }
     }
 
@@ -81,7 +91,8 @@ void PresentationPlaybackRuntime::apply(
         std::uint64_t frameSprite = 0;
         bool finished = false;
         const auto elapsed = nowMilliseconds >= effect.startedMilliseconds
-            ? nowMilliseconds - effect.startedMilliseconds : 0u;
+            ? nowMilliseconds - effect.startedMilliseconds
+            : 0u;
         if (!sampleAnimation(
                 effect.animationClipId, elapsed,
                 frameSprite, finished)) {
@@ -124,6 +135,7 @@ void PresentationPlaybackRuntime::clear() noexcept {
     }
     animations_.clear();
     effects_.clear();
+    clipCache_.clear();
     refreshCounts();
 }
 
@@ -209,37 +221,89 @@ bool PresentationPlaybackRuntime::sampleAnimation(
     LogicalAssetId clipId,
     std::uint64_t elapsedMilliseconds,
     std::uint64_t& spriteId,
-    bool& finished) {
+    bool& finished,
+    std::uint64_t phaseSeed) {
+    const CachedAnimationClip* clip = nullptr;
+    if (!resolveAnimationClip(clipId, clip) || !clip ||
+        clip->durationMilliseconds == 0 || clip->frames.empty()) {
+        return false;
+    }
+    if (clip->loop && phaseSeed != 0) {
+        const auto offset = stablePhase(phaseSeed, clipId) %
+                            clip->durationMilliseconds;
+        elapsedMilliseconds = elapsedMilliseconds >
+                std::numeric_limits<std::uint64_t>::max() - offset
+            ? std::numeric_limits<std::uint64_t>::max()
+            : elapsedMilliseconds + offset;
+    }
+    finished = !clip->loop &&
+               elapsedMilliseconds >= clip->durationMilliseconds;
+    const auto sample = clip->loop
+        ? elapsedMilliseconds % clip->durationMilliseconds
+        : std::min(
+              elapsedMilliseconds, clip->durationMilliseconds - 1u);
+    const auto iterator = std::upper_bound(
+        clip->frames.begin(), clip->frames.end(), sample,
+        [](std::uint64_t value, const CachedAnimationFrame& frame) {
+            return value < frame.cumulativeEndMilliseconds;
+        });
+    spriteId = iterator != clip->frames.end()
+        ? iterator->spriteId
+        : clip->frames.back().spriteId;
+    return true;
+}
+
+bool PresentationPlaybackRuntime::resolveAnimationClip(
+    LogicalAssetId clipId,
+    const CachedAnimationClip*& clip) {
     const auto* loaded = assets_.loaded(
         {assets::AssetType::AnimationClip, clipId});
     if (!loaded) return false;
-    assets::AnimationClipContent clip;
-    if (!assets::CookedContentCodec::decodeAnimation(
-            loaded->cooked.payload, clip)) {
-        return false;
+    auto iterator = lowerClip(clipId);
+    if (iterator != clipCache_.end() && iterator->clipId == clipId &&
+        iterator->assetGeneration == loaded->generation) {
+        ++stats_.animationCacheHits;
+        clip = &*iterator;
+        return true;
     }
 
+    assets::AnimationClipContent decoded;
+    if (!assets::CookedContentCodec::decodeAnimation(
+            loaded->cooked.payload, decoded)) {
+        return false;
+    }
+    CachedAnimationClip candidate;
+    candidate.clipId = clipId;
+    candidate.assetGeneration = loaded->generation;
+    candidate.loop = decoded.loop;
+    candidate.frames.reserve(decoded.frames.size());
     std::uint64_t duration = 0;
-    for (const auto& frame : clip.frames) {
+    for (const auto& frame : decoded.frames) {
         duration = frame.durationMilliseconds >
                 std::numeric_limits<std::uint64_t>::max() - duration
             ? std::numeric_limits<std::uint64_t>::max()
             : duration + frame.durationMilliseconds;
+        candidate.frames.push_back({frame.spriteId, duration});
     }
     if (duration == 0) return false;
-    finished = !clip.loop && elapsedMilliseconds >= duration;
-    auto sample = clip.loop
-        ? elapsedMilliseconds % duration
-        : std::min(elapsedMilliseconds, duration - 1u);
-    for (const auto& frame : clip.frames) {
-        if (sample < frame.durationMilliseconds) {
-            spriteId = frame.spriteId;
-            return true;
-        }
-        sample -= frame.durationMilliseconds;
+    candidate.durationMilliseconds = duration;
+    if (iterator != clipCache_.end() && iterator->clipId == clipId) {
+        *iterator = std::move(candidate);
+    } else {
+        iterator = clipCache_.insert(iterator, std::move(candidate));
     }
-    spriteId = clip.frames.back().spriteId;
+    ++stats_.animationCacheMisses;
+    clip = &*iterator;
     return true;
+}
+
+void PresentationPlaybackRuntime::completeAnimation(
+    AnimationIterator iterator) noexcept {
+    if (iterator == animations_.end()) return;
+    (void)assets_.release(
+        {assets::AssetType::AnimationClip, iterator->clipId});
+    animations_.erase(iterator);
+    ++stats_.completedAnimations;
 }
 
 void PresentationPlaybackRuntime::expireEffects(
@@ -279,12 +343,21 @@ void PresentationPlaybackRuntime::removeMissingAnimations(
     }
 }
 
-std::vector<PresentationPlaybackRuntime::AnimationState>::iterator
+PresentationPlaybackRuntime::AnimationIterator
 PresentationPlaybackRuntime::lowerAnimation(ViewId viewId) {
     return std::lower_bound(
         animations_.begin(), animations_.end(), viewId,
         [](const AnimationState& value, ViewId lookup) {
             return value.viewId < lookup;
+        });
+}
+
+PresentationPlaybackRuntime::ClipIterator
+PresentationPlaybackRuntime::lowerClip(LogicalAssetId clipId) {
+    return std::lower_bound(
+        clipCache_.begin(), clipCache_.end(), clipId,
+        [](const CachedAnimationClip& value, LogicalAssetId lookup) {
+            return value.clipId < lookup;
         });
 }
 
@@ -294,11 +367,26 @@ ViewId PresentationPlaybackRuntime::effectViewId(
     return value == 0 ? (std::uint64_t{1} << 63u) : value;
 }
 
+std::uint64_t PresentationPlaybackRuntime::stablePhase(
+    std::uint64_t seed,
+    std::uint64_t clipId) noexcept {
+    auto value = seed ^ (clipId + 0x9e3779b97f4a7c15ull +
+                         (seed << 6u) + (seed >> 2u));
+    value ^= value >> 30u;
+    value *= 0xbf58476d1ce4e5b9ull;
+    value ^= value >> 27u;
+    value *= 0x94d049bb133111ebull;
+    value ^= value >> 31u;
+    return value;
+}
+
 void PresentationPlaybackRuntime::refreshCounts() noexcept {
     stats_.activeAnimations =
         static_cast<std::uint32_t>(animations_.size());
     stats_.activeEffects =
         static_cast<std::uint32_t>(effects_.size());
+    stats_.residentAnimationClips =
+        static_cast<std::uint32_t>(clipCache_.size());
 }
 
 } // namespace rts::presentation
