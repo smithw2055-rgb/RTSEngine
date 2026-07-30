@@ -106,6 +106,19 @@ jobs:
           if caster not in test_text:
               raise SystemExit('G3 ability caster line not found')
           test.write_text(test_text.replace(caster, passive, 1))
+
+          header = Path('framework/rts/include/RTSEngine/Rts/G3GameSession.h')
+          header_text = header.read_text()
+          needle = '!ally && !base_.simulation().vision().visible('
+          occurrences = header_text.count(needle)
+          if occurrences != 3:
+              raise SystemExit(
+                  f'expected 3 G3 visibility checks, found {occurrences}')
+          replacement = (
+              '!ally && base_.simulation().nextExpectedTick() != 0 &&\n'
+              '                    !base_.simulation().vision().visible('
+          )
+          header.write_text(header_text.replace(needle, replacement))
           PY
             python .g3/patch.py
             git diff --check
