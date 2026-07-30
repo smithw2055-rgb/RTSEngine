@@ -105,7 +105,15 @@ jobs:
           )
           if caster not in test_text:
               raise SystemExit('G3 ability caster line not found')
-          test.write_text(test_text.replace(caster, passive, 1))
+          test_text = test_text.replace(caster, passive, 1)
+          blocking_enemy = (
+              '    const auto enemy = game.base().createUnit({2, 1}, {0}, 2, soldierCombat());\n'
+          )
+          if blocking_enemy not in test_text:
+              raise SystemExit('G3 stun blocking enemy line not found')
+          test_text = test_text.replace(blocking_enemy, '', 1)
+          test_text = test_text.replace('    (void)enemy;\n', '', 1)
+          test.write_text(test_text)
 
           header = Path('framework/rts/include/RTSEngine/Rts/G3GameSession.h')
           header_text = header.read_text()
