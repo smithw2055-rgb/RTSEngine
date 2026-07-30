@@ -26,3 +26,13 @@ target_link_libraries(rts_entity_behavior_tests PRIVATE
 )
 add_test(NAME rts_entity_behavior_tests
     COMMAND rts_entity_behavior_tests)
+
+add_executable(rts_g3_scripting_extension_tests
+    ../g3_scripting_extension_tests.cpp
+)
+target_link_libraries(rts_g3_scripting_extension_tests PRIVATE
+    RTSEngine::RtsScripting
+    RealScript::GameCompiler
+)
+add_test(NAME rts_g3_scripting_extension_tests
+    COMMAND rts_g3_scripting_extension_tests)
