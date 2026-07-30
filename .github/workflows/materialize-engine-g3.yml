@@ -81,6 +81,22 @@ jobs:
               if marker not in cmake_text:
                   raise SystemExit('G3 test CMake marker not found')
               cmake.write_text(cmake_text.replace(marker, block + marker, 1))
+
+          test = Path('tests/engine_g3_tests.cpp')
+          test_text = test.read_text()
+          old = 'void require(bool value) {\n    if (!value) std::abort();\n}\n'
+          new = '''void requireImpl(bool value, const char* expression, int line) {
+              if (!value) {
+                  std::cerr << "G3 require failed at line " << line
+                            << ": " << expression << '\\n';
+                  std::abort();
+              }
+          }
+          #define require(value) requireImpl((value), #value, __LINE__)
+          '''
+          if old not in test_text:
+              raise SystemExit('G3 require helper not found')
+          test.write_text(test_text.replace(old, new, 1))
           PY
             python .g3/patch.py
             git diff --check
