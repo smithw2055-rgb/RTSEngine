@@ -63,11 +63,12 @@ public:
                 if (!active(agent)) return;
                 dependencies.telemetry->recordMovementAgent();
                 const auto* control = world.try_get<StatusControl>(entity);
+                const auto scaledSteps = static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(speed.cellsPerTick) *
+                    (control ? control->moveScalePermille : 1000u) / 1000u);
                 const auto effectiveSteps = control && control->stunned
                     ? 0
-                    : static_cast<std::int32_t>(
-                          static_cast<std::int64_t>(speed.cellsPerTick) *
-                          (control ? control->moveScalePermille : 1000u) / 1000u);
+                    : std::max<std::int32_t>(1, scaledSteps);
                 maximumSteps = std::max(maximumSteps, effectiveSteps);
             });
 
@@ -145,11 +146,12 @@ private:
                 OrderQueue&,
                 MovementAgent& agent) {
                 const auto* control = world.try_get<StatusControl>(entity);
+                const auto scaledSteps = static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(speed.cellsPerTick) *
+                    (control ? control->moveScalePermille : 1000u) / 1000u);
                 const auto effectiveSteps = control && control->stunned
                     ? 0
-                    : static_cast<std::int32_t>(
-                          static_cast<std::int64_t>(speed.cellsPerTick) *
-                          (control ? control->moveScalePermille : 1000u) / 1000u);
+                    : std::max<std::int32_t>(1, scaledSteps);
                 if (!active(agent) || step >= effectiveSteps ||
                     shouldPauseForCombat(world, entity, position)) {
                     return;
