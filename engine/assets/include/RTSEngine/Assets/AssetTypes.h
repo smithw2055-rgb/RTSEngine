@@ -19,7 +19,15 @@ enum class AssetType : std::uint16_t {
     Shader,
     Binary,
     ScriptModule,
-    ScriptBundle
+    ScriptBundle,
+    WorldMap,
+    UnitDefinition,
+    BuildingDefinition,
+    WeaponDefinition,
+    AbilityDefinition,
+    AnimationSet,
+    AudioEvent,
+    VfxGraph
 };
 
 struct AssetKey final {
@@ -142,7 +150,7 @@ struct AssetManagerStats final {
 };
 
 constexpr bool ValidAssetType(AssetType value) noexcept {
-    return value >= AssetType::Unknown && value <= AssetType::ScriptBundle;
+    return value >= AssetType::Unknown && value <= AssetType::VfxGraph;
 }
 
 } // namespace rts::assets

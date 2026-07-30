@@ -13,10 +13,14 @@ namespace rts::presentation {
 struct PresentationPlaybackStats final {
     std::uint32_t activeAnimations{};
     std::uint32_t activeEffects{};
+    std::uint32_t residentAnimationClips{};
     std::uint64_t animationCues{};
     std::uint64_t effectCues{};
     std::uint64_t audioCues{};
     std::uint64_t droppedCues{};
+    std::uint64_t completedAnimations{};
+    std::uint64_t animationCacheHits{};
+    std::uint64_t animationCacheMisses{};
 };
 
 class PresentationPlaybackRuntime final {
@@ -50,6 +54,22 @@ private:
         bool additive{};
     };
 
+    struct CachedAnimationFrame final {
+        std::uint64_t spriteId{};
+        std::uint64_t cumulativeEndMilliseconds{};
+    };
+
+    struct CachedAnimationClip final {
+        LogicalAssetId clipId{};
+        std::uint32_t assetGeneration{};
+        bool loop{};
+        std::uint64_t durationMilliseconds{};
+        std::vector<CachedAnimationFrame> frames;
+    };
+
+    using AnimationIterator = std::vector<AnimationState>::iterator;
+    using ClipIterator = std::vector<CachedAnimationClip>::iterator;
+
     bool startAnimation(const AnimationCue& cue,
                         std::uint64_t nowMilliseconds);
     bool spawnEffect(const EffectCue& cue,
@@ -57,17 +77,27 @@ private:
     bool sampleAnimation(LogicalAssetId clipId,
                          std::uint64_t elapsedMilliseconds,
                          std::uint64_t& spriteId,
-                         bool& finished);
+                         bool& finished,
+                         std::uint64_t phaseSeed = 0);
+    bool resolveAnimationClip(
+        LogicalAssetId clipId,
+        const CachedAnimationClip*& clip);
+    void completeAnimation(AnimationIterator iterator) noexcept;
     void expireEffects(std::uint64_t nowMilliseconds) noexcept;
     void removeMissingAnimations(const RenderPacket& packet) noexcept;
-    std::vector<AnimationState>::iterator lowerAnimation(ViewId viewId);
+    AnimationIterator lowerAnimation(ViewId viewId);
+    ClipIterator lowerClip(LogicalAssetId clipId);
     static ViewId effectViewId(PresentationEventId eventId) noexcept;
+    static std::uint64_t stablePhase(
+        std::uint64_t seed,
+        std::uint64_t clipId) noexcept;
     void refreshCounts() noexcept;
 
     assets::AssetManager& assets_;
     audio::AudioDevice& audio_;
     std::vector<AnimationState> animations_;
     std::vector<EffectState> effects_;
+    std::vector<CachedAnimationClip> clipCache_;
     PresentationPlaybackStats stats_{};
 };
 
