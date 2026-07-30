@@ -55,16 +55,20 @@ public:
 
         std::int32_t maximumSteps = 0;
         world.eachRef<Position, MoveSpeed, OrderQueue, MovementAgent>(
-            [&](ecs::Entity,
+            [&](ecs::Entity entity,
                 Position&,
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
                 if (!active(agent)) return;
                 dependencies.telemetry->recordMovementAgent();
-                maximumSteps = std::max(
-                    maximumSteps,
-                    std::max<std::int32_t>(1, speed.cellsPerTick));
+                const auto* control = world.try_get<StatusControl>(entity);
+                const auto effectiveSteps = control && control->stunned
+                    ? 0
+                    : static_cast<std::int32_t>(
+                          static_cast<std::int64_t>(speed.cellsPerTick) *
+                          (control ? control->moveScalePermille : 1000u) / 1000u);
+                maximumSteps = std::max(maximumSteps, effectiveSteps);
             });
 
         rebuildOccupancy(
@@ -140,8 +144,13 @@ private:
                 MoveSpeed& speed,
                 OrderQueue&,
                 MovementAgent& agent) {
-                if (!active(agent) ||
-                    step >= std::max<std::int32_t>(1, speed.cellsPerTick) ||
+                const auto* control = world.try_get<StatusControl>(entity);
+                const auto effectiveSteps = control && control->stunned
+                    ? 0
+                    : static_cast<std::int32_t>(
+                          static_cast<std::int64_t>(speed.cellsPerTick) *
+                          (control ? control->moveScalePermille : 1000u) / 1000u);
+                if (!active(agent) || step >= effectiveSteps ||
                     shouldPauseForCombat(world, entity, position)) {
                     return;
                 }

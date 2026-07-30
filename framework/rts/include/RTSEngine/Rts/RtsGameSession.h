@@ -377,6 +377,7 @@ public:
         return researchReservations_.size();
     }
 
+    RtsSimulation& simulation() noexcept { return simulation_; }
     const RtsSimulation& simulation() const noexcept { return simulation_; }
     const DiplomacyRuntime& diplomacy() const noexcept { return diplomacy_; }
     const AiRuntime& ai() const noexcept { return ai_; }

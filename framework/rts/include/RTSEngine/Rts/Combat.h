@@ -24,11 +24,25 @@ struct Armor {
     std::int32_t value{};
 };
 
+struct DamageResistance {
+    std::uint16_t kineticPermille{1000};
+    std::uint16_t explosivePermille{1000};
+    std::uint16_t energyPermille{1000};
+};
+
+struct StatusControl {
+    std::uint16_t moveScalePermille{1000};
+    std::uint16_t damageScalePermille{1000};
+    std::int32_t armorAdd{};
+    bool stunned{};
+};
+
 struct Weapon {
     std::int32_t damage{1};
     std::int32_t range{1};
     std::uint32_t cooldownTicks{1};
     std::uint32_t cooldownRemaining{};
+    std::uint32_t projectileDefinitionId{};
 };
 
 struct CombatTarget {
@@ -320,6 +334,9 @@ private:
                 const auto* directive =
                     world.try_get<CombatDirective>(entity);
                 if (health.current <= 0) return;
+                const auto* statusControl =
+                    world.try_get<StatusControl>(entity);
+                if (statusControl && statusControl->stunned) return;
                 if (weapon.cooldownRemaining > 0) {
                     --weapon.cooldownRemaining;
                 }
@@ -352,11 +369,15 @@ private:
                     return;
                 }
 
-                damage_.push_back(
-                    {entity,
-                     target.entity,
-                     std::max<std::int32_t>(0, weapon.damage),
-                     sequence++});
+                const auto scaledDamage = static_cast<std::int32_t>(
+                    static_cast<std::int64_t>(
+                        std::max<std::int32_t>(0, weapon.damage)) *
+                    (statusControl ? statusControl->damageScalePermille : 1000u) /
+                    1000u);
+                if (weapon.projectileDefinitionId == 0) {
+                    damage_.push_back(
+                        {entity, target.entity, scaledDamage, sequence++});
+                }
                 weapon.cooldownRemaining =
                     std::max<std::uint32_t>(1, weapon.cooldownTicks);
                 events_.push_back(
@@ -383,9 +404,19 @@ private:
         for (const auto& request : damage_) {
             auto* health = world.try_get<Health>(request.target);
             const auto* armor = world.try_get<Armor>(request.target);
+            const auto* control =
+                world.try_get<StatusControl>(request.target);
+            const auto* resistance =
+                world.try_get<DamageResistance>(request.target);
             if (!health || health->current <= 0) continue;
-            const auto mitigated = std::max<std::int32_t>(
-                0, request.amount - (armor ? armor->value : 0));
+            const auto armorValue = std::max<std::int32_t>(
+                0, (armor ? armor->value : 0) +
+                   (control ? control->armorAdd : 0));
+            const auto afterArmor = std::max<std::int32_t>(
+                0, request.amount - armorValue);
+            const auto mitigated = static_cast<std::int32_t>(
+                static_cast<std::int64_t>(afterArmor) *
+                (resistance ? resistance->kineticPermille : 1000u) / 1000u);
             health->current =
                 std::max<std::int32_t>(0, health->current - mitigated);
             events_.push_back(
