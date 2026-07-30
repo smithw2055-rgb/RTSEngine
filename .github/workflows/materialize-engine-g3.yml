@@ -31,7 +31,7 @@ jobs:
             mkdir -p .g3
             {
               echo "Engine G3 materialization failed with status ${status}."
-              for log in /tmp/g3-config.log /tmp/g3-build.log /tmp/g3-test.log; do
+              for log in /tmp/g3-prep.log /tmp/g3-config.log /tmp/g3-build.log /tmp/g3-test.log; do
                 if [[ -f "${log}" ]]; then
                   echo
                   echo "===== ${log} ====="
@@ -52,13 +52,18 @@ jobs:
             echo "Implementation is already materialized."
             exit 0
           fi
-          cat .g3/part-* > /tmp/engine-g3.b64
-          echo "bf5478349c438b33bd5dee67c0d5d69020e6b75f0ed990ad2f5ff5b80f5345d6  /tmp/engine-g3.b64" | sha256sum -c -
-          base64 --decode /tmp/engine-g3.b64 > /tmp/engine-g3.tar.gz
-          echo "b682ee9904101e2394d3d3f9e6de91360d7856ae789c1205ff1f311976780e58  /tmp/engine-g3.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/engine-g3.tar.gz -C .
-          python .g3/patch.py
-          git diff --check
+          {
+            cat .g3/part-* > /tmp/engine-g3.b64
+            sha256sum /tmp/engine-g3.b64
+            echo "bf5478349c438b33bd5dee67c0d5d69020e6b75f0ed990ad2f5ff5b80f5345d6  /tmp/engine-g3.b64" | sha256sum -c -
+            base64 --decode /tmp/engine-g3.b64 > /tmp/engine-g3.tar.gz
+            sha256sum /tmp/engine-g3.tar.gz
+            echo "b682ee9904101e2394d3d3f9e6de91360d7856ae789c1205ff1f311976780e58  /tmp/engine-g3.tar.gz" | sha256sum -c -
+            tar -tzf /tmp/engine-g3.tar.gz
+            tar -xzf /tmp/engine-g3.tar.gz -C .
+            python .g3/patch.py
+            git diff --check
+          } > /tmp/g3-prep.log 2>&1
 
           cmake -S . -B build-g3 \
             -DCMAKE_BUILD_TYPE=Debug \
