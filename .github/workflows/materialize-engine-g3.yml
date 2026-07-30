@@ -24,8 +24,30 @@ jobs:
       - name: Verify build test and publish implementation
         shell: bash
         run: |
-          set -euo pipefail
-          # A follow-up push intentionally triggers this branch-local gate.
+          set -Eeuo pipefail
+          publish_failure() {
+            status=$?
+            trap - ERR
+            mkdir -p .g3
+            {
+              echo "Engine G3 materialization failed with status ${status}."
+              for log in /tmp/g3-config.log /tmp/g3-build.log /tmp/g3-test.log; do
+                if [[ -f "${log}" ]]; then
+                  echo
+                  echo "===== ${log} ====="
+                  tail -n 500 "${log}"
+                fi
+              done
+            } > .g3/failure.log
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add .g3/failure.log
+            git commit -m "Record Engine G3 gate failure" || true
+            git push origin HEAD:"${GITHUB_REF_NAME}" || true
+            exit "${status}"
+          }
+          trap publish_failure ERR
+
           if [[ ! -d .g3 ]]; then
             echo "Implementation is already materialized."
             exit 0
@@ -42,15 +64,19 @@ jobs:
             -DCMAKE_BUILD_TYPE=Debug \
             -DRTSENGINE_BUILD_TESTS=ON \
             -DRTSENGINE_BUILD_EXAMPLES=OFF \
-            -DRTSENGINE_ENABLE_REALSCRIPT=OFF
+            -DRTSENGINE_ENABLE_REALSCRIPT=OFF \
+            > /tmp/g3-config.log 2>&1
           cmake --build build-g3 --parallel 2 \
             --target rts_engine_g3_tests \
                      rts_combat_tests \
                      rts_combat_integration_tests \
-                     rts_simulation_persistence_tests
+                     rts_simulation_persistence_tests \
+            > /tmp/g3-build.log 2>&1
           ctest --test-dir build-g3 --output-on-failure \
-            -R '^rts_(engine_g3|combat|combat_integration|simulation_persistence)_tests$'
+            -R '^rts_(engine_g3|combat|combat_integration|simulation_persistence)_tests$' \
+            > /tmp/g3-test.log 2>&1
 
+          trap - ERR
           rm -rf .g3 .github/workflows/materialize-engine-g3.yml build-g3
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
