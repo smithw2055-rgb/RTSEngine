@@ -16,7 +16,8 @@ Engine G3 adds an authoritative extension session around `RtsGameSession`. It pr
 - loadouts and cooldowns are authoritative state;
 - Self, Entity and Point targets are supported;
 - cast time, range, ally/enemy policy and ordered effect lists are data driven;
-- effects include damage, heal, status application and projectile spawn.
+- effects include damage, heal, status application and projectile spawn;
+- Tick 0 targeting uses authoritative position, range and diplomacy because no visibility snapshot exists yet; later Ticks enforce Fog/Vision visibility.
 
 ## Status effects
 
@@ -40,3 +41,7 @@ Engine G3 adds an authoritative extension session around `RtsGameSession`. It pr
 `RtsG3GameSession::encode()` nests the complete `RtsGameSessionArchive` and adds ability commands, casts, cooldowns, projectiles, status instances, bindings, squads and sequence state. `authoritativeHash()` combines the base session hash, G3 definition identity and canonical runtime state.
 
 The G3 ability command stream is deliberately separate from the legacy `TickCommand` enum. A future G3 lockstep adapter can transport both streams without changing existing saves or silently turning `CastAbility` into an ignored base command.
+
+## Validation
+
+The focused G3 gate builds the new runtime together with the existing combat, combat-integration and simulation-persistence targets. It verifies delayed projectile impact, ability cooldown and periodic status behavior, stun recovery, squad command generation, and archive/hash continuity before publishing source changes.
