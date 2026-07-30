@@ -1,0 +1,45 @@
+name: G3 Roguelite Diagnostic
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    if: github.event.pull_request.number == 26
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Add assertion diagnostics
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path('tests/roguelite_persistence_tests.cpp')
+          text = path.read_text()
+          old = '''void check(bool condition) {
+              assert(condition);
+              if (!condition) std::abort();
+          }
+          '''
+          new = '''void checkImpl(bool condition, const char* expression, int line) {
+              if (!condition) {
+                  std::cerr << "roguelite persistence check failed at line "
+                            << line << ": " << expression << '\\n';
+                  std::abort();
+              }
+          }
+          #define check(condition) checkImpl((condition), #condition, __LINE__)
+          '''
+          if old not in text:
+              raise SystemExit('check helper not found')
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Configure
+        run: cmake -S . -B build-diag -DCMAKE_BUILD_TYPE=Debug -DRTSENGINE_BUILD_TESTS=ON -DRTSENGINE_BUILD_EXAMPLES=OFF
+      - name: Build
+        run: cmake --build build-diag --parallel 2 --target rts_roguelite_persistence_tests
+      - name: Test
+        run: ctest --test-dir build-diag --output-on-failure -R '^rts_roguelite_persistence_tests$'
