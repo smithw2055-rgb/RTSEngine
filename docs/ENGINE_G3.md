@@ -26,7 +26,8 @@ Engine G3 adds an authoritative extension session around `RtsGameSession`. It pr
 - periodic heal or damage;
 - movement, damage and armor modifiers;
 - stun control consumed by movement and combat systems;
-- status controls are derived from canonical status instances.
+- status controls are derived from canonical status instances;
+- non-stunned movement preserves the engine's legacy minimum-one-substep contract, including entities configured with zero base speed; Stun is the authoritative mechanism that suppresses movement completely.
 
 ## Squad AI
 
@@ -44,4 +45,4 @@ The G3 ability command stream is deliberately separate from the legacy `TickComm
 
 ## Validation
 
-The focused G3 gate builds the new runtime together with the existing combat, combat-integration and simulation-persistence targets. It verifies delayed projectile impact, ability cooldown and periodic status behavior, stun recovery, squad command generation, and archive/hash continuity before publishing source changes.
+The focused G3 gate builds the new runtime together with the existing combat, combat-integration, simulation-persistence and roguelite-persistence targets. It verifies delayed projectile impact, ability cooldown and periodic status behavior, stun recovery, squad command generation, archive/hash continuity and compatibility with stationary tower-defense units before publishing source changes.
