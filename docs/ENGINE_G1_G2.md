@@ -53,6 +53,10 @@ This change moves RTSEngine from a programmatic RTS sample toward a data-driven 
 
 `AudioMixer` layers bus volume and mute state over `AudioDevice`, supports listener-relative attenuation and pan, priority-aware voice stealing, non-stealable voices, lifecycle retirement and device-generation recovery.
 
+## Validation targets
+
+The focused `rts_engine_g1_g2_tests` target covers world-map round trips and canonical hashes, layered weighted navigation, movement domains, request ordering, formations, fixed movement, animation selection, fog persistence, VFX determinism and audio mixing. The existing `rts_presentation_events_tests` target remains part of the playback regression boundary.
+
 ## Deliberate boundaries
 
 This stage establishes production-facing foundations, but it intentionally does not claim the following as complete:
